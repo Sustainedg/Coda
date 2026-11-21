@@ -8,8 +8,13 @@
  *
  * 图形文件只画形状、不指定颜色（`frontend/public/icons/kernels/*.svg`），路径由后端按
  * 适配器声明下发；位图同样随仓库发布，运行时不外链。
+ *
+ * **图标秒显**：图形在构建期就内嵌成 data URL（`lib/kernelLogos.ts`），这里直接用内嵌
+ * 地址渲染 —— 没有请求、没有二次解码，进页面即显示；`lib/kernelIcons.ts` 还会在应用空闲
+ * 时把它们预解码好，页面渲染直接命中缓存。加载失败时给一个中性占位，不留空洞。
  */
 import { useEffect, useState } from 'react'
+import { kernelLogoSource, preloadKernelLogo } from '../lib/kernelIcons'
 
 /** 位图扩展名：没有显式声明 logo_style 时按扩展名推断。 */
 const RASTER = /\.(png|webp|jpe?g)$/i
@@ -25,25 +30,38 @@ export function KernelLogo({
   const [broken, setBroken] = useState(false)
   // 换了图重置裂图标记：上一次加载失败不代表这一次也失败。
   useEffect(() => setBroken(false), [logo])
+  // 提前把图形解好码：卡片渲染时不用等。取不到图形就记下失败，界面给中性占位。
+  useEffect(() => {
+    if (!logo) return
+    let alive = true
+    void preloadKernelLogo(logo).then((image) => {
+      if (alive && !image) setBroken(true)
+    })
+    return () => {
+      alive = false
+    }
+  }, [logo])
   if (!logo) return null
 
+  const source = kernelLogoSource(logo)
   const image = (style ?? (RASTER.test(logo) ? 'image' : 'mask')) === 'image'
   if (!image) {
+    if (broken) return <span className="kernel-logo kernel-logo-missing" aria-hidden="true" />
     return (
       <span
         className="kernel-logo"
         aria-hidden="true"
-        style={{ WebkitMaskImage: `url(${logo})`, maskImage: `url(${logo})` }}
+        style={{ WebkitMaskImage: `url("${source}")`, maskImage: `url("${source}")` }}
       />
     )
   }
-  if (broken) return null
+  if (broken) return <span className="kernel-logo kernel-logo-missing" aria-hidden="true" />
   return (
     <img
       className="kernel-logo kernel-logo-image"
-      src={logo}
+      src={source}
       alt=""
-      loading="lazy"
+      decoding="async"
       onError={() => setBroken(true)}
     />
   )

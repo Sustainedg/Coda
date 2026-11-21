@@ -51,3 +51,19 @@ async def _drain_title_tasks():
     from app.runtime import titles
 
     await titles.cancel_pending()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _drain_collab_handles():
+    """每个用例收尾时清空协作域的进程级句柄表。
+
+    工单步骤与入口对话各有一张「正在跑」的句柄表（`collab/execution.py` 的
+    `registry` / `chat_registry`）。用例里手工 `register` 的句柄如果忘了 `finish`，
+    会泄漏进后面的用例 —— 「正在运行的智能体」会把幽灵岗位也列出来，
+    `test_collab_api.py` 的收尾断言（列表应为空）就挂了。
+    """
+    yield
+    from app.collab import execution
+
+    execution.registry.clear()
+    execution.chat_registry.clear()

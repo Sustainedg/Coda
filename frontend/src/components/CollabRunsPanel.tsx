@@ -4,10 +4,12 @@
  *
  * 工单的细节（列表、流转时间线、规则与越权审计）在点击后打开的全屏 `TicketBoard`（三栏看板）里。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CollabProgressBoard } from './CollabProgressBoard'
 import { Composer } from './Composer'
 import { ConversationThread, type ConversationThreadItem } from './ConversationThread'
+import { useAuth } from './AuthGate'
+import { ClipboardIcon } from './Icons'
 import type { RenderMessage } from './MessageView'
 import { TicketBoard } from './TicketBoard'
 import { Modal } from './Modal'
@@ -18,7 +20,7 @@ import {
   dismissChatNotice, emptyChatTurn, type ChatTurnState,
 } from '../lib/collabChat'
 import {
-  forgetConsumedAdvances, loadConsumedAdvances, rememberConsumedAdvance,
+  ADVANCE_MARKER, forgetConsumedAdvances, loadConsumedAdvances, rememberConsumedAdvance,
 } from '../lib/collabAdvance'
 import { MediaUrlProvider, composeWithAttachments } from '../lib/media'
 import { useComposerDraft } from '../lib/composerDraft'
@@ -59,6 +61,8 @@ interface Props {
 }
 
 export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
+  // 当前登录用户：自己发的消息画真头像（换头像后这里跟着 `AuthGate` 的状态刷新）。
+  const { user } = useAuth()
   const [runs, setRuns] = useState<CollabRun[]>([])
   const [detail, setDetail] = useState<CollabRunDetail | null>(null)
   const [turn, setTurn] = useState<CollabTurnState | null>(null)
@@ -369,16 +373,23 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
   /**
    * 用户在「推进任务」决策卡上点了确认（或直接发自由指令）：把 CEO 给出的推进
    * 指令发进工单通道。任务还没开始时这就是开场的任务描述。
+   *
+   * 点「按建议推进」时带 `use_advance`：指令原文照发（保证执行的就是 CEO 给的），
+   * 但时间线上不把长指令再显示一遍，只落一句短标记 —— 指令在 CEO 的消息里已经
+   * 写过，重发一遍既占屏幕又多花一遍 tokens。
    */
-  const advanceRun = (text: string) => {
+  const advanceRun = (text: string, useAdvance = false) => {
     if (!detail || busy || chatBusy || !text.trim()) return
     consumeAdvance(advanceAsk)
-    void stream(`/api/collab/runs/${detail.id}/messages`, { content: text }, text)
+    const marker = ADVANCE_MARKER
+    const body = useAdvance ? { content: text, use_advance: true } : { content: text }
+    void stream(`/api/collab/runs/${detail.id}/messages`, body, useAdvance ? marker : text)
   }
 
   /**
    * 点决策卡上的选项：自由填写（或选项没带可发内容）只预填 CEO 建议并聚焦输入框，不发送。
    * freeform 的 value 是空串，不能拿 label 兜底 —— 否则「我再想想」这四个字会被当成指令发进工单通道。
+   * 选项 value 就是 CEO 的建议指令时走引用通道（`use_advance`），不把长指令重发一遍。
    */
   const answerAdvance = (choice: CollabChoice) => {
     if (!detail || busy || chatBusy) return
@@ -388,7 +399,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
       composerRef.current?.focus()
       return
     }
-    advanceRun(choice.value.trim())
+    advanceRun(choice.value.trim(), true)
   }
 
   /** 上传待发附件：走协作运行自己的附件目录，与移动端共用同一个接口。 */
@@ -585,12 +596,45 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
       }
     : null
 
+  /**
+   * CEO 消息的「工单更新」小卡片：这条消息把新要求同步进了几张工单、动了哪些字段。
+   * 点卡片打开工单看板（完整内容在那里渲染成结构化卡片，不再是一大段文本）。
+   * 没有 `meta.applied`（没同步过工单）就返回 `undefined`，消息上方什么都不挂。
+   */
+  const ticketUpdateCardOf = (messageId: string): ReactNode | undefined => {
+    const row = chatMessages.find((item) => item.id === messageId)
+    const applied = row?.meta?.applied as
+      | { ticket_ids?: string[]; ticket_count?: number; fields?: string[] }
+      | undefined
+    if (!applied?.ticket_count) return undefined
+    const fields = (applied.fields ?? []).join('、')
+    return (
+      <button
+        type="button"
+        className="collab-ticket-update-card"
+        onClick={() => {
+          setBoardTicketId(applied.ticket_ids?.[0] ?? null)
+          setBoardOpen(true)
+        }}
+      >
+        <ClipboardIcon size={15} className="collab-ticket-update-icon" />
+        <span className="collab-ticket-update-text">
+          已同步到 {applied.ticket_count} 张工单{fields ? `（${fields}）` : ''}
+        </span>
+        <span className="collab-ticket-update-more">查看工单 →</span>
+      </button>
+    )
+  }
+
   const threadItems: ConversationThreadItem[] = [
     ...timeline.map((message) => ({
       id: message.id,
       message,
       avatar: message.role === 'user' ? undefined : agentAvatar(undefined, leaderKey),
       label: message.role === 'user' ? undefined : labelOf(leaderKey, detail?.entry_key),
+      // CEO 消息带过「需求同步进工单」时，消息上方挂一张工单更新小卡片：
+      // 摘要一行（同步了几张、哪些字段），点开看渲染好的完整工单内容。
+      meta: message.role === 'assistant' ? ticketUpdateCardOf(message.id) : undefined,
     })),
     ...(liveMessage && leaderLive
       ? [{
@@ -667,8 +711,13 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
     >
     <div className="collab-shell">
       <aside className="collab-list">
-        <button className="btn primary" style={{ justifyContent: 'center' }} onClick={() => setPicking(true)}>
-          + 新建协作任务
+        <button
+          className="btn primary collab-new-run"
+          onClick={() => setPicking(true)}
+          title="新建协作任务"
+          aria-label="新建协作任务"
+        >
+          ＋
         </button>
         {runs.map((run) => (
           <button
@@ -793,6 +842,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
               <ConversationThread
                 centered
                 items={threadItems}
+                user={user}
                 empty={timeline.length === 0 && !liveMessage ? (
                   <div className="empty">
                     <div className="empty-icon">🤝</div>
@@ -911,6 +961,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
                   setBoardOpen(true)
                 }}
                 escapeDisabled={boardOpen}
+                user={user}
               />
             )}
             </div>

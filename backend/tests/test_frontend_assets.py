@@ -103,6 +103,63 @@ def test_runtime_cards_use_the_shared_logo_and_trimmed_copy():
         assert ".kernel-logo-image" in text, f"{css.name} 缺少位图 Logo 的样式"
 
 
+# --- 内核 Logo 的内嵌清单（图标秒显） ------------------------------------------
+
+KERNEL_LOGO_MANIFEST = FRONTEND / "src" / "lib" / "kernelLogos.ts"
+KERNEL_LOGO_GENERATOR = REPO / "scripts" / "gen_kernel_logos.py"
+
+
+def _load_kernel_logo_generator() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("gen_kernel_logos", KERNEL_LOGO_GENERATOR)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@needs_frontend
+def test_kernel_logo_inline_manifest_matches_the_committed_graphics():
+    """内嵌清单必须与 `public/icons/kernels/` 里的图形一致（图形改了要重跑生成脚本）。
+
+    「内核管理」页的图标走内嵌资源（不进网络），这份清单是内嵌的唯一来源。
+    清单与源文件不一致 = 界面显示的是旧图形。
+    """
+    assert KERNEL_LOGO_MANIFEST.is_file(), (
+        "缺少 frontend/src/lib/kernelLogos.ts（跑 python3 scripts/gen_kernel_logos.py）"
+    )
+    module = _load_kernel_logo_generator()
+    assert KERNEL_LOGO_MANIFEST.read_text(encoding="utf-8") == module.render_module(), (
+        "内核 Logo 内嵌清单与 public/icons/kernels/ 下的图形不一致，"
+        "请重新执行 python3 scripts/gen_kernel_logos.py"
+    )
+
+
+@needs_frontend
+def test_every_kernel_logo_is_inlined_and_used_by_the_shared_component():
+    """每个内核声明的 Logo 都要在清单里，且两端页面都走同一个组件取它。
+
+    - 清单漏了一个 = 那个内核的图标退回外部路径，又会「慢半拍」；
+    - 两端各画各的 = 一端内嵌一端外链，优化只做了一半。
+    """
+    from app.agents import all_agents
+
+    manifest = KERNEL_LOGO_MANIFEST.read_text(encoding="utf-8")
+    for definition in all_agents():
+        assert definition.logo in manifest, (
+            f"{definition.id} 的 Logo 没进内嵌清单，请重跑 scripts/gen_kernel_logos.py"
+        )
+
+    # 取图地址统一走 lib/kernelIcons.ts（内嵌清单 + 内存缓存 + 预解码）。
+    icons_lib = (FRONTEND / "src" / "lib" / "kernelIcons.ts").read_text(encoding="utf-8")
+    assert "kernelLogoSource" in icons_lib, "取图标地址要走 lib/kernelIcons.ts 的统一入口"
+    logo_component = (FRONTEND / "src" / "components" / "KernelLogo.tsx").read_text(encoding="utf-8")
+    assert "kernelLogoSource" in logo_component, "KernelLogo 要用统一入口取图标地址"
+
+    for css in (FRONTEND / "src" / "index.css", MOBILE_SRC / "mobile.css"):
+        text = css.read_text(encoding="utf-8")
+        assert ".kernel-logo-missing" in text, f"{css.name} 缺少图标加载失败时的兜底样式"
+
+
 # --- 应用图标与品牌标 ---------------------------------------------------------
 
 ICON_DIR = FRONTEND / "public" / "icons"
@@ -192,14 +249,86 @@ AVATAR_MANIFEST = FRONTEND / "src" / "lib" / "avatarPack.ts"
 
 @needs_frontend
 def test_avatar_pack_manifest_matches_files():
-    """内置头像包：清单与图片必须一一对应。
+    """内置头像包：清单与图片必须一一对应，且每个编号都挂了分类标签。
 
     「随机生成」直接按清单抽编号拼 `/avatars/<编号>.webp`，清单多一条少一条都会让抽到
     的头像 404。清单由 `scripts/gen_avatar_pack.py` 生成，两边只允许来自同一次运行。
+    画廊还要按标签分组（人物 / 卡通），漏了标签那张就会被静默藏起来。
     """
     assert AVATAR_MANIFEST.is_file(), "缺少 frontend/src/lib/avatarPack.ts（跑 scripts/gen_avatar_pack.py）"
-    manifest_ids = re.findall(r"'(pack-\d{3})'", AVATAR_MANIFEST.read_text(encoding="utf-8"))
+    text = AVATAR_MANIFEST.read_text(encoding="utf-8")
+    # 只取编号数组那一段：后面的分类映射里也有 'pack-NNN' 字样。
+    array_part = text.split("] as const", 1)[0]
+    manifest_ids = re.findall(r"'(pack-\d{3})'", array_part)
     file_ids = sorted(path.stem for path in AVATAR_DIR.glob("pack-*.webp"))
     assert manifest_ids == file_ids, "头像包清单与 public/avatars/ 下的图片不一致，请重跑生成脚本"
     # 太少就失去「随机」的意义：至少两排才有抽卡感。
     assert len(manifest_ids) >= 20
+
+    # 分类映射：每个编号恰好一条，且标签都在分组表里登记过。
+    labels_part = text.split("AVATAR_CATEGORY_LABELS = {", 1)[1].split("} as const", 1)[0]
+    labels = dict(re.findall(r"^\s{2}(\w+): '([^']+)',$", labels_part, re.MULTILINE))
+    mapping_part = text.split("AVATAR_PRESET_CATEGORIES: Record<string, string> = {", 1)[1].split("}", 1)[0]
+    categories = dict(re.findall(r"^\s{2}'(pack-\d{3})': '(\w+)',$", mapping_part, re.MULTILINE))
+    assert set(categories) == set(manifest_ids), "分类映射漏了编号（画廊会少显示头像）"
+    assert set(categories.values()) <= set(labels), "分类映射里出现了没登记的分组标签"
+    assert "person" in labels and "cartoon" in labels, "人物与卡通两个分组必须都在"
+
+
+@needs_frontend
+def test_avatar_pack_categories_cover_people_and_cartoons():
+    """头像包必须同时含人物与卡通两类，且画廊两端都按分组渲染（别混成一锅粥）。"""
+    from app.avatars import is_valid_preset
+
+    text = AVATAR_MANIFEST.read_text(encoding="utf-8")
+    mapping_part = text.split("AVATAR_PRESET_CATEGORIES: Record<string, string> = {", 1)[1].split("}", 1)[0]
+    categories = dict(re.findall(r"^\s{2}'(pack-\d{3})': '(\w+)',$", mapping_part, re.MULTILINE))
+    for key in ("person", "cartoon"):
+        picked = [pid for pid, category in categories.items() if category == key]
+        assert len(picked) >= 10, f"分类 {key} 的图太少（{len(picked)} 张）"
+        assert all(is_valid_preset(pid) for pid in picked), f"分类 {key} 里有形状不合法的编号"
+
+    # 两端的画廊都从分组清单取图，而不是把全部编号平铺。
+    for page in (
+        FRONTEND / "src" / "components" / "AgentAvatarPicker.tsx",
+        MOBILE_SRC / "pages" / "MobileAgentsPage.tsx",
+    ):
+        body = page.read_text(encoding="utf-8")
+        assert "AVATAR_PRESET_GROUPS" in body, f"{page.name} 的头像画廊要按标签分组渲染"
+        assert "ALL_AVATAR_PRESETS" not in body, f"{page.name} 还在平铺全部头像"
+
+    for css in (FRONTEND / "src" / "index.css", MOBILE_SRC / "mobile.css"):
+        style = css.read_text(encoding="utf-8")
+        for selector in (".agent-avatar-group", ".agent-avatar-group-label"):
+            assert selector in style, f"{css.name} 缺少分组样式 {selector}"
+
+
+# --- 协作：工单更新小卡片（两端都在用，样式不能只写一端） ---------------------
+
+TICKET_UPDATE_CLASSES = (
+    "collab-ticket-update-card",
+    "collab-ticket-update-icon",
+    "collab-ticket-update-text",
+    "collab-ticket-update-more",
+)
+TICKET_UPDATE_USERS = (
+    FRONTEND / "src" / "components" / "CollabRunsPanel.tsx",
+    MOBILE_SRC / "pages" / "MobileCollabRunPage.tsx",
+)
+
+
+@needs_frontend
+def test_ticket_update_card_is_styled_on_both_ends():
+    """工单更新卡片桌面端与移动端都在渲染：每个 class 两端样式表都要有定义。
+
+    漏定义不会报错，只会让按钮退化成浏览器默认样式（无边框、无留白、无主题色）。
+    移动端不加载 `index.css`，所以两端必须各写一份。
+    """
+    for page in TICKET_UPDATE_USERS:
+        body = page.read_text(encoding="utf-8")
+        for name in TICKET_UPDATE_CLASSES:
+            assert name in body, f"{page.name} 引用了 {name}，但组件里找不到它（测试需同步）"
+    for css in (FRONTEND / "src" / "index.css", MOBILE_SRC / "mobile.css"):
+        text = css.read_text(encoding="utf-8")
+        for name in TICKET_UPDATE_CLASSES:
+            assert f".{name}" in text, f"{css.name} 缺少 .{name}（工单更新卡片会裸奔）"

@@ -10,7 +10,8 @@
   build/icon.ico                 Windows 应用图标（16→256，PNG 压缩条目）
   build/icon.png                 Linux / Electron 窗口图标（512）
   resources/icons/trayTemplate.png (+ @2x)   macOS 托盘：模板图（纯黑 + alpha，系统自动适配明暗）
-  resources/icons/tray.png       Windows / Linux 托盘：品牌色剪影
+  resources/icons/tray-win.png (+ @2x)       Windows 托盘：全彩品牌图
+  resources/icons/tray.png       Linux 托盘：品牌色剪影
   resources/icons/icon.png       窗口图标（Windows 任务栏 / Linux，随 files 打进 asar）
 
 用法：python3 desktop/scripts/gen-icons.py
@@ -96,7 +97,7 @@ def main() -> None:
 
     # ---- 托盘图标（resources/icons，随 files 打包） ----
     # macOS 模板图必须是**纯黑 + alpha**（系统按菜单栏明暗重新着色），
-    # 名字带 ``Template`` 才会被当成模板；Windows / Linux 用品牌色。
+    # 名字带 ``Template`` 才会被当成模板；Linux 用品牌色剪影。
     for name, size, template in (
         ("trayTemplate.png", 16, True),
         ("trayTemplate@2x.png", 32, True),
@@ -107,6 +108,13 @@ def main() -> None:
         (TRAY_DIR / name).write_bytes(
             png_bytes(size, icons.render_silhouette(size, color))
         )
+        print(f"→ {(TRAY_DIR / name).relative_to(ROOT)} ({size}x{size})")
+
+    # Windows 托盘用**全彩品牌图**：Windows 任务栏不做模板着色，单色剪影在高分屏
+    # 缩放后只剩一团纯色，辨识度差；直接缩放母版，和网页 / 应用图标同一张图。
+    # 带 ``@2x`` 的变体供高 DPI（125%/150%/200%）使用，Electron 会按缩放比例自动挑选。
+    for name, size in (("tray-win.png", 32), ("tray-win@2x.png", 64)):
+        (TRAY_DIR / name).write_bytes(png_bytes(size, icons.render_icon(size)))
         print(f"→ {(TRAY_DIR / name).relative_to(ROOT)} ({size}x{size})")
     # 窗口图标（Windows 任务栏 / Linux）：随 files 打进 asar，运行时用 iconsDir()/icon.png 取
     (TRAY_DIR / "icon.png").write_bytes(png_bytes(256, icons.render_icon(256, rounded=True, fill=0.80)))

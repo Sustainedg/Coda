@@ -132,7 +132,7 @@ def call_api(
         )
     if not config["token"]:
         raise ConfigError(
-            f"缺少 {ENV_TOKEN}：内置的系统管理服务器会在平台启动 / 注册时自动填写；"
+            f"缺少 {ENV_TOKEN}：内置的系统管理服务器由平台自动填写（启动 / 注册 / 令牌变更时）；"
             "若这是手工新建的服务器，请到「设置 → 账号」生成个人访问令牌并填进环境变量"
         )
     url = f"{config['base_url']}{path}"
@@ -151,7 +151,8 @@ def call_api(
         if exc.code == 401:
             raise ApiError(
                 "平台拒绝了令牌（401）：个人访问令牌可能已被吊销或填错。"
-                "请到「设置 → 账号」重新生成，并更新「MCP」页里这个服务器的配置。"
+                "内置的系统管理服务器在令牌失效时平台会自动补发（重新生成令牌 / 改口令后即刻生效）；"
+                "若仍不通，请到「MCP」页编辑这个服务器确认令牌，或到「设置 → 账号」重新生成。"
             ) from None
         raise ApiError(f"平台返回 {exc.code}：{detail}") from None
     except urllib.error.URLError as exc:

@@ -39,6 +39,9 @@ const SMOKE_TIMEOUT_MS = 10 * 60 * 1000;
  */
 const TITLEBAR_HEIGHT = 36;
 
+/** macOS 系统红绿灯的单枚直径（HIG 尺寸），用于把它们垂直居中进标题栏。 */
+const TRAFFIC_LIGHT_SIZE = 12;
+
 /** Windows / macOS 使用自绘标题栏；Linux 没有 overlay 支持，保留系统边框。 */
 const customTitlebar = process.platform === 'win32' || process.platform === 'darwin';
 
@@ -47,9 +50,23 @@ function iconsDir(): string {
   return path.join(__dirname, '..', 'resources', 'icons');
 }
 
-/** 托盘图标：macOS 用模板图（系统按菜单栏明暗自动着色），其它平台用品牌色。 */
+/**
+ * 托盘图标：
+ *   macOS 用模板图（系统按菜单栏明暗自动着色）；
+ *   Windows 用全彩品牌图（系统不做模板着色，单色剪影缩放后辨识度差）；
+ *   Linux 保持品牌色剪影。
+ *
+ * 三种图都由 ``desktop/scripts/gen-icons.py`` 生成并入库，随 ``files: resources/**``
+ * 打进 app.asar；``__dirname`` 在 asar 内为 ``<app.asar>/dist-main``，故
+ * ``../resources/icons`` 指向包内资源，``fs.existsSync`` 与 ``Tray`` 都能直接读。
+ */
 function trayIconPath(): string {
-  const name = process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png';
+  const name =
+    process.platform === 'darwin'
+      ? 'trayTemplate.png'
+      : process.platform === 'win32'
+        ? 'tray-win.png'
+        : 'tray.png';
   return path.join(iconsDir(), name);
 }
 
@@ -78,6 +95,10 @@ body.coda-desktop .main { padding-top: ${TITLEBAR_HEIGHT}px; }
 }
 /* Windows 自绘窗口按钮：颜色跟随页面主题变量，不再有系统浅色条 */
 .coda-win-controls { display: flex; height: 100%; -webkit-app-region: no-drag; }
+/* 可交互元素显式 no-drag（防御性声明）：品牌标 / 折叠按钮在 36px 拖拽带之下正常碰不到
+   拖拽层，但万一布局变化把它们顶进带里，也不能被拖拽区域吞掉点击。 */
+body.coda-desktop .brand-mark,
+body.coda-desktop .sidebar-toggle { -webkit-app-region: no-drag; }
 .coda-win-controls button {
   width: 46px; height: 100%; border: 0; padding: 0; background: transparent;
   color: var(--text-dim, #9aa0b0); display: grid; place-items: center; cursor: default;
@@ -104,9 +125,13 @@ body.coda-mac .app-shell.collapsed { grid-template-columns: 84px 1fr; }
 function desktopChromeScript(): string {
   const controls = process.platform === 'win32';
   // 平台标记：macOS 的系统红绿灯嵌在窗口左上角，样式要据此给折叠栏留出宽度。
-  const platformClass = process.platform === 'darwin' ? ' coda-mac' : '';
+  const platformClass = process.platform === 'darwin' ? 'coda-mac' : '';
   return `(() => {
-  document.body.classList.add('coda-desktop${platformClass}');
+  // classList.add 只接受单个 token：把 'coda-desktop coda-mac' 拼成一个字符串传入会在
+  // macOS 上抛 InvalidCharacterError，整段脚本当场中断 —— 之前顶部拖不动、logo 压住
+  // 红绿灯的根因就是这次抛错把后面 #coda-titlebar 的创建一并吞掉了。两个类必须分开加。
+  document.body.classList.add('coda-desktop');
+  ${platformClass ? `document.body.classList.add('${platformClass}');` : ''}
   if (document.getElementById('coda-titlebar')) return;
   const bar = document.createElement('div');
   bar.id = 'coda-titlebar';
@@ -164,7 +189,12 @@ function installDesktopChrome(win: BrowserWindow): void {
   win.webContents.on('dom-ready', () => {
     if (win.isDestroyed()) return;
     void win.webContents.insertCSS(desktopChromeCss()).catch(() => undefined);
-    void win.webContents.executeJavaScript(desktopChromeScript()).catch(() => undefined);
+    // 脚本注入失败要留日志线索（此前 macOS 的 InvalidCharacterError 就是被这里静默吞掉的）
+    void win.webContents
+      .executeJavaScript(desktopChromeScript())
+      .catch((err: Error) => {
+        process.stdout.write(`[desktop] 标题栏脚本注入失败：${err?.message ?? err}\n`);
+      });
   });
 }
 
@@ -190,7 +220,6 @@ if (!app.requestSingleInstanceLock()) {
 
 async function main(): Promise<void> {
   await app.whenReady();
-  ensureLayout();
   registerWindowControls();
   // 「设置 → 关于」的更新入口：与托盘菜单共用 electron-updater（下载完整安装包）
   registerUpdateIpc();
@@ -206,6 +235,9 @@ async function main(): Promise<void> {
   }
 
   try {
+    // 目录布局：数据目录 / Python 运行时 / 版本目录都要在起后端之前建好。
+    // 放进 try 里：创建失败要弹「启动失败」并带上具体路径与原因，不能静默卡在启动页。
+    ensureLayout();
     // ⓪ 首启物化：安装包内置代码 → releases/<版本>/（托管模式布局，自更新的地基）
     const { ranDir } = bootstrapBundledBackend();
     // ① 端口：首选 8010（和其他宿主一致），被占则退到随机空闲端口
@@ -283,12 +315,17 @@ function createWindow(): void {
     autoHideMenuBar: true,
     // 深色自绘标题栏：Windows 用 titleBarOverlay 保留系统的最小化/最大化/关闭，
     // macOS 用 hiddenInset 把红绿灯嵌进内容；两者都不再出现系统浅色条。
+    // macOS 红绿灯垂直居中在 TITLEBAR_HEIGHT 内（y = (36 - 12) / 2 = 12），
+    // 随标题栏高度联动而不是写死，改高度不会把按钮挤到带外。
     ...(process.platform === 'win32'
       ? { titleBarStyle: 'hidden' as const }
       : process.platform === 'darwin'
         ? {
             titleBarStyle: 'hiddenInset' as const,
-            trafficLightPosition: { x: 14, y: 12 },
+            trafficLightPosition: {
+              x: 14,
+              y: Math.round((TITLEBAR_HEIGHT - TRAFFIC_LIGHT_SIZE) / 2),
+            },
           }
         : {}),
     webPreferences: {
@@ -394,10 +431,16 @@ function sendProgress(message: string): void {
 }
 
 function showMainWindow(): void {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show();
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (process.platform === 'win32') {
+    // Windows 托盘左键单击唤回：最小化先还原，隐藏再显示，最后聚焦置前。
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
     mainWindow.focus();
+    return;
   }
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 /** 致命错误：弹窗告知并保留窗口可看日志（铁律 11：显式暴露）。 */
@@ -416,33 +459,65 @@ function showFatal(message: string): void {
 }
 
 // ---- 托盘 ----
+/**
+ * 真正退出（单一入口）：置 isQuitting → 容错销毁托盘 → app.quit()。
+ * 「退出」菜单项单击一次就走到这里：托盘图标当场摘掉（进程收尾前的几百毫秒里
+ * 用户不会再看到/点到它），窗口 close 处理器据此放行关闭，will-quit 再优雅停后端。
+ */
+function quitApp(): void {
+  isQuitting = true; // 让窗口 close 放行（不再隐藏到托盘），再走正常退出流程
+  try {
+    tray?.destroy();
+  } catch {
+    /* 托盘可能已销毁（重复触发退出）：忽略，不能挡住退出 */
+  }
+  tray = null;
+  app.quit();
+}
+
 function createTray(): void {
-  // 与网页同源的品牌图：macOS 模板图 / Windows·Linux 品牌色
+  // 与网页同源的品牌图：macOS 模板图 / Windows 全彩 / Linux 品牌色剪影（见 trayIconPath）
   const iconPath = trayIconPath();
   if (!fs.existsSync(iconPath)) {
     // 图标缺失时宁可不出托盘也不能崩（后面还有 Dock/任务栏兜底）；但必须留下日志线索
     process.stdout.write('[desktop] 托盘图标缺失，跳过托盘创建\n');
     return;
   }
-  tray = new Tray(iconPath);
-  tray.setToolTip(`Coda 正在运行（桌面端 ${app.getVersion()}）`);
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: `Coda ${app.getVersion()}`, enabled: false },
-      { label: '打开主界面', click: () => showMainWindow() },
-      { type: 'separator' },
-      { label: '检查桌面端更新…', click: () => void checkForUpdatesManually() },
-      { type: 'separator' },
-      {
-        label: '退出',
-        click: () => {
-          isQuitting = true;
-          app.quit();
-        },
-      },
-    ]),
-  );
-  tray.on('click', () => showMainWindow());
+  const trayIcon = new Tray(iconPath);
+  tray = trayIcon;
+  trayIcon.setToolTip(`Coda 正在运行（桌面端 ${app.getVersion()}）`);
+  const menu = Menu.buildFromTemplate([
+    { label: `Coda ${app.getVersion()}`, enabled: false },
+    { label: '打开主界面', click: () => showMainWindow() },
+    { type: 'separator' },
+    { label: '检查桌面端更新…', click: () => void checkForUpdatesManually() },
+    { type: 'separator' },
+    { label: '退出', click: () => quitApp() },
+  ]);
+
+  if (process.platform === 'win32') {
+    // Windows：左键单击 = 唤回/聚焦主窗口（最小化还原、隐藏显示、聚焦置前），绝不退出；
+    // 右键 = 弹出同一份菜单，菜单项「退出」单击一次即彻底退出（quitApp）。
+    //
+    // 「退出需点两次」的根因在这里：Windows 对一次托盘右键会先后投递 WM_RBUTTONDOWN 与
+    // WM_CONTEXTMENU 两条回调消息，Electron 把两者都按"右键"派发（notify_icon_host.cc
+    // 的 case 列表共用）→ 'right-click' 事件触发两次；而 popUpContextMenu 的第一步就是
+    // CloseContextMenu() 取消正在显示的菜单，Chromium 的 RunMenuAt 发现已有活动的
+    // MenuController 时直接 Cancel 并返回、不再弹新菜单（menu_runner_impl.cc）→ 用户
+    // 第一次点「退出」时菜单正在被拆掉，点击只把菜单关掉。这里对同一手势内的重复派发
+    // 做去重（时间窗 250ms，自愈式，不依赖菜单关闭事件）保证一次右键只弹一次菜单。
+    let menuShownAt = 0;
+    trayIcon.on('right-click', () => {
+      const now = Date.now();
+      if (now - menuShownAt < 250) return;
+      menuShownAt = now;
+      trayIcon.popUpContextMenu(menu);
+    });
+    trayIcon.on('click', () => showMainWindow());
+  } else {
+    trayIcon.setContextMenu(menu);
+    trayIcon.on('click', () => showMainWindow());
+  }
 }
 
 let isQuitting = false;

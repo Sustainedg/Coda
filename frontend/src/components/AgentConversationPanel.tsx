@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 import { DUTIES, ticketStateMeta } from '../lib/collabDraft'
 import type { FinishedStep, LiveStep } from '../lib/collabStream'
 import type { CollabAgentProgress } from '../lib/collabProgress'
-import type { CollabStep, CollabTicket } from '../lib/types'
+import type { AuthUser, CollabStep, CollabTicket } from '../lib/types'
 import { CollabAgentThread } from './CollabAgentThread'
 import { AgentAvatar } from './AgentAvatar'
 
@@ -19,11 +19,13 @@ interface Props {
   variant?: 'embedded' | 'drawer'
   /** 点工单卡片 / 标签时打开完整工单 */
   onOpenTicket?: (ticketId: string) => void
+  /** 当前登录用户：自己发的消息画真头像（不传退回 🙋） */
+  user?: Pick<AuthUser, 'id' | 'avatar' | 'display_name' | 'username'> | null
 }
 
 export function AgentConversationPanel({
   node, roster, steps, tickets, live, streamed, onClose, closeLabel = '关闭', variant = 'drawer',
-  onOpenTicket,
+  onOpenTicket, user,
 }: Props) {
   const liveHere = live?.nodeKey === node.key ? live : null
   const dutyLabel = useMemo(
@@ -84,6 +86,7 @@ export function AgentConversationPanel({
         live={live}
         streamed={streamed}
         onOpenTicket={onOpenTicket}
+        user={user}
         className="collab-agent-thread"
         empty={(
           <div className="collab-agent-empty">

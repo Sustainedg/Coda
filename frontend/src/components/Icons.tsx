@@ -267,6 +267,18 @@ export function SettingsIcon(props: IconProps) {
   )
 }
 
+/** 剪贴板：工单更新提示（这条消息把需求同步进了几张工单）。 */
+export function ClipboardIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M8.4 5.2H6.6A1.6 1.6 0 0 0 5 6.8v12.4a1.6 1.6 0 0 0 1.6 1.6h10.8a1.6 1.6 0 0 0 1.6-1.6V6.8a1.6 1.6 0 0 0-1.6-1.6h-1.8" />
+      <rect x="8.4" y="3.2" width="7.2" height="3.4" rx="1.1" />
+      <path d="M8.8 10.8h6.4" />
+      <path d="M8.8 14.2h6.4" />
+    </Icon>
+  )
+}
+
 /** 出门箭头：退出登录（箭头从门框里向外走，比电源符号更像「离开」）。 */
 export function LogoutIcon(props: IconProps) {
   return (

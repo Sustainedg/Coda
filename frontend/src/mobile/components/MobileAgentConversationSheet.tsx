@@ -5,7 +5,7 @@ import { AgentAvatar } from '../../components/AgentAvatar'
 import { DUTIES } from '../../lib/collabDraft'
 import type { FinishedStep, LiveStep } from '../../lib/collabStream'
 import type { CollabAgentProgress } from '../../lib/collabProgress'
-import type { CollabStep, CollabTicket } from '../../lib/types'
+import type { AuthUser, CollabStep, CollabTicket } from '../../lib/types'
 import { MobileSheet } from './MobileSheet'
 
 interface Props {
@@ -18,10 +18,12 @@ interface Props {
   onClose: () => void
   /** 点工单卡片 / 标签时打开完整工单 */
   onOpenTicket?: (ticketId: string) => void
+  /** 当前登录用户：自己发的消息画真头像（不传退回 🙋） */
+  user?: Pick<AuthUser, 'id' | 'avatar' | 'display_name' | 'username'> | null
 }
 
 export function MobileAgentConversationSheet({
-  node, roster, steps, tickets, live, streamed, onClose, onOpenTicket,
+  node, roster, steps, tickets, live, streamed, onClose, onOpenTicket, user,
 }: Props) {
   const dutyLabel = useMemo(
     () => DUTIES.find((item) => item.value === node.duty)?.label ?? node.duty,
@@ -74,6 +76,7 @@ export function MobileAgentConversationSheet({
         live={live}
         streamed={streamed}
         onOpenTicket={onOpenTicket}
+        user={user}
         className="m-thread m-collab-agent-thread"
         empty={(
           <div className="m-empty">

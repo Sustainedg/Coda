@@ -14,7 +14,7 @@
 import { useEffect, useState } from 'react'
 import { liveOfNode, type FinishedStep, type LiveStep } from '../lib/collabStream'
 import { type CollabFlowEdge, type CollabAgentProgress } from '../lib/collabProgress'
-import type { CollabStep, CollabTicket } from '../lib/types'
+import type { AuthUser, CollabStep, CollabTicket } from '../lib/types'
 import { CollabFlowMap } from './CollabFlowMap'
 import { AgentConversationPanel } from './AgentConversationPanel'
 
@@ -31,10 +31,12 @@ interface Props {
   onOpenTicket?: (ticketId: string) => void
   /** 上面还压着工单看板时，Esc 交给看板处理，别把进度覆盖层一起关掉 */
   escapeDisabled?: boolean
+  /** 当前登录用户：岗位对话里自己发的消息画真头像（不传退回 🙋） */
+  user?: Pick<AuthUser, 'id' | 'avatar' | 'display_name' | 'username'> | null
 }
 
 export function CollabProgressBoard({
-  nodes, edges, steps, tickets, live, streamed, onClose, onOpenTicket, escapeDisabled = false,
+  nodes, edges, steps, tickets, live, streamed, onClose, onOpenTicket, escapeDisabled = false, user,
 }: Props) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
 
@@ -70,6 +72,7 @@ export function CollabProgressBoard({
               live={liveOfNode(live, selectedNode.key)}
               streamed={streamed}
               onOpenTicket={onOpenTicket}
+              user={user}
               onClose={() => setSelectedKey(null)}
               closeLabel="← 返回概览"
               variant="embedded"

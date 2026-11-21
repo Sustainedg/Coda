@@ -203,15 +203,24 @@ async def _managed_env(
     preset: BuiltinServer,
     owner_id: str | None,
     existing_env: Mapping[str, str],
-) -> dict[str, str]:
+    token_cache: dict[str, str],
+) -> tuple[dict[str, str], set[str]]:
     """按声明算出平台托管参数的当前值。
 
     哪些参数由平台托管、取什么值，全部来自 :attr:`BuiltinParam.managed_source`；
     框架层不认识具体的内置服务器，也不硬编码参数名。地址只在缺失时按部署配置补上；
     令牌只在「配置里没有 / 已不属于该用户」时签发一份新的，已有且仍有效的值原样保留
     （包括用户手工换成的自己的 PAT）。令牌只存哈希，明文只写进这份加密配置。
+
+    返回 ``(要写入的参数值, 本次新签发的令牌参数键)``：后者只是给调用方报个数
+    （「确实补发过令牌」），地址这类托管参数不算在内。
+
+    ``token_cache`` 是**这一轮结算**里该用户当前生效的明文令牌：同一个用户的多个
+    内置服务器共用一份平台令牌（哈希只存一列），谁先签发谁说了算，后面的直接复用 ——
+    否则第二个服务器签发新令牌会顶掉哈希，把第一个服务器那份作废。
     """
     values: dict[str, str] = {}
+    issued: set[str] = set()
     user: User | None = None
     issued_token: str | None = None
     for param in preset.params:
@@ -238,6 +247,13 @@ async def _managed_env(
         # 已有令牌仍属于这个用户（平台专用令牌，或用户手工换成的自己的 PAT）就保留。
         if token and pat_hash(token) in (user.builtin_mcp_pat_hash, user.pat_hash):
             issued_token = token
+            token_cache.setdefault(owner_id, token)
+            continue
+        # 这一轮里已经给这个用户签发过令牌了：直接复用，别再签一份把哈希顶掉。
+        cached = token_cache.get(owner_id)
+        if cached:
+            issued_token = cached
+            values[param.key] = cached
             continue
         raw, digest = issue_pat()
         user.builtin_mcp_pat_hash = digest
@@ -245,8 +261,45 @@ async def _managed_env(
         user.updated_at = user.builtin_mcp_pat_issued_at
         session.add(user)
         values[param.key] = raw
+        issued.add(param.key)
         issued_token = raw
-    return values
+        token_cache[owner_id] = raw
+    return values, issued
+
+
+async def _settle_builtin(
+    session: AsyncSession,
+    preset: BuiltinServer,
+    owner_id: str | None,
+    row: McpServer,
+    token_cache: dict[str, str] | None = None,
+) -> tuple[bool, int]:
+    """结算一条内置服务器：重算平台托管参数并写回加密配置。
+
+    返回 ``(这一行有没有改动, 本次补发了几份令牌)``。不自己提交 —— 提交时机由调用方
+    决定（播种是批量提交；凭据联动是跟着用户的变更一起提交）。
+    """
+    cache = token_cache if token_cache is not None else {}
+    existing_env = _decrypt_pairs(row.env_encrypted)
+    managed, issued = await _managed_env(session, preset, owner_id, existing_env, cache)
+    raw_env = dict(row.env_encrypted or {})
+    changed = False
+    # 用户没填过的参数先落成默认值（界面能看到要填哪些项）。
+    for key, default in preset.env_defaults().items():
+        if key not in raw_env:
+            raw_env[key] = encrypt(default) or ""
+            changed = True
+    # 平台托管的参数由平台说了算，覆盖默认值。
+    for key, value in managed.items():
+        if value and value != existing_env.get(key):
+            raw_env[key] = encrypt(value) or ""
+            changed = True
+    if raw_env != dict(row.env_encrypted or {}):
+        row.env_encrypted = raw_env
+        row.updated_at = datetime.now(timezone.utc)
+        session.add(row)
+        changed = True
+    return changed, len(issued)
 
 
 async def ensure_builtin_servers(session: AsyncSession, owner_id: str | None) -> int:
@@ -257,63 +310,87 @@ async def ensure_builtin_servers(session: AsyncSession, owner_id: str | None) ->
     """
     created = 0
     changed = False
+    # 这一轮里每个用户当前生效的平台令牌（哈希只存一列，多个服务器共用一份）。
+    token_cache: dict[str, str] = {}
     for preset in BUILTIN_SERVERS:
         row = await _builtin_row(session, owner_id, preset.key)
-        # 系统管理 MCP 的平台地址 / 令牌由平台托管：缺失时自动补齐，已有值不覆盖。
-        # 这里必须在建行前算好，新建行也能直接带上自动配置。
-        existing_env = _decrypt_pairs(row.env_encrypted) if row is not None else {}
-        managed = await _managed_env(session, preset, owner_id, existing_env)
         if row is None:
             now = datetime.now(timezone.utc)
-            env_values = dict(preset.env_defaults())
-            env_values.update(managed)
-            session.add(
-                McpServer(
-                    id=f"mcp-{os.urandom(8).hex()}",
-                    name=preset.name,
-                    slug=await _builtin_slug(session, preset.slug, owner_id),
-                    description=preset.description,
-                    type_id=None,
-                    source_kind=PLATFORM_SOURCE,
-                    transport="stdio",
-                    command=preset.command,
-                    args=list(preset.args),
-                    # 平台托管的参数直接填好；其余参数先落成空值，界面能看到要填哪些项。
-                    env_encrypted=_encrypt_pairs(env_values),
-                    headers_encrypted={},
-                    enabled=True,
-                    available=True,
-                    builtin_key=preset.key,
-                    discovered_at=now,
-                    updated_at=now,
-                    owner_id=owner_id,
-                )
+            row = McpServer(
+                id=f"mcp-{os.urandom(8).hex()}",
+                name=preset.name,
+                slug=await _builtin_slug(session, preset.slug, owner_id),
+                description=preset.description,
+                type_id=None,
+                source_kind=PLATFORM_SOURCE,
+                transport="stdio",
+                command=preset.command,
+                args=list(preset.args),
+                # 托管参数与业务参数都由下面的结算补齐：这里先留空，避免两处默认值打架。
+                env_encrypted={},
+                headers_encrypted={},
+                enabled=True,
+                available=True,
+                builtin_key=preset.key,
+                discovered_at=now,
+                updated_at=now,
+                owner_id=owner_id,
             )
+            session.add(row)
             created += 1
-            continue
-
-        # 连接方式由代码说了算：升级换了脚本位置 / 解释器时跟着更新。
-        if (row.command or "") != preset.command or list(row.args or []) != list(preset.args):
-            row.command = preset.command
-            row.args = list(preset.args)
-            row.updated_at = datetime.now(timezone.utc)
-            changed = True
-        raw_env = dict(row.env_encrypted or {})
-        for key, default in preset.env_defaults().items():
-            if key not in raw_env:
-                raw_env[key] = encrypt(default) or ""
+        else:
+            # 连接方式由代码说了算：升级换了脚本位置 / 解释器时跟着更新。
+            if (row.command or "") != preset.command or list(row.args or []) != list(preset.args):
+                row.command = preset.command
+                row.args = list(preset.args)
+                row.updated_at = datetime.now(timezone.utc)
                 changed = True
-        for key, value in managed.items():
-            if value and value != existing_env.get(key):
-                raw_env[key] = encrypt(value) or ""
-                changed = True
-        if raw_env != dict(row.env_encrypted or {}):
-            row.env_encrypted = raw_env
-            changed = True
+        row_changed, _issued = await _settle_builtin(
+            session, preset, owner_id, row, token_cache
+        )
+        changed = changed or row_changed
 
     if created or changed:
         await session.commit()
     return created
+
+
+async def refresh_builtin_tokens(session: AsyncSession, owner_id: str | None) -> int:
+    """凭据变动后**立刻**给内置 MCP 补发平台令牌；返回本次补发的令牌份数。
+
+    什么时候需要它：用户的凭据一变（重新生成 / 吊销 PAT、改口令、管理员重置口令），
+    内置「系统管理」MCP 配置里那份 ``CODA_TOKEN`` 可能已经失效了。以前只能等下次启动
+    播种时才补上，中间这段时间系统管理 MCP 会一直收到 401。这里把补发动作从「启动时」
+    提前到「凭据一变时」，让它当场恢复。
+
+    判定口径与启动播种完全一致（都走 :func:`_managed_env`）：
+
+    * 配置里的令牌仍然属于这个用户（平台专用令牌 / 用户自己的 PAT）→ 原样保留，不轮换；
+    * 令牌已经不属于这个用户（凭据刚被换掉）→ 补发一份新的并写回加密配置。
+
+    鉴权关闭（``owner_id`` 为空）时没有可归属的令牌，直接跳过。
+    """
+    if owner_id is None:
+        return 0
+    issued = 0
+    changed = False
+    # 这一轮里每个用户当前生效的平台令牌（多个内置服务器共用一份）。
+    token_cache: dict[str, str] = {}
+    for preset in BUILTIN_SERVERS:
+        row = await _builtin_row(session, owner_id, preset.key)
+        if row is None:
+            # 这一条内置服务器还没播种（用户刚建、还没跑过平台）：由播种负责补齐。
+            continue
+        row_changed, count = await _settle_builtin(
+            session, preset, owner_id, row, token_cache
+        )
+        changed = changed or row_changed
+        issued += count
+    if changed:
+        await session.commit()
+    if issued:
+        logger.info("内置 MCP 令牌已补发 %s 份（用户 %s）", issued, owner_id)
+    return issued
 
 
 async def ensure_builtin_servers_for_all(session: AsyncSession) -> int:
@@ -568,6 +645,23 @@ async def update_row(
     session.add(row)
     await session.commit()
     await session.refresh(row)
+    if row.builtin_key:
+        # 内置服务器：平台托管的参数（地址 / 令牌）由平台说了算。
+        # 用户删掉令牌值想轮换时，当场补发一份新的 —— 不必等下次启动播种。
+        #
+        # 令牌哈希在用户上只有一列，同一用户的多个内置服务器共用一份平台令牌。
+        # 只结算当前行会在换发新令牌时把别的服务器的令牌顶掉，所以有归属用户时
+        # 整轮结算（共享一份 token_cache），与播种 / 凭据联动走同一条逻辑。
+        preset = builtin_by_key(row.builtin_key)
+        if preset is not None:
+            if row.owner_id is not None:
+                await refresh_builtin_tokens(session, row.owner_id)
+            else:
+                # 鉴权关闭：没有可归属的令牌，只需要补齐平台地址这类托管参数。
+                changed, _issued = await _settle_builtin(session, preset, row.owner_id, row)
+                if changed:
+                    await session.commit()
+            await session.refresh(row)
     return row
 
 

@@ -177,6 +177,17 @@ class AgentDefinition(ABC):
   `logo_style="mask"`：前端用 `components/KernelLogo.tsx` 把单色 SVG 当遮罩染成当前文字色，
   深浅两套外观共用一份图形；`logo_style="image"` 时按原色渲染真彩色位图（PNG/WebP，透明底），
   品牌图标不再被染成剪影。前端**不**按 `type_id` 写映射（铁律 1）。
+- **图标是内嵌的**（图标秒显）：`scripts/gen_kernel_logos.py` 把 `public/icons/kernels/*`
+  的图形在构建期内嵌进 `frontend/src/lib/kernelLogos.ts`，界面通过
+  `lib/kernelIcons.ts` 取地址 —— 运行期**不从外部路径读图形**，也没有图标的网络请求。
+  原因：图标原本由后端的 SPA 兜底路由返回（带 `Cache-Control: no-cache`），每次进页面
+  都要重新校验一遍；更要命的是管理员的「检查更新」（`npm view`）会把浏览器每域名的
+  连接数占满，图标请求排在后面，实测要等 1.6～2.5 秒才画出来。内嵌后零请求、零排队。
+  图形本身仍是手工 / 厂商产物（不归生成脚本管）；改了图形要重跑一次该脚本，
+  `tests/test_frontend_assets.py` 会核对清单与文件一致。
+  计时：页内埋点在 `window.__kernelLogoPerf`（`lib/kernelIcons.ts`），
+  复测用 `node scripts/measure_kernel_icons.mjs <地址> 10`（要本机有 chromium）；
+  完整的验证记录见 `docs/kernel-icon-perf.md`。
 - **账号型内核可以登录**：适配器声明 `RuntimeProvisioner.login_argv` 与
   `AgentDefinition.auth_status()`，详情弹层据此显示「已登录 / 未登录」和「登录」按钮。
   登录命令按通用约定输出 `QR_IMAGE=<图片路径>`，框架读出图片（校验 PNG/JPEG/WebP 与大小）
@@ -550,6 +561,7 @@ gateways(id, name, kind(official|custom), type_id, protocol, auth_style, base_ur
 agent_profiles(id, name, avatar, avatar_preset, avatar_file, tagline, description, system_prompt,
                type_id, gateway_id→gateways, model, options JSON, enabled, deleted_at, owner_id)
                -- 头像优先级：avatar_file（自定义上传）> avatar_preset（内置头像包）> avatar（emoji）
+               -- 内置头像包分「人物 / 卡通」两类，画廊按分类分组；清单见 frontend/src/lib/avatarPack.ts
 credentials(id, name, description, value_encrypted, created_at, updated_at, deleted_at, owner_id)
 agent_credentials(agent_profile_id→agent_profiles, credential_id→credentials，复合主键 + position)
 conversations(id, title, agent_profile_id→agent_profiles, session_id, workspace_dir, model, archived,
@@ -648,6 +660,9 @@ im_chats(id, connection_id→im_connections, chat_key, kind(direct|group), title
   吊销，均限本人）；重新生成立即吊销旧令牌，改口令 / 管理员重置口令时一并吊销。
   平台自带的「系统管理」MCP 另用一份**自动签发的专用令牌**（`users.builtin_mcp_pat_hash`），
   与用户自己的 PAT 分开：启动 / 登录时若配置里没有可用令牌就自动补发，不轮换用户已有 PAT。
+  用户的凭据一变（重新生成 / 吊销 PAT、改口令、管理员重置口令）或配置里的令牌被删改时，
+  `runtime.mcp.refresh_builtin_tokens` **当场**补发一份新的写回加密配置 —— 不用等平台重启，
+  系统管理 MCP 不会中途 401；仍然有效的令牌不会被多此一举地轮换。
 - **口令**：`auth.py` 用 PBKDF2-HMAC-SHA256（600k 次、16 字节盐）存
   `pbkdf2$<迭代>$<盐>$<哈希>`；明文口令永不入库 / 进日志 / 进响应。哈希 / 校验在接口里
   放线程池执行，避免阻塞事件循环。

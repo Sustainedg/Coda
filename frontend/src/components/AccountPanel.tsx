@@ -206,6 +206,7 @@ export function AccountPanel() {
           长效凭据，供 MCP 服务器等脚本以你的身份调用平台接口（请求头带
           <span className="mono-sm"> Authorization: Bearer pat_…</span>）。与登录令牌互不影响，
           修改口令时会被一并吊销。
+          重新生成或吊销后，平台内置的「系统管理」MCP 会自动换一份新令牌，不用手动改配置。
         </p>
         {patNew ? (
           <div className="stack">

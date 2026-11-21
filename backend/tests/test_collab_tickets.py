@@ -339,6 +339,45 @@ def test_protocol_guide_states_the_fence_and_the_whitelist():
     assert "````" in guide
 
 
+def test_protocol_guide_demands_per_ticket_assignee_when_multiple_assignees():
+    """多个派发对象时，split 多张的每张必须自带 assignee（否则并行名存实亡）。
+
+    真实故障：图里有 dev / dev-2 / dev-3 三个实施者、max_parallel=3，lead 也确实拆了
+    3 张互不依赖的子工单 —— 但示例形状里子工单没有 assignee 字段，规则又只是一句
+    「要并行干时可以写」，模型思考里计划了、落笔时全丢，3 张全被外层的 assignee 接走，
+    同岗互斥护栏让波次永远只有一张。
+    """
+    guide = render_protocol_guide(
+        duty_label="协调者",
+        actions=(TicketAction.DELEGATE,),
+        assignees=["coco（dev）", "ark（dev-2）", "gok（dev-3）"],
+    )
+    # 硬性要求 + 点破后果（缺了会全部落进外层 assignee，同岗只能串行）
+    assert "每张子工单都必须写它自己的 assignee" in guide
+    assert "同一岗位只能串行干活" in guide
+    # 字段白名单必须包含 assignee：漏了它，模型会按「白名单没有」把刚被要求的
+    # 字段主动丢掉（第二次真实故障：思考里计划了、落笔时按白名单删掉了）
+    assert "assignee / title" in guide
+    # 示例直接演示每张带 assignee 的形状（形状锚定比规则文字有效）
+    assert '"assignee": "coco（dev）"' in guide
+    assert '"assignee": "ark（dev-2）"' in guide
+
+
+def test_protocol_guide_keeps_fallback_wording_for_single_assignee():
+    """只有一个派发对象时没有并行可言：维持旧措辞，不强迫模型重复写同一个 key。"""
+    guide = render_protocol_guide(
+        duty_label="协调者",
+        actions=(TicketAction.DELEGATE,),
+        assignees=["dev"],
+    )
+    assert "不指定每张的 assignee 时全部交给外层的 assignee" in guide
+    assert "每张子工单都必须写它自己的 assignee" not in guide
+    # 单岗位示例维持一张子工单、不写 per-ticket assignee 的旧形状：
+    # "assignee" 带引号的 JSON 键只在示例外层出现 1 次，子工单里没有
+    assert '"assignee": "dev"' in guide
+    assert guide.count('"assignee"') == 1
+
+
 def test_display_names_are_normalized_to_node_keys():
     """模型把 assignee 写成「CTO」时，唯一显示名应归一到图上的 key。"""
     order = parse_work_order(

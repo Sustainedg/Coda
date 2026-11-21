@@ -12,7 +12,7 @@
  */
 import { useEffect, useState } from 'react'
 import { getAccessToken } from './auth'
-import { AVATAR_PRESETS } from './avatarPack'
+import { AVATAR_GROUPS, AVATAR_PRESETS } from './avatarPack'
 
 const BASE = import.meta.env.VITE_API_BASE ?? ''
 
@@ -22,10 +22,11 @@ export function isAvatarPreset(value: string | null | undefined): value is strin
 }
 
 /**
- * 头像包内容版本：头像包整体重处理时 +1（白底 → 透明 v2；修复浅色人物被误抠 → v3）。地址带它当
- * 查询串，浏览器缓存随之整体失效 —— 否则文件名没变，页面会一直用旧的白底缓存。
+ * 头像包内容版本：头像包整体重处理时 +1（白底 → 透明 v2；修复浅色人物被误抠 → v3；
+ * 追加卡通分类 → v4）。地址带它当查询串，浏览器缓存随之整体失效 —— 否则文件名没变，
+ * 页面会一直用旧的白底缓存。
  */
-const AVATAR_PACK_REV = '3'
+const AVATAR_PACK_REV = '4'
 
 /** 内置头像包图片地址（public 目录，随构建发布，无需鉴权）。 */
 export function avatarPresetUrl(preset: string): string {
@@ -41,6 +42,13 @@ export function randomAvatarPreset(exclude?: string | null): string {
 
 /** 内置头像包的编号列表（画廊挑选用）。 */
 export const ALL_AVATAR_PRESETS: readonly string[] = AVATAR_PRESETS
+
+/**
+ * 内置头像包按标签分组（人物 / 卡通……，顺序由生成脚本的 `CATEGORIES` 决定）。
+ * 画廊照这个结构铺开：同一类的放一起，别让人物和卡通混成一锅粥。
+ */
+export const AVATAR_PRESET_GROUPS: readonly { key: string; label: string; presets: string[] }[] =
+  AVATAR_GROUPS
 
 /* ------------------------------------------------------------------ */
 /* 自定义上传头像（avatar_file）：带令牌取 blob，与用户头像同一条路（见 lib/avatar.ts） */

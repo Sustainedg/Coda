@@ -146,7 +146,7 @@ class AgentProfileCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     type_id: str
     avatar: str = "🛠️"
-    #: 内置头像包编号（``pack-001`` ~ ``pack-060``）；合法值由前端 `lib/avatarPack.ts` 的清单定义
+    #: 内置头像包编号（``pack-001`` ~ ``pack-999``）；合法值由前端 `lib/avatarPack.ts` 的清单定义
     avatar_preset: str | None = None
     tagline: str | None = None
     description: str | None = None

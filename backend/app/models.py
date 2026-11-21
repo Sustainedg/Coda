@@ -175,9 +175,9 @@ class AgentProfile(SQLModel, table=True):
     id: str = Field(default_factory=new_id, primary_key=True)
     name: str = Field(sa_column=Column(String(120), nullable=False))
     avatar: str = Field(default="🛠️", sa_column=Column(String(16), nullable=False))
-    #: 内置头像包编号（``pack-001`` ~ ``pack-060``）：随机生成 / 快选从这里选，前端渲染成
-    #: ``/avatars/pack-001.webp``。与 ``avatar``（emoji 兜底）、``avatar_file``（自定义上传）
-    #: 三个并存，显示优先级：自定义上传 > 内置头像包 > emoji。
+    #: 内置头像包编号（``pack-001`` ~ ``pack-999``，实际清单见前端 `lib/avatarPack.ts`）：
+    #: 随机生成 / 快选从这里选，前端渲染成 ``/avatars/pack-001.webp``。与 ``avatar``（emoji
+    #: 兜底）、``avatar_file``（自定义上传）三个并存，显示优先级：自定义上传 > 内置头像包 > emoji。
     avatar_preset: str | None = Field(default=None, sa_column=Column(String(32)))
     #: 自定义头像文件名（``<智能体id>-<内容摘要>.<png|jpg|webp>``，文件在 ``<数据目录>/avatars/``，
     #: 与用户头像同一个目录与校验管线）。有值时界面优先显示它，否则回退到 emoji 头像。

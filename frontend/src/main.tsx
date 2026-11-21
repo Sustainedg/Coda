@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { AuthGate } from './components/AuthGate'
+import { warmKernelLogoCache } from './lib/kernelIcons'
 import { initTheme } from './lib/theme'
 import './index.css'
 
@@ -18,3 +19,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     </BrowserRouter>
   </React.StrictMode>,
 )
+
+// 内核图标提前解好码：用户点进「设置 → 内核管理」时直接命中缓存，图标即点即现。
+warmKernelLogoCache()

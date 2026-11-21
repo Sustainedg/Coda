@@ -17,5 +17,8 @@
 ## 约定
 
 - 位图：正方形、透明底、≤ 512×512、≤ 256 KB；优先 PNG / WebP。
-- 位图只在 `logo_style = "image"` 时使用；加载失败时界面隐藏该内核的 Logo（不做旧 SVG 兜底）。
+- 位图只在 `logo_style = "image"` 时使用；加载失败时界面显示一个中性占位方块
+  （`kernel-logo-missing`，不做旧 SVG 兜底）。
+- 界面用的是**内嵌**的图形（`scripts/gen_kernel_logos.py` 生成
+  `frontend/src/lib/kernelLogos.ts`）：改了这里的文件要重跑一次该脚本，否则界面还是旧图形。
 - 新增内核时把源素材与抓取日期补进上表；商标归各自权利人所有，仅用于标识对应内核。

@@ -1,6 +1,8 @@
 """应用配置：从环境变量 / .env 读取，并提供可用的本地默认值。"""
 from __future__ import annotations
 
+import logging
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -8,6 +10,12 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
+
+logger = logging.getLogger("coda")
+
+
+class DataDirError(RuntimeError):
+    """数据目录无法创建 / 写入：消息面向用户，说明路径、原因与可照做的处理方式。"""
 
 
 class Settings(BaseSettings):
@@ -117,14 +125,80 @@ class Settings(BaseSettings):
         return [p.strip() for p in self.image_ingest_prefixes.split(",") if p.strip()]
 
     def ensure_dirs(self) -> None:
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.workspaces_root.mkdir(parents=True, exist_ok=True)
-        self.agent_homes_root.mkdir(parents=True, exist_ok=True)
-        self.skill_libraries_root.mkdir(parents=True, exist_ok=True)
+        """创建数据目录布局（幂等；父目录不存在时一并创建）。
+
+        ``mkdir(parents=True, exist_ok=True)`` 等价于 makedirs + exist_ok：目录已存在不报错，
+        多层父目录一次建好。失败时抛出 :class:`DataDirError`，带上**具体路径与系统原因**，
+        既不静默吞掉，也给出可照做的处理方式（换 ``CODA_DATA_DIR``）。
+        """
+        for label, path in (
+            ("应用数据目录", self.data_dir),
+            ("工作目录根", self.workspaces_root),
+            ("内核隔离目录根", self.agent_homes_root),
+            ("技能库根目录", self.skill_libraries_root),
+        ):
+            _make_dir(path, label)
+
+
+def _make_dir(path: Path, label: str) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        # 真实写入探测：Windows 上「目录建得出来、文件写不进去」很常见（受控文件夹访问 /
+        # 只读属性 / 安全软件）。只建目录会把问题推迟到写 SQLite 时才炸，那时错误已经
+        # 和「数据目录」对不上了。这里当场验证，失败原因随异常一起报给用户。
+        probe = path / f".write-probe-{os.getpid()}"
+        try:
+            probe.write_text("", encoding="utf-8")
+        finally:
+            try:
+                probe.unlink()
+            except OSError:
+                pass
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        raise DataDirError(
+            f"无法创建或写入{label} {path}：{reason}。"
+            "请检查磁盘空间与目录写入权限，或用 CODA_DATA_DIR 指定一个可写目录。"
+        ) from exc
+
+
+def _fallback_data_dir() -> Path:
+    """默认数据目录不可用时的回退目录。
+
+    用 ``expanduser()`` 按当前用户动态解析主目录，不写死任何用户名（不会出现
+    ``C:\\Users\\admin\\...`` 这类路径）；Windows / macOS / Linux 都落到各自的家目录下。
+    """
+    return Path("~/.coda/data").expanduser()
+
+
+def _prepare_dirs(settings: Settings, *, explicit_data_dir: bool) -> Settings:
+    """创建目录；默认路径不可写时回退到用户家目录，显式配置则原样报错。
+
+    只有**用户没有显式设置 ``CODA_DATA_DIR``** 时才回退：显式配置就该被尊重，
+    悄悄换目录会让用户以为数据丢了。回退会打印警告，说明实际落点。
+    """
+    try:
+        settings.ensure_dirs()
+    except DataDirError:
+        if explicit_data_dir:
+            raise
+        fallback = _fallback_data_dir()
+        logger.warning(
+            "默认数据目录 %s 不可用，回退到 %s（可用 CODA_DATA_DIR 指定可写目录）",
+            settings.data_dir,
+            fallback,
+        )
+        settings.data_dir = fallback
+        settings.ensure_dirs()
+    return settings
 
 
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
-    settings.ensure_dirs()
-    return settings
+    # 不能只查 ``os.environ``：``.env`` 里的值由 pydantic-settings 自己读取，不会写进
+    # ``os.environ``（见 ``backend/.env.example`` 的 ``CODA_DATA_DIR``）。只看环境变量会把
+    # 「在 .env 里显式配置」误判成「没配」→ 悄悄回退到其它目录，用户会以为数据丢了。
+    # ``model_fields_set`` 记录「这个字段是否被显式赋值」，环境变量与 .env 两种来源都覆盖。
+    explicit_data_dir = "data_dir" in settings.model_fields_set
+    return _prepare_dirs(settings, explicit_data_dir=explicit_data_dir)

@@ -16,7 +16,7 @@
  */
 import { useRef, useState } from 'react'
 import { api, ApiError } from '../lib/api'
-import { ALL_AVATAR_PRESETS, avatarPresetUrl, randomAvatarPreset } from '../lib/agentAvatar'
+import { AVATAR_PRESET_GROUPS, avatarPresetUrl, randomAvatarPreset } from '../lib/agentAvatar'
 import { readFileAsBase64, validateAvatarFile } from '../lib/avatar'
 import { RefreshIcon } from './Icons'
 import { AgentAvatar } from './AgentAvatar'
@@ -177,19 +177,26 @@ export function AgentAvatarPicker({
         </div>
       </div>
       {error && <span className="field-help" style={{ color: 'var(--danger)' }}>{error}</span>}
-      {/* 头像包画廊：全部内置头像，点一下即选中 */}
+      {/* 头像包画廊：按标签分组（人物 / 卡通……），点一下即选中 */}
       {galleryOpen && (
         <div className="agent-avatar-gallery">
-          {ALL_AVATAR_PRESETS.map((item) => (
-            <button
-              key={item}
-              type="button"
-              className={`agent-avatar-emoji-btn${item === preset && !hasFile ? ' picked' : ''}`}
-              onClick={() => pickPreset(item)}
-              aria-label={`头像 ${item}`}
-            >
-              <img src={avatarPresetUrl(item)} alt="" loading="lazy" />
-            </button>
+          {AVATAR_PRESET_GROUPS.map((group) => (
+            <div key={group.key} className="agent-avatar-group">
+              <span className="agent-avatar-group-label">{group.label}</span>
+              <div className="agent-avatar-group-grid">
+                {group.presets.map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    className={`agent-avatar-emoji-btn${item === preset && !hasFile ? ' picked' : ''}`}
+                    onClick={() => pickPreset(item)}
+                    aria-label={`${group.label}头像 ${item}`}
+                  >
+                    <img src={avatarPresetUrl(item)} alt="" loading="lazy" />
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}

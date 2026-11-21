@@ -107,6 +107,19 @@ def _to_read(user: User) -> UserRead:
     )
 
 
+async def _refresh_builtin_tokens(session, user_id: str) -> int:
+    """凭据变了：立刻给该用户的内置 MCP 补发平台令牌。
+
+    用户重新生成 / 吊销 PAT、改口令、管理员重置口令之后，配置里那份
+    ``CODA_TOKEN`` 可能已经失效 —— 不补发的话，系统管理 MCP 会一直收到 401，
+    只能等下次启动播种才恢复。这里当场补齐（见
+    :func:`app.runtime.mcp.refresh_builtin_tokens`）。
+    """
+    from ..runtime import mcp as mcp_service
+
+    return await mcp_service.refresh_builtin_tokens(session, user_id)
+
+
 # --- 接口 ------------------------------------------------------------------
 
 
@@ -131,11 +144,15 @@ async def login(payload: LoginRequest) -> LoginResponse:
         user = (
             await session.execute(select(User).where(User.username == username))
         ).scalar_one_or_none()
-    if user is None or not user.is_active:
-        raise HTTPException(status_code=401, detail="用户名或口令不正确")
-    # PBKDF2 是 CPU 密集操作，放线程池里跑，避免阻塞事件循环。
-    if not await run_in_threadpool(verify_password, payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="用户名或口令不正确")
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=401, detail="用户名或口令不正确")
+        # PBKDF2 是 CPU 密集操作，放线程池里跑，避免阻塞事件循环。
+        if not await run_in_threadpool(
+            verify_password, payload.password, user.password_hash
+        ):
+            raise HTTPException(status_code=401, detail="用户名或口令不正确")
+        # 登录时顺手确认内置 MCP 的平台令牌还有效（失效就当场补发一份新的）。
+        await _refresh_builtin_tokens(session, user.id)
     token = issue_token(user.id, user.role, user.token_version or 0)
     return LoginResponse(access_token=token, user=_to_read(user))
 
@@ -215,6 +232,8 @@ async def change_password(
         session.add(row)
         await session.commit()
         await session.refresh(row)
+        # 凭据刚被吊销：内置 MCP 里那份平台令牌可能已失效，当场补发一份新的。
+        await _refresh_builtin_tokens(session, row.id)
         new_token = issue_token(row.id, row.role, row.token_version or 0)
     return {"ok": True, "access_token": new_token}
 
@@ -266,6 +285,8 @@ async def issue_my_pat(user: Annotated[User, Depends(current_user)]) -> dict:
         await session.commit()
         # commit 会把对象过期掉，值要在会话还开着时取出来。
         issued_at = row.pat_issued_at.isoformat()
+        # 旧令牌已作废：内置 MCP 若还在用旧的那份，当场换成新的（不必等下次启动）。
+        await _refresh_builtin_tokens(session, row.id)
     return {
         "ok": True,
         "pat": raw,
@@ -303,6 +324,8 @@ async def revoke_my_pat(user: Annotated[User, Depends(current_user)]) -> dict:
         row.updated_at = datetime.now(timezone.utc)
         session.add(row)
         await session.commit()
+        # 令牌没了：内置 MCP 里那份可能已失效，当场补发（不必等下次启动）。
+        await _refresh_builtin_tokens(session, row.id)
     return {"ok": True}
 
 
@@ -491,6 +514,9 @@ async def admin_reset_password(
         session.add(row)
         await session.commit()
         await session.refresh(row)
+        # 专用令牌刚被吊销：内置 MCP 里那份已经失效，当场补发一份新的，
+        # 系统管理 MCP 不用等平台重启就能继续用。
+        await _refresh_builtin_tokens(session, row.id)
     result: dict = {"ok": True}
     if row.id == admin.id:
         # 管理员重置的是自己的口令：给当前设备换一份新令牌，避免下一次请求被登出。

@@ -547,6 +547,10 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
   库里只存 sha256（`users.pat_hash`），明文只在签发响应出现一次。它**不校验
   `token_version`**，所以改口令 / 管理员重置口令时必须显式清空 `pat_hash`（重置口令还要清
   `builtin_mcp_pat_hash`），清空即吊销。`current_user` 按前缀分流；新增吊销入口不要漏。
+- **凭据变动 ↔ 内置 MCP 令牌联动**：任何改凭据的入口（签发 / 吊销 PAT、改口令、管理员重置
+  口令）都必须调 `runtime.mcp.refresh_builtin_tokens(session, user_id)`：内置「系统管理」MCP
+  配置里那份 `CODA_TOKEN` 失效时**当场补发**一份新的（不用等平台重启，否则系统管理 MCP
+  会一直 401）；仍然有效的令牌不轮换。新增凭据入口时别漏这一步。
 - **头像**：`app/avatars.py` 只此一份（校验 / 落盘 / 读取）。硬约束：
   ① **只收位图**（PNG / JPEG / WebP，按魔数认，≤2 MB）—— SVG 能内嵌脚本，而头像会直接进
   `<img>`，放进来就是存储型 XSS；② 文件名由服务端按「用户 id + 内容摘要」生成，不采信客户端
@@ -556,10 +560,13 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
   `<img src>` 拼 `?access_token=`（令牌会进日志与历史）。展示统一用 `components/UserAvatar.tsx`
   （有图显示图、没图显示显示名首字母）。
 - **智能体头像**：三个来源并存，显示优先级 **自定义上传（`avatar_file`）> 内置头像包
-  （`avatar_preset`）> emoji（`avatar`）**。内置头像包是 3D 黏土风 Q 版半身像，图片在
-  `frontend/public/avatars/`、清单在 `frontend/src/lib/avatarPack.ts`，**清单与文件由
-  `scripts/gen_avatar_pack.py` 一次生成**；白底抠成透明背景用 `scripts/make_avatars_transparent.py`
-  原地处理（文件名不变，前端靠 `lib/agentAvatar.ts` 的 `AVATAR_PACK_REV` 让缓存整体失效）。
+  （`avatar_preset`）> emoji（`avatar`）**。内置头像包是 3D 黏土风角色（**人物 + 卡通**两类），
+  图片在 `frontend/public/avatars/`、清单在 `frontend/src/lib/avatarPack.ts`，
+  **清单与文件由 `scripts/gen_avatar_pack.py` 一次生成**（`SOURCES` 里每张拼图标分类，
+  `CATEGORIES` 定分组名，清单会带出 `AVATAR_GROUPS` 供画廊分组）；白底抠成透明背景用
+  `scripts/make_avatars_transparent.py` 原地处理（文件名不变，前端靠 `lib/agentAvatar.ts` 的
+  `AVATAR_PACK_REV` 让缓存整体失效）。**编号一旦发布只能往后追加**（库里存的是编号，
+  重排会让已选过头像的智能体集体换脸）。
   两处都必须与清单一一对应（`tests/test_frontend_assets.py` 会校验）。
   动画帧（`scripts/gen_mascot_pack.py`）只是**离线实验工具**，界面不再使用，也不参与运行时。
   「随机生成」只是从清单里抽一个编号，不调用生图接口 —— 秒出、离线可用、零成本。
@@ -621,6 +628,7 @@ curl -s http://127.0.0.1:8010/api/health
 | 前端新增页面 | `App.tsx` 的 `NAV` + `Routes`、`index.css` |
 | `frontend/src/mobile/*` · `frontend/m/index.html` | `MobileApp.tsx` 路由、`mobile.css`、`vite.config.ts` 的多入口、`tests/test_mobile_web.py` |
 | `frontend/public/m/*`（manifest / Service Worker）· `public/icons/*` | `main.py:resolve_spa_target` 的前缀分派；应用图标由 `scripts/gen_icons.py` 重新生成（`tests/test_frontend_assets.py` 会核对），母版位图在 `assets/brand/`；`public/icons/kernels/*.svg` 是各内核的品牌图，属于适配器声明，不归生成脚本管；**改了图标要同步 `components/BrandMark.tsx`**（界面品牌标直接用同一张品牌图，位图自带品牌色） |
+| 内核图标（`public/icons/kernels/*`） | 图形本身是手工 / 厂商产物；但要**内嵌**进前端包（图标秒显，运行期不读外部路径）：改完图形跑 `python3 scripts/gen_kernel_logos.py` 重新生成 `frontend/src/lib/kernelLogos.ts`（`tests/test_frontend_assets.py` 会核对）。取地址统一走 `frontend/src/lib/kernelIcons.ts`（内嵌清单 + 内存缓存 + 预解码），别在页面里直接写 `/icons/kernels/...` |
 | `im/*`（IM 域） | `pytest tests/test_im.py` + `tests/test_im_architecture.py`（分层 / 平台元数据 / 归属）；新增平台只加 `base.PLATFORMS` 一条 + `platforms/` 一个模块；IM 表加列登记 `im/tables.py` 的 `ADDITIVE_COLUMNS`；碰运行层只能改 `bridge.py`；同步 `docs/im.md` |
 | `collab/*`（协作域） | `pytest tests/test_collab_architecture.py`（分层守卫）；新增表要在 `db.init_db` 注册；给协作表**加列**必须登记 `collab/tables.py` 的 `ADDITIVE_COLUMNS`（旧库不会被 `create_all` 补列）；碰执行层只能改 `execution.py`；节点级技能 / MCP 覆盖走 `NodeSpec.skill_ids` / `mcp_ids` + `runtime` 各查询函数的 `override_ids`（不写回智能体配置）；同步 `docs/collaboration-design.md` |
 | 版本号 | 只改 `backend/app/__init__.py`（唯一版本源） |

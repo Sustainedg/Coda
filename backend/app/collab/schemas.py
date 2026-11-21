@@ -278,6 +278,10 @@ class RunMessage(BaseModel):
     content: str = ""
     #: 已上传附件的相对路径（相对这次协作的工作目录，由 `/runs/{id}/attachments` 返回）
     attachments: list[str] = Field(default_factory=list)
+    #: 这条消息引用的是「推进任务」决策卡的建议：``content`` 仍是执行的完整指令，
+    #: 但时间线上不把长指令再显示一遍，只落一句短标记（指令原文在 CEO 的消息里
+    #: 已经写过，重发一遍既占屏幕又多花一遍 tokens）。
+    use_advance: bool = False
 
 
 class RunBudgetPatch(BaseModel):

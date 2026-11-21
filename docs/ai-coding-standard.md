@@ -306,6 +306,8 @@ Logo 是**适配器声明的静态资源**（`frontend/public/icons/kernels/*`�
 深色 / 浅色共用一份；有真彩色品牌图的用 `logo_style="image"`，PNG/WebP（透明底、
 ≤512×512）按原色显示。没有官方图形的自备内核用中性线条图形。
 **不要**在前端按 `type_id` 写 Logo 映射（铁律 1）。
+新增图形后跑一次 `python3 scripts/gen_kernel_logos.py`：界面走的是**内嵌**的图形
+（`frontend/src/lib/kernelLogos.ts`，运行期不读外部路径），不重跑就还是旧图形。
 
 ### 6.2 新增 API 型供应商
 

@@ -1005,12 +1005,19 @@ code, pre, .mono { font-family: var(--mono); }
 .agent-avatar-emoji-btn:hover { border-color: var(--border-strong); transform: scale(1.1); }
 .agent-avatar-emoji-btn.picked { border-color: var(--brand); background: var(--brand-soft); }
 .agent-avatar-emoji-btn img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
-/* 头像包画廊：所有内置头像一排排铺开，超过预览高度就内部滚动 */
+/* 头像包画廊：按标签分组（人物 / 卡通）竖排铺开，超过预览高度就内部滚动 */
 .agent-avatar-gallery {
-  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; padding: 8px;
+  display: flex; flex-direction: column; gap: 10px; margin-top: 8px; padding: 8px;
   border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated);
   max-height: 200px; overflow-y: auto;
 }
+/* 每组一个小标题 + 一行缩略图，组间留白分开 */
+.agent-avatar-group { display: flex; flex-direction: column; gap: 6px; }
+.agent-avatar-group-label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  color: var(--text-muted); padding-left: 2px;
+}
+.agent-avatar-group-grid { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* ---------- 智能体头像选择器（编辑表单第一位） ---------- */
 /* 布局：左边大头像预览（64px 圆），右边「随机生成 / 上传 / 移除」按钮竖排；emoji 快选在下一行 */
@@ -1375,6 +1382,12 @@ code, pre, .mono { font-family: var(--mono); }
   mask: none;
   border-radius: 6px;
 }
+/* 图标加载失败时的兜底：一个淡色占位方块，别让卡片上留个空洞 */
+.kernel-logo-missing {
+  background-color: var(--border-strong);
+  border-radius: 6px;
+  opacity: 0.5;
+}
 .runtime-head { display: flex; align-items: center; gap: 10px; }
 /* 版本号那一行：后面可以挂一个「已是最新」，所以是一行能换行的 flex */
 .runtime-sub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -1599,6 +1612,11 @@ code, pre, .mono { font-family: var(--mono); }
 .collab-shell { display: grid; grid-template-columns: 268px 1fr; flex: 1; min-height: 0; }
 .collab-settings { display: grid; grid-template-columns: 250px 1fr; flex: 1; min-height: 0; }
 .collab-list { border-right: 1px solid var(--border); overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+/* 新建协作任务：列表顶部一枚紧凑的加号按钮（全文字收进 title / aria-label）。 */
+.collab-list .collab-new-run {
+  width: 100%; height: 34px; padding: 0; justify-content: center;
+  font-size: 18px; line-height: 1;
+}
 .collab-item {
   display: block; width: 100%; text-align: left; padding: 10px 11px; cursor: pointer; color: inherit;
   border: 1px solid transparent; border-radius: var(--radius-sm); background: none;
@@ -1750,6 +1768,19 @@ code, pre, .mono { font-family: var(--mono); }
   transition: border-color 0.15s, color 0.15s;
 }
 .collab-ticket-chip:hover { border-color: var(--border-strong); color: var(--text); }
+
+/* ---------- 协作：CEO 消息上方的「工单更新」小卡片（点开看完整工单） ---------- */
+.collab-ticket-update-card {
+  display: inline-flex; align-items: center; gap: 8px; max-width: 100%;
+  padding: 7px 11px; border: 1px solid rgba(123, 92, 255, 0.34);
+  border-radius: var(--radius-sm); background: rgba(123, 92, 255, 0.08);
+  color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.collab-ticket-update-card:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+.collab-ticket-update-icon { flex: none; color: var(--brand); }
+.collab-ticket-update-text { flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.5; }
+.collab-ticket-update-more { flex: none; font-size: 11.5px; color: var(--brand); white-space: nowrap; }
 
 /* ---------- 协作：等待用户决定的选项卡片 ---------- */
 .collab-ask-stack { padding: 6px 22px 10px; display: flex; flex-direction: column; gap: 8px; }

@@ -456,7 +456,7 @@ async def send_message(
     if chat_bus.is_running(run_id) or execution.is_chat_running(run_id):
         raise HTTPException(status_code=409, detail="CEO 正在回复你的上一条消息，请稍等它说完")
     try:
-        prepared = await engine.prepare_turn(session, run_id, payload.content)
+        prepared = await engine.prepare_turn(session, run_id, payload.content, use_advance=payload.use_advance)
     except store.RunNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     except engine.TurnError as exc:

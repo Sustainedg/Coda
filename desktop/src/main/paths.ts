@@ -11,6 +11,7 @@
  *   └── releases/      ← 后端版本目录 + current 指针（复用主项目自更新机制）
  */
 import { app } from 'electron';
+import * as os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -19,9 +20,35 @@ export function userDataRoot(): string {
   return app.getPath('userData');
 }
 
-/** 数据目录（CODA_DATA_DIR）：对话、密钥、工作区都在这。 */
+/**
+ * 默认数据目录不可用时由 :func:`ensureLayout` 设定的回退目录。
+ *
+ * 只在内存里记：下次启动仍先尝试标准位置，能建回来就继续用标准位置。
+ */
+let fallbackDataDir: string | null = null;
+
+/** 展开开头的 `~`：Node 不像 shell 那样自动展开，用户手写 CODA_DATA_DIR 时常带。 */
+function expandHome(input: string): string {
+  if (input === '~') return os.homedir();
+  if (input.startsWith('~/') || input.startsWith('~\\')) {
+    return path.join(os.homedir(), input.slice(2));
+  }
+  return input;
+}
+
+/**
+ * 数据目录（CODA_DATA_DIR）：对话、密钥、工作区都在这。
+ *
+ * 默认由 Electron 的 ``app.getPath('userData')`` 按当前系统用户动态推导
+ * （Windows 即 ``%APPDATA%\\Coda``），**不写死用户名**；也允许用 ``CODA_DATA_DIR``
+ * 指定自定义位置（支持 ``~``）。回退目录由 ``ensureLayout`` 在默认位置不可写时设定。
+ */
 export function dataDir(): string {
-  return path.join(userDataRoot(), 'data');
+  if (fallbackDataDir) return fallbackDataDir;
+  const override = (process.env.CODA_DATA_DIR ?? '').trim();
+  return override
+    ? path.resolve(expandHome(override))
+    : path.join(userDataRoot(), 'data');
 }
 
 /** Python 运行时目录（embedded 解释器 + venv）。 */
@@ -75,20 +102,79 @@ export function nodeGlobalBinDir(): string {
   return process.platform === 'win32' ? prefix : path.join(prefix, 'bin');
 }
 
-/** 确保目录存在（递归创建，幂等）。 */
-export function ensureDir(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true });
+/** 统一的目录失败信息：报出路径、系统错误码与可照做的处理方式。 */
+function dirError(dir: string, label: string, err: unknown): Error {
+  const code = (err as NodeJS.ErrnoException).code;
+  const message = (err as Error).message ?? String(err);
+  return new Error(
+    `无法创建或写入${label} ${dir}：${message}${code ? `（${code}）` : ''}。` +
+      '请检查该路径是否被同名文件占用、当前用户是否有写入权限（或安全软件拦截），' +
+      '也可设置环境变量 CODA_DATA_DIR 指向可写目录。',
+  );
 }
 
-/** 初始化全部目录布局（app.ready 之后、起后端之前调用一次）。 */
+/** 确保目录存在（递归创建，幂等）。 */
+export function ensureDir(dir: string, label = '目录'): void {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    throw dirError(dir, label, err);
+  }
+}
+
+/**
+ * 确保目录存在且**可写**（递归创建 + 写一个探测文件）。
+ *
+ * 为什么数据目录不能只 mkdir：Windows 上「目录建得出来、文件写不进去」很常见
+ * （受控文件夹访问 / 杀毒软件 / 漫游配置被重定向）。只建目录会把问题推迟到写
+ * SQLite 时才炸，那时错误信息已经和「数据目录」对不上了。这里当场验证并清掉探测文件。
+ */
+function ensureWritableDir(dir: string, label: string): void {
+  const probe = path.join(dir, `.write-probe-${process.pid}`);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(probe, '');
+  } catch (err) {
+    throw dirError(dir, label, err);
+  } finally {
+    try {
+      fs.unlinkSync(probe);
+    } catch {
+      /* 探测文件没建出来 / 已被清理：无需处理 */
+    }
+  }
+}
+
+/**
+ * 初始化全部目录布局（app.ready 之后、起后端之前调用一次）。
+ *
+ * 数据目录先建：默认位置不可用时回退到用户家目录下 ``~/.coda/data``（持久、可备份），
+ * 并打印实际落点；显式配置了 ``CODA_DATA_DIR`` 就不回退，直接把原因抛给用户。
+ */
 export function ensureLayout(): void {
-  for (const dir of [
-    dataDir(),
-    pythonRuntimeDir(),
-    releasesDir(),
-    nodeGlobalBinDir(),
-    nodeCacheDir(),
-  ]) {
-    ensureDir(dir);
+  ensureDataDir();
+  // 工作区根目录跟数据目录一起建好（后端 settings.ensure_dirs 也会建，这里先建让
+  // 「删掉 data 目录再启动」时布局完整，且不用等后端起得来）。
+  ensureWritableDir(path.join(dataDir(), 'workspaces'), '工作目录根');
+  ensureDir(pythonRuntimeDir(), 'Python 运行时目录');
+  ensureDir(releasesDir(), '后端版本目录');
+  ensureDir(nodeGlobalBinDir(), '内核安装目录');
+  ensureDir(nodeCacheDir(), 'npm 缓存目录');
+}
+
+/** 建数据目录；默认位置不可写时回退到家目录（见 :func:`ensureLayout`）。 */
+function ensureDataDir(): void {
+  const primary = dataDir();
+  try {
+    ensureWritableDir(primary, '应用数据目录');
+    return;
+  } catch (err) {
+    if ((process.env.CODA_DATA_DIR ?? '').trim()) throw err;
+    const fallback = path.join(os.homedir(), '.coda', 'data');
+    process.stdout.write(
+      `[paths] 默认数据目录不可用，回退到 ${fallback}：${(err as Error).message}\n`,
+    );
+    ensureWritableDir(fallback, '回退数据目录');
+    fallbackDataDir = fallback;
   }
 }

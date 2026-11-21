@@ -9,7 +9,7 @@ import { ACTIONS, ticketStateMeta } from '../lib/collabDraft'
 import type { FinishedStep, LiveStep } from '../lib/collabStream'
 import { stepHasOutput, stepStatusHint, type CollabAgentProgress } from '../lib/collabProgress'
 import { buildAgentThread, ticketBriefSummary } from '../lib/collabThread'
-import type { CollabStep, CollabTicket } from '../lib/types'
+import type { AuthUser, CollabStep, CollabTicket } from '../lib/types'
 import { ConversationThread, type ConversationThreadItem } from './ConversationThread'
 import type { RenderMessage } from './MessageView'
 
@@ -25,6 +25,8 @@ interface Props {
   empty?: ReactNode
   /** 点工单卡片 / 工单标签时打开完整工单（不传就只展示摘要） */
   onOpenTicket?: (ticketId: string) => void
+  /** 当前登录用户：自己发的消息画真头像（不传退回 🙋） */
+  user?: Pick<AuthUser, 'id' | 'avatar' | 'display_name' | 'username'> | null
 }
 
 const ACTION_LABELS = Object.fromEntries(ACTIONS.map((item) => [item.value, item.label]))
@@ -93,7 +95,7 @@ function TicketChip({
 }
 
 export function CollabAgentThread({
-  node, roster, steps, tickets, live, streamed, className, empty, onOpenTicket,
+  node, roster, steps, tickets, live, streamed, className, empty, onOpenTicket, user,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   // 同一步骤可能同时出现在落库详情与流式结果里（跨设备刷新、刚跑完还没落库）：
@@ -277,6 +279,7 @@ export function CollabAgentThread({
       className={className}
       threadRef={scrollRef}
       items={threadItems}
+      user={user}
       empty={thread.length === 0 && ownStreamed.length === 0 && !liveMessage ? empty : undefined}
     />
   )

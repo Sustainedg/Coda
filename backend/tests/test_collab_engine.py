@@ -748,8 +748,13 @@ async def test_zero_step_timeout_reaches_runner_as_unlimited(
         )
         assert prepared.step_timeout_seconds == -1
         handle = execution_service.registry.register(run_row.id, "step-unlimited", "CEO")
-        _ = [event async for event in execution_service.stream_step(prepared, handle)]
-        assert handle.timeout_seconds == -1
+        try:
+            _ = [event async for event in execution_service.stream_step(prepared, handle)]
+            assert handle.timeout_seconds == -1
+        finally:
+            # 句柄表是进程级的：不清理会泄漏进后面的用例（「正在运行的智能体」会
+            # 把这条幽灵岗位也列出来，别的用例断言就挂了）。
+            execution_service.registry.finish("step-unlimited")
 
     assert captured == [-1]
 

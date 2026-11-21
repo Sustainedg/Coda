@@ -1177,17 +1177,32 @@ def render_protocol_guide(
             "handoff（转交：同一件活换人做，我继续等结果，ticket 可省略）；"
             "split（拆子工单：我是子工单的发起人，等它完成后我来汇总，必须给 ticket.title）。"
         )
+        if len(assignees) > 1:
+            rules.append(
+                "允许派发的对象有多个：要一次 split 拆多张、且这几张互不依赖能同时干时，"
+                "**每张子工单都必须写它自己的 assignee**（从「允许派发的对象」里挑，尽量各不相同）——"
+                "缺了会被全部派给外层的 assignee，同一岗位只能串行干活，并行就名存实亡。"
+                "拆多张时每张都要有 title，"
+                f"一次最多 {MAX_SPLIT_TICKETS} 张。只在确实能并行分工时才这么做——"
+                "先后依赖的活请拆成几轮，每轮等上一轮交回结论后再拆下一张。"
+            )
+        else:
+            rules.append(
+                "一次 split 可以拆出多张子工单：把 tickets 写成数组（每项都是一份完整的 ticket 字段），"
+                "每张都会成为独立追踪的子工单；不指定每张的 assignee 时全部交给外层的 assignee。"
+                "拆多张时每张都要有 title，"
+                f"一次最多 {MAX_SPLIT_TICKETS} 张。只在确实能并行分工时才这么做——"
+                "先后依赖的活请拆成几轮，每轮等上一轮交回结论后再拆下一张。"
+            )
+        # 字段白名单要如实反映解析层认的字段：子工单自带 assignee 是真实支持的
+        # （tickets.py 的 TicketDraft），漏写会让模型按「白名单没有」主动丢掉它——
+        # 真实故障：规则上一条刚要求每张写 assignee，这一条的白名单里却没有它，
+        # 模型思考里计划了、落笔时按白名单删掉了，并行名存实亡。
         rules.append(
-            "一次 split 可以拆出多张子工单：把 tickets 写成数组（每项都是一份完整的 ticket 字段），"
-            "每张都会成为独立追踪的子工单；不指定每张的 assignee 时全部交给外层的 assignee，"
-            "要分给不同岗位并行干时在每张里写它自己的 assignee。拆多张时每张都要有 title，"
-            f"一次最多 {MAX_SPLIT_TICKETS} 张。只在确实能并行分工时才这么做——"
-            "先后依赖的活请拆成几轮，每轮等上一轮交回结论后再拆下一张。"
-        )
-        rules.append(
-            "ticket 只有这几个字段：title / goal / requirements / acceptance / constraints / "
-            "deliverables；详细说明请分条写进 requirements（每条一行），不要自造 description 等字段名，"
-            "否则下游只会收到一个标题。"
+            "ticket 只有这几个字段：assignee / title / goal / requirements / acceptance / "
+            "constraints / deliverables；其中 assignee 只在拆多张要分给不同岗位时写"
+            "（见上一条）；详细说明请分条写进 requirements（每条一行），"
+            "不要自造 description 等字段名，否则下游只会收到一个标题。"
         )
     if TicketAction.REVIEW in actions:
         rules.append(
@@ -1300,11 +1315,17 @@ def _example_for(
 
 
 def _delegate_example(assignees: Sequence[str]) -> dict[str, Any]:
-    """delegate 示例：``assignee`` 取**本次运行真实**的派发对象，不让模型照抄写死的字样。"""
-    return {
+    """delegate 示例：``assignee`` 取**本次运行真实**的派发对象，不让模型照抄写死的字样。
+
+    有多个派发对象时，示例直接演示「每张子工单带各自的 assignee」的形状：
+    模型对示例形状的模仿远强于对规则文字的记忆（真实故障：规则里要求每张写 assignee、
+    示例里却没有这个字段，模型思考里计划了、落笔时照示例形状丢掉了）。
+    """
+    keys = sorted(assignees)
+    example: dict[str, Any] = {
         "action": "delegate",
         "mode": "split",
-        "assignee": sorted(assignees)[0] if assignees else "<下游节点key>",
+        "assignee": keys[0] if keys else "<下游节点key>",
         "tickets": [
             {
                 "title": "…（一张子工单干一件事）",
@@ -1315,3 +1336,21 @@ def _delegate_example(assignees: Sequence[str]) -> dict[str, Any]:
             }
         ],
     }
+    if len(keys) > 1:
+        example["tickets"] = [
+            {
+                "assignee": keys[0],
+                "title": "…（一件能独立完成的事）",
+                "goal": "…",
+                "requirements": ["…"],
+                "acceptance": ["…（可判定的验收标准）"],
+            },
+            {
+                "assignee": keys[1],
+                "title": "…（另一件互不依赖的事）",
+                "goal": "…",
+                "requirements": ["…"],
+                "acceptance": ["…（可判定的验收标准）"],
+            },
+        ]
+    return example

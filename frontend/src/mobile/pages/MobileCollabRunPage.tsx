@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { MessageView, type RenderMessage } from '../../components/MessageView'
+import { ClipboardIcon } from '../../components/Icons'
+import { useAuth } from '../../components/AuthGate'
 import { api, collabRunFileUrl, isNetworkError, streamGet, streamPost } from '../../lib/api'
 import { useComposerDraft } from '../../lib/composerDraft'
 import { collabChoiceAnswer, findPendingCollabAsks } from '../../lib/collabAsk'
@@ -9,7 +11,7 @@ import {
   dismissChatNotice, emptyChatTurn, type ChatTurnState,
 } from '../../lib/collabChat'
 import {
-  forgetConsumedAdvances, loadConsumedAdvances, rememberConsumedAdvance,
+  ADVANCE_MARKER, forgetConsumedAdvances, loadConsumedAdvances, rememberConsumedAdvance,
 } from '../../lib/collabAdvance'
 import { MediaUrlProvider, composeWithAttachments } from '../../lib/media'
 import {
@@ -55,6 +57,8 @@ interface TimelineEntry {
   message: RenderMessage
   avatar?: string
   label: string
+  /** CEO 消息带过「需求同步进工单」时，气泡下方挂一张工单更新小卡片（点开进工单看板） */
+  ticketUpdate?: { ticketIds: string[]; count: number; fields: string[] }
 }
 
 /** 协作运行详情：步骤时间线 + 预算进度，可叫停、继续、回复入口岗位。 */
@@ -64,8 +68,23 @@ type RunEvent = CollabEvent | StreamClosedEvent
 /** 重连前的等待：每次退避一点，避免断线时疯狂重试。 */
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
+/** CEO 消息的 `meta.applied`（需求同步进工单）→ 小卡片数据；没同步过返回 `undefined`。 */
+function ticketUpdateOf(meta: Record<string, unknown> | undefined): TimelineEntry['ticketUpdate'] {
+  const applied = meta?.applied as
+    | { ticket_ids?: string[]; ticket_count?: number; fields?: string[] }
+    | undefined
+  if (!applied?.ticket_count) return undefined
+  return {
+    ticketIds: applied.ticket_ids ?? [],
+    count: applied.ticket_count,
+    fields: applied.fields ?? [],
+  }
+}
+
 export function MobileCollabRunPage() {
   const { runId } = useParams<{ runId: string }>()
+  // 当前登录用户：自己发的消息画真头像（换头像后这里跟着 `AuthGate` 的状态刷新）。
+  const { user } = useAuth()
   const navigate = useNavigate()
 
   const [detail, setDetail] = useState<CollabRunDetail | null>(null)
@@ -383,17 +402,24 @@ export function MobileCollabRunPage() {
   /**
    * 用户在「推进任务」决策卡上点了确认：把 CEO 给出的推进指令发进工单通道。
    * 任务还没开始时这就是开场的任务描述。
+   *
+   * 点「按建议推进」时带 `use_advance`：指令原文照发（保证执行的就是 CEO 给的），
+   * 但时间线上不把长指令再显示一遍，只落一句短标记 —— 指令在 CEO 的消息里已经
+   * 写过，重发一遍既占屏幕又多花一遍 tokens。
    */
-  const advanceRun = (text: string) => {
+  const advanceRun = (text: string, useAdvance = false) => {
     if (!detail || busy || chatBusy || !text.trim()) return
     consumeAdvance(advanceAsk)
-    void stream(`/api/collab/runs/${detail.id}/messages`, { content: text }, text)
+    const marker = ADVANCE_MARKER
+    const body = useAdvance ? { content: text, use_advance: true } : { content: text }
+    void stream(`/api/collab/runs/${detail.id}/messages`, body, useAdvance ? marker : text)
   }
 
   /**
    * 点「推进任务」决策卡上的选项：自由填写（或选项没带可发内容）只预填 CEO 建议并聚焦输入框，
    * 不发送。freeform 的 value 是空串，不能拿 label 兜底，否则「我再想想」会被当成指令发进工单通道。
    * 建议从 `advanceAsk` 取（含刷新后从落库 meta 恢复的卡片），不能只看 `chatTurn.advance`。
+   * 选项 value 就是 CEO 的建议指令时走引用通道（`use_advance`），不把长指令重发一遍。
    */
   const answerAdvance = (choice: CollabChoice) => {
     if (!detail || busy || chatBusy) return
@@ -403,7 +429,7 @@ export function MobileCollabRunPage() {
       sheetComposerRef.current?.focus()
       return
     }
-    advanceRun(choice.value.trim())
+    advanceRun(choice.value.trim(), true)
   }
 
   /** 输入区（共享组件）把读好的 base64 交回来，这里只负责调接口。 */
@@ -569,6 +595,8 @@ export function MobileCollabRunPage() {
                 error: row.error,
                 usage: row.usage,
               },
+              // 这条 CEO 消息把新要求同步进了工单：气泡下方挂小卡片，点开看完整工单。
+              ticketUpdate: ticketUpdateOf(row.meta),
             },
       })),
     ]
@@ -779,11 +807,27 @@ export function MobileCollabRunPage() {
         </div>
       )}
       {timeline.map((entry) => (
-        <MessageView key={entry.id} message={entry.message} avatar={entry.avatar} label={entry.label} />
+        <div key={entry.id}>
+          <MessageView message={entry.message} avatar={entry.avatar} label={entry.label} user={user} />
+          {entry.ticketUpdate && (
+            <button
+              type="button"
+              className="collab-ticket-update-card"
+              onClick={() => navigate(`/collab/runs/${detail?.id}/tickets?ticket=${entry.ticketUpdate!.ticketIds[0] ?? ''}`)}
+            >
+              <ClipboardIcon size={15} className="collab-ticket-update-icon" />
+              <span className="collab-ticket-update-text">
+                已同步到 {entry.ticketUpdate.count} 张工单
+                {entry.ticketUpdate.fields.length > 0 ? `（${entry.ticketUpdate.fields.join('、')}）` : ''}
+              </span>
+              <span className="collab-ticket-update-more">查看工单 →</span>
+            </button>
+          )}
+        </div>
       ))}
-      {liveEntry && <MessageView message={liveEntry.message} avatar={liveEntry.avatar} label={liveEntry.label} />}
+      {liveEntry && <MessageView message={liveEntry.message} avatar={liveEntry.avatar} label={liveEntry.label} user={user} />}
       {chatLiveEntry && (
-        <MessageView message={chatLiveEntry.message} avatar={chatLiveEntry.avatar} label={chatLiveEntry.label} />
+        <MessageView message={chatLiveEntry.message} avatar={chatLiveEntry.avatar} label={chatLiveEntry.label} user={user} />
       )}
       {advanceAsk && !busy && !chatBusy && (
         <div className="m-ask-card m-advance-card">
@@ -984,6 +1028,7 @@ export function MobileCollabRunPage() {
           streamed={turn?.completed ?? []}
           onOpenTicket={(ticketId) => navigate(`/collab/runs/${detail.id}/tickets?ticket=${ticketId}`)}
           onClose={() => setSelectedNodeKey(null)}
+          user={user}
         />
       )}
 

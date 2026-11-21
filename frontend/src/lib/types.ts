@@ -282,7 +282,7 @@ export interface AgentProfile {
   id: string
   name: string
   avatar: string
-  /** 内置头像包编号（pack-001 ~ pack-060）；有值时渲染 /avatars/<它>.webp，优先级在 avatar_file 之后 */
+  /** 内置头像包编号（pack-001 ~，清单见 lib/avatarPack.ts）；有值时渲染 /avatars/<它>.webp，优先级在 avatar_file 之后 */
   avatar_preset?: string | null
   /** 自定义头像文件名；有值时取 /api/agents/{id}/avatar 显示，优先于 emoji */
   avatar_file?: string | null

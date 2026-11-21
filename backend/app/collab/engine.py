@@ -255,8 +255,19 @@ async def _consume_chat_advances(session: AsyncSession, run_id: str) -> None:
         message.meta = meta
 
 
-async def prepare_turn(session: AsyncSession, run_id: str, content: str | None) -> PreparedTurn:
-    """校验图、把用户的这句话接到入口节点的工单上。"""
+#: 引用决策卡推进时，时间线上落的短标记（前端本地乐观显示用同一句，见 lib/collabAdvance.ts）。
+ADVANCE_MARKER = "已按决策卡的建议推进"
+
+
+async def prepare_turn(
+    session: AsyncSession, run_id: str, content: str | None, use_advance: bool = False
+) -> PreparedTurn:
+    """校验图、把用户的这句话接到入口节点的工单上。
+
+    ``use_advance=True`` 表示这条消息引用的是「推进任务」决策卡的建议：``content``
+    仍是执行的完整指令，但时间线上不把长指令再显示一遍，只落一句短标记
+    （指令原文在 CEO 的消息里已经写过，重发一遍既占屏幕又多花一遍 tokens）。
+    """
     run = await session.get(CollabRun, run_id)
     if run is None:
         raise TurnError(f"找不到协作运行：{run_id}")
@@ -291,7 +302,8 @@ async def prepare_turn(session: AsyncSession, run_id: str, content: str | None) 
             run.goal = text
             if run.title in ("", "新协作"):
                 run.title = _first_line(text)
-        # 用户说的话也要出现在时间线上
+        # 用户说的话也要出现在时间线上。引用决策卡时只落短标记（完整指令在 CEO 的
+        # 消息里已经写过一遍，重发一遍既占屏幕又多花一遍 tokens）。
         session.add(
             CollabStep(
                 run_id=run.id,
@@ -301,7 +313,7 @@ async def prepare_turn(session: AsyncSession, run_id: str, content: str | None) 
                 sequence=await _next_sequence(session, run.id),
                 action="",
                 status="complete",
-                content=text,
+                content=ADVANCE_MARKER if use_advance else text,
                 finished_at=utcnow(),
             )
         )

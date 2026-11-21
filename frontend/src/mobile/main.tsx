@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { initTheme } from '../lib/theme'
+import { warmKernelLogoCache } from '../lib/kernelIcons'
 import { MobileApp } from './MobileApp'
 import { AuthGate } from '../components/AuthGate'
 import { registerServiceWorker } from './pwa'
@@ -22,3 +23,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 
 // 放在渲染之后：Service Worker 注册不阻塞首屏。
 registerServiceWorker()
+
+// 内核图标提前解好码：进「运行时」页时直接命中缓存，图标即点即现。
+warmKernelLogoCache()

@@ -6,6 +6,7 @@ import { Modal } from './Modal'
 import { useAuth } from './AuthGate'
 import { api, ApiError } from '../lib/api'
 import { formatListTime } from '../lib/datetime'
+import { trackKernelLogoReady } from '../lib/kernelIcons'
 import type {
   ActiveCollabRun,
   AgentRuntime,
@@ -78,6 +79,13 @@ export function KernelManager() {
   const [collabRuns, setCollabRuns] = useState<ActiveCollabRun[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const logRef = useRef<HTMLPreElement>(null)
+  /**
+   * 「页面可见」的时刻：组件挂载即代表这一页已经出现在屏幕上。
+   * 图标耗时的度量以它为起点（页面可见 → 图标全部显示完成）。
+   */
+  const visibleAtRef = useRef(performance.now())
+  /** 是否已经记过一次图标耗时（手动刷新不再重复记）。 */
+  const measuredRef = useRef(false)
 
   const openRuntime = runtimes.find((item) => item.id === openId) ?? null
   // 只认「属于当前这条详情」的任务日志：别的内核的安装进度不该在这里串台。
@@ -147,14 +155,26 @@ export function KernelManager() {
   }
 
   const reload = async () => {
+    const apiStartedAt = performance.now()
     try {
       // 无实体的内核（自定义 CLI / OpenAI 兼容）不进列表 —— 见 HIDDEN_RUNTIME_IDS 的说明。
       const items = (await api.listRuntimes()).filter((item) => !HIDDEN_RUNTIME_IDS.has(item.id))
+      const apiMs = performance.now() - apiStartedAt
       setRuntimes(items)
       setError(null)
       // 「检查更新」是每个内核一次远端查询（npm view 之类），不能挡住首屏：
       // 卡片先出来，查到结果再逐个补上。该接口仅管理员可用，成员不要自动触发。
       setLoading(false)
+      // 图标秒显的度量：页面可见 → 全部图标显示完成（含内核列表接口的耗时）。
+      // 只记首次进入这一笔：手动「刷新」不是「进入页面」，混进来会污染统计。
+      if (!measuredRef.current) {
+        measuredRef.current = true
+        void trackKernelLogoReady(
+          items.map((item) => item.logo ?? ''),
+          visibleAtRef.current,
+          apiMs,
+        )
+      }
       if (isAdmin) {
         await Promise.all(items.map((item) => checkLatest(item)))
       }

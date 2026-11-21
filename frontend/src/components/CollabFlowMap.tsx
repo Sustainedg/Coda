@@ -3,19 +3,22 @@
  *
  * 与编排画布（`CollabCanvas`，编辑态）同一套视觉语言（点阵底纹 + 正交折线 + 箭头），
  * 但这里是**只读的实况**：
- * - 节点只显示头像 + 昵称（职责收进点开的详情卡，图上不挤）；
+ * - 节点只显示头像 + 昵称（头像在左、昵称与状态在右；职责收进点开的详情卡，图上不挤）；
  * - 头像右上角一枚状态徽标：转圈=执行中、气泡=提问/等你决定、感叹号=出错、对勾=完成、
- *   半透明=等待（还没轮到）；
+ *   半透明=等待（还没轮到）；连线只画箭头不写「指派 / 审查」文字，图面干净靠颜色区分；
  * - 点节点弹「现在具体在做什么」的详情卡（状态、粗略进度、最近动作、在办的工单），
  *   详情卡里还能跳去该岗位的实时对话；
  * - 回流（审查打回 / 返工）单独画成往回走的虚线，不参与分层。
  *
- * 布局沿用 `buildFlowRows` 的「一行一层」：入口领导者独占第一行，往下每层并排；
- * 同层节点均匀铺开，连线用「三段折线」从上游底部走到下游顶部，重叠时逐条错开。
+ * 布局优先还原编排画布保存的版式：节点坐标与连线端口方向原样照搬（所见即所得，
+ * 主人在编辑器里排成两排，这里就是两排）；旧图没存坐标时才回退 `buildFlowRows`
+ * 的「一行一层」自动分层。连线用正交折线按端口方向走，共享端点的多条线在中段逐条错开。
  * 画布整体可拖动平移（点阵底纹随之移动）；桌面端还支持滚轮缩放。
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { buildFlowLinks, buildFlowRows, type CollabFlowEdge, type CollabAgentProgress } from '../lib/collabProgress'
+import { routePath, type CanvasPoint } from '../lib/collabRouting'
+import type { CollabEdgePort } from '../lib/types'
 import { AgentAvatar } from './AgentAvatar'
 
 /** 一个节点占的宽高（画布像素）。节点很小（头像 + 名字），细节都收进详情卡。 */
@@ -27,6 +30,8 @@ const ROW_GAP = 84
 const NODE_GAP = 46
 /** 画布四周留的边。 */
 const CANVAS_PAD = 34
+/** 还原版式的缩放比：进度图节点比编辑画布的小，坐标同比例缩，间距看着才自然。 */
+const CANVAS_SCALE = 0.7
 
 /** 把「一行一层」的岗位摆成画布坐标：同层均匀铺开、整层整体居中。 */
 export function layoutFlowNodes<T extends { key: string }>(rows: { nodes: T[] }[]): {
@@ -52,7 +57,121 @@ export function layoutFlowNodes<T extends { key: string }>(rows: { nodes: T[] }[
   return { positions, width, height: Math.max(height, 220) }
 }
 
-/** 相邻两层之间的那条「三段折线」路径：从上游底边中点出发，绕到下游顶边中点。 */
+/**
+ * 按编排画布保存的坐标还原版式：大卡片（190×92）等比缩到进度图的小节点（132×88），
+ * 再整体平移让内容居中。坐标是「编辑器里拖出来的样子」，原样保留相对位置关系。
+ */
+export function layoutFlowNodesFromCanvas<T extends { key: string; x?: number | null; y?: number | null }>(
+  nodes: T[],
+): {
+  positions: Map<string, { x: number; y: number }>
+  width: number
+  height: number
+} {
+  const positions = new Map<string, { x: number; y: number }>()
+  const placed = nodes.filter((node) => typeof node.x === 'number' && typeof node.y === 'number')
+  if (placed.length === 0) return { positions, width: 0, height: 0 }
+  // 退化版式（所有节点挤在同一坐标，比如旧图没拖过、全是默认的 0,0）不算有效布局，
+  // 让调用方回退自动分层，免得节点全叠成一摞。
+  if (new Set(placed.map((node) => `${node.x},${node.y}`)).size <= 1) {
+    return { positions: new Map(), width: 0, height: 0 }
+  }
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const node of placed) {
+    const x = node.x! * CANVAS_SCALE
+    const y = node.y! * CANVAS_SCALE
+    positions.set(node.key, { x, y })
+    minX = Math.min(minX, x)
+    minY = Math.min(minY, y)
+    maxX = Math.max(maxX, x + FLOW_NODE_W)
+    maxY = Math.max(maxY, y + FLOW_NODE_H)
+  }
+  // 平移到从画布边距开始：编辑器坐标可能从任意位置开始，进度图统一归零再留边。
+  const offsetX = minX - CANVAS_PAD
+  const offsetY = minY - CANVAS_PAD
+  for (const at of positions.values()) {
+    at.x -= offsetX
+    at.y -= offsetY
+  }
+  return {
+    positions,
+    width: maxX - minX + CANVAS_PAD * 2,
+    height: Math.max(maxY - minY + CANVAS_PAD * 2, 220),
+  }
+}
+
+/**
+ * 两个进度图节点之间的正交折线：按编排画布保存的端口方向（旧图为空时按相对位置推断）
+ * 从输出端口走到输入端口。多条线共享端点时在起终点错开一点，免得叠成一条。
+ */
+function canvasEdgePath(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  fromSide: CollabEdgePort,
+  toSide: CollabEdgePort,
+  offsetIndex: number,
+): { d: string } {
+  // 端口锚点按进度图节点尺寸算（编辑器的 190×92 已缩到 132×88，锚点同比例）。
+  const anchorOf = (at: { x: number; y: number }, side: CollabEdgePort): CanvasPoint => {
+    switch (side) {
+      case 'left':
+        return { x: at.x, y: at.y + FLOW_NODE_H / 2 }
+      case 'right':
+        return { x: at.x + FLOW_NODE_W, y: at.y + FLOW_NODE_H / 2 }
+      case 'top':
+        return { x: at.x + FLOW_NODE_W / 2, y: at.y }
+      case 'bottom':
+        return { x: at.x + FLOW_NODE_W / 2, y: at.y + FLOW_NODE_H }
+    }
+  }
+  const start = anchorOf(from, fromSide)
+  const end = anchorOf(to, toSide)
+  // 起终点沿端口方向各退一点：多条线共享端点时逐条错开。
+  const nudge = offsetIndex * 6
+  const nudged = (point: CanvasPoint, side: CollabEdgePort, forward: boolean): CanvasPoint => {
+    const step = forward ? nudge : -nudge
+    if (side === 'left') return { x: point.x, y: point.y + step }
+    if (side === 'right') return { x: point.x, y: point.y + step }
+    if (side === 'top') return { x: point.x + step, y: point.y }
+    return { x: point.x + step, y: point.y }
+  }
+  const startOut = nudged(start, fromSide, true)
+  const endIn = nudged(end, toSide, false)
+  // 三段折线：出端口 → 中线 → 入端口；水平端口走垂直中线，垂直端口走水平中线。
+  const horizontalFrom = fromSide === 'left' || fromSide === 'right'
+  const points: CanvasPoint[] = [start, startOut]
+  if (horizontalFrom) {
+    if (startOut.y !== endIn.y) {
+      const midX = (startOut.x + endIn.x) / 2
+      points.push({ x: midX, y: startOut.y }, { x: midX, y: endIn.y })
+    }
+  } else if (startOut.x !== endIn.x) {
+    const midY = (startOut.y + endIn.y) / 2
+    points.push({ x: startOut.x, y: midY }, { x: endIn.x, y: midY })
+  }
+  points.push(endIn, end)
+  return { d: routePath(points) }
+}
+
+/**
+ * 旧连线没存端口方向时的推断（与 `collabRouting.ts:defaultEdgePorts` 同一语义）：
+ * 上下排列优先走「下输出 → 上输入」，左右排列走「右输出 → 左输入」。
+ */
+function inferEdgeSides(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+): { fromSide: CollabEdgePort; toSide: CollabEdgePort } {
+  const dx = Math.abs(to.x - from.x)
+  const dy = Math.abs(to.y - from.y)
+  return dy > dx * 0.75
+    ? { fromSide: 'bottom', toSide: 'top' }
+    : { fromSide: 'right', toSide: 'left' }
+}
+
+/** 自动分层布局里相邻两层之间的那条「三段折线」：从上游底边中点走到下游顶边中点。 */
 function edgePath(
   from: { x: number; y: number },
   to: { x: number; y: number },
@@ -85,7 +204,14 @@ export function CollabFlowMap({ nodes, edges, onOpenNode }: Props) {
 
   const rows = useMemo(() => buildFlowRows(nodes, edges), [nodes, edges])
   const links = useMemo(() => buildFlowLinks(nodes, edges), [nodes, edges])
-  const { positions, width, height } = useMemo(() => layoutFlowNodes(rows), [rows])
+  // 优先还原编排画布保存的版式（主人拖成什么样就显示什么样）；
+  // 旧图没存坐标时回退「一行一层」的自动分层。
+  const fromCanvas = useMemo(() => layoutFlowNodesFromCanvas(nodes), [nodes])
+  const useCanvasLayout = fromCanvas.positions.size === nodes.length && nodes.length > 0
+  const { positions, width, height } = useMemo(
+    () => (useCanvasLayout ? fromCanvas : layoutFlowNodes(rows)),
+    [useCanvasLayout, fromCanvas, rows],
+  )
   const focused = nodes.find((node) => node.key === focusedKey) ?? null
 
   // 详情卡定位收进视口：预估尺寸，画布小（比如手机）时也不飘出去。
@@ -191,6 +317,23 @@ export function CollabFlowMap({ nodes, edges, onOpenNode }: Props) {
   // 多条边可能共享端点：给每对端点分配错开序号。
   const offsetIndex = (index: number) => (index % 3) - 1
 
+  // 画布版式：连线按编排画布保存的端口方向走（旧图为空时按节点相对位置推断）。
+  const edgeRoute = (link: (typeof links)[number], index: number): { d: string } | null => {
+    const from = positions.get(link.fromKey)
+    const to = positions.get(link.toKey)
+    if (!from || !to) return null
+    if (!useCanvasLayout) {
+      return edgePath(from, to, offsetIndex(index))
+    }
+    // 旧连线没存端口方向时按相对位置推断（与 `collabRouting.ts:defaultEdgePorts` 同一语义）：
+    // 上下排列走「下输出 → 上输入」，左右排列走「右输出 → 左输入」。
+    const fallback =
+      link.fromSide && link.toSide
+        ? { fromSide: link.fromSide, toSide: link.toSide }
+        : inferEdgeSides(from, to)
+    return canvasEdgePath(from, to, fallback.fromSide, fallback.toSide, offsetIndex(index))
+  }
+
   return (
     <div
       className={`flow-map${dragging ? ' dragging' : ''}`}
@@ -224,34 +367,24 @@ export function CollabFlowMap({ nodes, edges, onOpenNode }: Props) {
             ))}
           </defs>
           {forward.map((link, index) => {
-            const from = positions.get(link.fromKey)
-            const to = positions.get(link.toKey)
-            if (!from || !to) return null
-            const { d, label } = edgePath(from, to, offsetIndex(index))
+            const route = edgeRoute(link, index)
+            if (!route) return null
             return (
               <g key={link.id}>
-                <path d={d} className={`flow-link kind-${link.kind}`} markerEnd={`url(#flow-arrow-${link.kind})`} />
-                <text className="flow-link-label" x={label.x} y={label.y}>
-                  {link.kindLabel}
-                </text>
+                <path d={route.d} className={`flow-link kind-${link.kind}`} markerEnd={`url(#flow-arrow-${link.kind})`} />
               </g>
             )
           })}
           {loops.map((link, index) => {
-            const from = positions.get(link.fromKey)
-            const to = positions.get(link.toKey)
-            if (!from || !to) return null
-            const { d, label } = edgePath(from, to, offsetIndex(index))
+            const route = edgeRoute(link, index)
+            if (!route) return null
             return (
               <g key={link.id}>
                 <path
-                  d={d}
+                  d={route.d}
                   className={`flow-link kind-${link.kind} loop`}
                   markerEnd={`url(#flow-arrow-${link.kind})`}
                 />
-                <text className="flow-link-label" x={label.x} y={label.y}>
-                  {link.kindLabel}
-                </text>
               </g>
             )
           })}

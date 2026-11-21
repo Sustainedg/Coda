@@ -87,6 +87,12 @@ class StepRegistry:
         if handle is not None:
             handle.finished = True
 
+    def clear(self) -> None:
+        """清空整张句柄表（测试隔离用：用例收尾时兜底，防泄漏进下一个用例）。"""
+        for handle in self._handles.values():
+            handle.finished = True
+        self._handles.clear()
+
     def active_for(self, run_id: str) -> list[ActiveRun]:
         return [h for h in self._handles.values() if h.conversation_id == run_id and not h.finished]
 

@@ -8,6 +8,7 @@ import { ACTIONS, EDGE_KINDS, ticketStateMeta } from './collabDraft'
 import type { FinishedStep, LiveStep } from './collabStream'
 import type {
   CollabEdgeKind,
+  CollabEdgePort,
   CollabGraph,
   CollabRunStatus,
   CollabStep,
@@ -40,6 +41,9 @@ export interface CollabAgentProgress {
   lastAction?: string
   isLive: boolean
   activeTickets: CollabTicket[]
+  /** 编排画布上保存的坐标（画布内坐标）；旧图没拖过时为空，进度图回退自动分层。 */
+  x?: number | null
+  y?: number | null
 }
 
 /** 各状态对应的「粗略进度」底数——后端没有真实百分比，这里只给进度条一个说法。 */
@@ -71,6 +75,9 @@ export interface CollabFlowEdge {
   toKey: string
   kind: CollabEdgeKind
   kindLabel: string
+  /** 画布端口方向（只影响外观）；旧图为空时进度图按节点相对位置自动推断。 */
+  fromSide?: CollabEdgePort | null
+  toSide?: CollabEdgePort | null
 }
 
 /** 流程图里的一条连线：把相邻岗位接起来；回流（审查打回 / 返工）单独标记。 */
@@ -82,6 +89,9 @@ export interface CollabFlowLink {
   kindLabel: string
   /** true = 回头箭头：目标在流程里排在源的前面（审查打回、返工），流程图上要单独画。 */
   isLoop: boolean
+  /** 画布端口方向（只影响外观）；旧图为空时进度图按节点相对位置自动推断。 */
+  fromSide?: CollabEdgePort | null
+  toSide?: CollabEdgePort | null
 }
 
 /**
@@ -106,6 +116,8 @@ export function buildFlowLinks(
       kind: edge.kind,
       kindLabel: edge.kindLabel,
       isLoop: to <= from,
+      fromSide: edge.fromSide ?? null,
+      toSide: edge.toSide ?? null,
     }]
   })
 }
@@ -359,6 +371,8 @@ export function buildCollabProgress({
           : undefined,
       isLive,
       activeTickets,
+      x: node.x,
+      y: node.y,
     }
   })
 
@@ -371,6 +385,8 @@ export function buildCollabProgress({
     toKey: edge.to_key,
     kind: edge.kind,
     kindLabel: EDGE_LABELS[edge.kind] ?? edge.kind,
+    fromSide: edge.from_side ?? null,
+    toSide: edge.to_side ?? null,
   }))
   return { nodes, edges }
 }

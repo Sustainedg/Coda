@@ -1,9 +1,11 @@
 /**
  * 内置头像包清单（**由 `scripts/gen_avatar_pack.py` 生成，别手改**）。
  *
- * 「随机生成头像」从这里抽取：3D 黏土风 Q 版半身像，文件在 `public/avatars/`，
+ * 「随机生成头像」从这里抽取：3D 黏土风角色，文件在 `public/avatars/`，
  * 随前端构建一起发布。数据库里 `agent_profiles.avatar_preset` 存编号
  * （如 `pack-007`），显示时拼成 `/avatars/pack-007.webp`。
+ *
+ * 画廊按 `AVATAR_GROUPS` 分组展示（人物 / 卡通……），编号连续、只往后追加。
  */
 export const AVATAR_PRESETS = [
   'pack-001',
@@ -66,6 +68,125 @@ export const AVATAR_PRESETS = [
   'pack-058',
   'pack-059',
   'pack-060',
+  'pack-061',
+  'pack-062',
+  'pack-063',
+  'pack-064',
+  'pack-065',
+  'pack-066',
+  'pack-067',
+  'pack-068',
+  'pack-069',
+  'pack-070',
+  'pack-071',
+  'pack-072',
+  'pack-073',
+  'pack-074',
+  'pack-075',
+  'pack-076',
+  'pack-077',
+  'pack-078',
+  'pack-079',
+  'pack-080',
 ] as const
+
+/** 分类标签 → 画廊分组名（顺序即展示顺序，由生成脚本维护）。 */
+export const AVATAR_CATEGORY_LABELS = {
+  person: '人物',
+  cartoon: '卡通',
+} as const
+
+/** 每个编号所属的分类（与 `AVATAR_PRESETS` 一一对应）。 */
+export const AVATAR_PRESET_CATEGORIES: Record<string, string> = {
+  'pack-001': 'person',
+  'pack-002': 'person',
+  'pack-003': 'person',
+  'pack-004': 'person',
+  'pack-005': 'person',
+  'pack-006': 'person',
+  'pack-007': 'person',
+  'pack-008': 'person',
+  'pack-009': 'person',
+  'pack-010': 'person',
+  'pack-011': 'person',
+  'pack-012': 'person',
+  'pack-013': 'person',
+  'pack-014': 'person',
+  'pack-015': 'person',
+  'pack-016': 'person',
+  'pack-017': 'person',
+  'pack-018': 'person',
+  'pack-019': 'person',
+  'pack-020': 'person',
+  'pack-021': 'person',
+  'pack-022': 'person',
+  'pack-023': 'person',
+  'pack-024': 'person',
+  'pack-025': 'person',
+  'pack-026': 'person',
+  'pack-027': 'person',
+  'pack-028': 'person',
+  'pack-029': 'person',
+  'pack-030': 'person',
+  'pack-031': 'person',
+  'pack-032': 'person',
+  'pack-033': 'person',
+  'pack-034': 'person',
+  'pack-035': 'person',
+  'pack-036': 'person',
+  'pack-037': 'person',
+  'pack-038': 'person',
+  'pack-039': 'person',
+  'pack-040': 'person',
+  'pack-041': 'person',
+  'pack-042': 'person',
+  'pack-043': 'person',
+  'pack-044': 'person',
+  'pack-045': 'person',
+  'pack-046': 'person',
+  'pack-047': 'person',
+  'pack-048': 'person',
+  'pack-049': 'person',
+  'pack-050': 'person',
+  'pack-051': 'person',
+  'pack-052': 'person',
+  'pack-053': 'person',
+  'pack-054': 'person',
+  'pack-055': 'person',
+  'pack-056': 'person',
+  'pack-057': 'person',
+  'pack-058': 'person',
+  'pack-059': 'person',
+  'pack-060': 'person',
+  'pack-061': 'cartoon',
+  'pack-062': 'cartoon',
+  'pack-063': 'cartoon',
+  'pack-064': 'cartoon',
+  'pack-065': 'cartoon',
+  'pack-066': 'cartoon',
+  'pack-067': 'cartoon',
+  'pack-068': 'cartoon',
+  'pack-069': 'cartoon',
+  'pack-070': 'cartoon',
+  'pack-071': 'cartoon',
+  'pack-072': 'cartoon',
+  'pack-073': 'cartoon',
+  'pack-074': 'cartoon',
+  'pack-075': 'cartoon',
+  'pack-076': 'cartoon',
+  'pack-077': 'cartoon',
+  'pack-078': 'cartoon',
+  'pack-079': 'cartoon',
+  'pack-080': 'cartoon',
+}
+
+/** 画廊分组：按分类把编号切成若干段（空分类不会出现）。 */
+export const AVATAR_GROUPS: { key: string; label: string; presets: string[] }[] = Object.entries(
+  AVATAR_CATEGORY_LABELS,
+).map(([key, label]) => ({
+  key,
+  label,
+  presets: AVATAR_PRESETS.filter((item) => AVATAR_PRESET_CATEGORIES[item] === key),
+})).filter((group) => group.presets.length > 0)
 
 export type AvatarPreset = (typeof AVATAR_PRESETS)[number]

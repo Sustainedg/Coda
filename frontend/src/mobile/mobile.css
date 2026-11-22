@@ -317,6 +317,8 @@ code, pre, .mono { font-family: var(--mono); }
   background: var(--bg-panel); color: inherit; cursor: pointer; width: 100%;
 }
 .m-item:active { background: var(--bg-hover); }
+/* 列表项本身有 gap，去掉图标的右边距，避免与 gap 叠加。 */
+.m-item .platform-icon, .m-item .platform-icon-text { margin-right: 0; }
 /* 列表项里都用 span（button 只允许短语内容），因此显式块级化，省略号才会生效。 */
 .m-item-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .m-item-title { display: block; font-size: calc(14.5px * var(--sbs, 1)); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

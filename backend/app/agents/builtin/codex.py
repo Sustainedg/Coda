@@ -113,7 +113,9 @@ class CodexAgent(AgentDefinition):
     default_auth_style = "bearer"
     default_models = ["gpt-5-codex"]
     docs_url = "https://developers.openai.com/codex/cli/"
-    logo = "/icons/kernels/openai.svg"
+    logo = "/icons/kernels/openai.webp"
+    #: OpenAI 的立体徽标是真彩色的，按原色显示才认得出来。
+    logo_style = "image"
     capabilities = Capabilities(
         streaming=True,
         sessions=True,

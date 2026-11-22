@@ -285,8 +285,8 @@ class AcmeAgent(AgentDefinition):
     base_url_env = "ACME_BASE_URL"
     default_gateway = "https://api.acme.dev/v1"
     default_model = "acme-pro"
-    logo = "/icons/kernels/acme.svg"  # 官方 Logo；默认单色 SVG 当遮罩染色
-    # logo_style = "image"            # 有真彩色品牌图时：PNG/WebP 按原色显示
+    logo = "/icons/kernels/acme.webp"  # 官方 Logo；真彩色位图按原色显示
+    logo_style = "image"              # 单色 SVG 则留空（默认 mask，当遮罩染色）
     capabilities = Capabilities(sessions=True, native_system_prompt=True, tools=True,
                                working_directory=True)
     config_fields = (
@@ -324,7 +324,8 @@ class AcmeHarness(OpenAIHarnessBase):
     base_url_env = "ACME_BASE_URL"
     default_gateway = "https://api.acme.dev/v1"
     default_model = "acme-chat"
-    logo = "/icons/kernels/acme.svg"
+    logo = "/icons/kernels/acme.webp"
+    logo_style = "image"
 ```
 
 `OpenAIHarnessBase` 已提供：流式补全、工具循环、`extra_headers`/`extra_body`、

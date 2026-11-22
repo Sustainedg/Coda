@@ -6,8 +6,8 @@
  * - `image`：真彩色位图（PNG / WebP）或彩色 SVG，按原色显示 —— 品牌图标本来就该是
  *   「实打实」的样子，染成单色反而认不出来。
  *
- * 图形文件只画形状、不指定颜色（`frontend/public/icons/kernels/*.svg`），路径由后端按
- * 适配器声明下发；位图同样随仓库发布，运行时不外链。
+ * 图形文件：`mask` 用只画形状的单色 SVG（`frontend/public/icons/kernels/*.svg`），`image`
+ * 用真彩色位图（`*.png` / `*.webp`）。路径由后端按适配器声明下发，图形随仓库发布，运行时不外链。
  *
  * **图标秒显**：图形在构建期就内嵌成 data URL（`lib/kernelLogos.ts`），这里直接用内嵌
  * 地址渲染 —— 没有请求、没有二次解码，进页面即显示；`lib/kernelIcons.ts` 还会在应用空闲

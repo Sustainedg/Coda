@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.types import TypeDecorator
 from sqlmodel import Field, SQLModel
 
@@ -65,6 +65,8 @@ ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         # 避免自动配置时轮换掉用户已有的令牌。只存哈希。
         "builtin_mcp_pat_hash": "VARCHAR(64)",
         "builtin_mcp_pat_issued_at": "DATETIME",
+        # 轨迹调试开关：用户级、默认关闭；老行补列后一律 False（采集默认不开启）。
+        "trace_debug": "BOOLEAN NOT NULL DEFAULT 0",
     },
     # ---- 多用户系统：每张「用户资产」表加 owner_id（可空，老库由 bootstrap 回填给首任管理员）。
     # 运行时状态（runtime_status）、平台设置（platform_settings）是平台级共享数据，不加 owner_id。
@@ -442,6 +444,45 @@ class Message(SQLModel, table=True):
     agent_profile_id: str | None = Field(default=None, sa_column=Column(String(64)))
 
 
+class TraceEvent(SQLModel, table=True):
+    """一轮对话的调试轨迹（旁路采集，不参与消息表与业务逻辑）。
+
+    ``conversation_id`` 指向平台对话（``Conversation.id``），**不是**内核侧的
+    ``Conversation.session_id``；内核会话 id 记录在 ``context_snapshot.payload`` 的
+    ``kernel_session_id`` 里。轨迹写入来自独立会话，任何采集失败都不得影响正常回复。
+    """
+
+    __tablename__ = "trace_events"
+    __table_args__ = (
+        # 时间线读取按 (conversation_id, created_at)；单轮查看按 (conversation_id, run_id)。
+        Index("ix_trace_events_conv_created", "conversation_id", "created_at"),
+        Index("ix_trace_events_conv_run", "conversation_id", "run_id"),
+    )
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    conversation_id: str = Field(
+        sa_column=Column(
+            String(64), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
+        )
+    )
+    owner_id: str | None = Field(default=None, sa_column=Column(String(64), index=True))
+    run_id: str | None = Field(default=None, sa_column=Column(String(64), index=True))
+    #: 该对话第几轮用户消息（0 起），不写进 Message 表
+    turn_index: int = Field(default=0, sa_column=Column(Integer, nullable=False, default=0))
+    #: 同一会话内严格递增（跨轮也不回退），时间线排序与 after_seq 分页的稳定键
+    seq: int = Field(default=0, sa_column=Column(Integer, nullable=False, default=0))
+    type: str = Field(sa_column=Column(String(24), nullable=False, index=True))
+    payload: dict[str, Any] = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False, default=dict)
+    )
+    duration_ms: int | None = Field(default=None, sa_column=Column(Integer))
+    error: str | None = Field(default=None, sa_column=Column(Text))
+    truncated: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, default=False))
+    #: payload 序列化后的 UTF-8 字节数（截断前），用于单会话体积裁剪
+    bytes: int = Field(default=0, sa_column=Column(Integer, nullable=False, default=0))
+    created_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime, index=True))
+
+
 class RuntimeStatus(SQLModel, table=True):
     """某个运行时（CLI 内核）在本机的一次可用性检测结果。
 
@@ -520,5 +561,8 @@ class User(SQLModel, table=True):
     builtin_mcp_pat_issued_at: datetime | None = Field(
         default=None, sa_column=Column(UTCDateTime)
     )
+    #: 轨迹调试开关（用户级，默认关闭）。只有它为 True 时运行层才采集轨迹；
+    #: 判定点唯一在 ``runtime.service.prepare_run`` / ``regenerate_last``。
+    trace_debug: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, default=False))
     created_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime))
     updated_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime))

@@ -73,8 +73,8 @@ class PlatformField:
 class Platform:
     id: str
     name: str
-    #: 界面上的小图标（装饰用）。放这里而不是前端按 id 写映射：平台清单是唯一来源，
-    #: 新增平台时前端一行都不用改。
+    #: 界面上的小图标（前端静态资源路径，如 ``/icons/im/telegram.webp``）。放这里而不是
+    #: 前端按 id 写映射：平台清单是唯一来源，新增平台时前端一行都不用改。
     icon: str = "🔌"
     fields: tuple[PlatformField, ...] = ()
     groups: bool = True
@@ -104,7 +104,7 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform(
         id="telegram",
         name="Telegram",
-        icon="✈️",
+        icon="/icons/im/telegram.webp",
         fields=(PlatformField("token", "Bot token（机器人令牌）", secret=True),),
         docs="https://t.me/BotFather",
         steps=(
@@ -116,7 +116,7 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform(
         id="feishu",
         name="飞书 / Lark",
-        icon="🪶",
+        icon="/icons/im/feishu.webp",
         fields=(
             PlatformField("domain", "版本", options=[("feishu", "飞书"), ("lark", "Lark")]),
             PlatformField("app_id", "App ID（应用标识）"),
@@ -133,7 +133,7 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform(
         id="dingtalk",
         name="钉钉",
-        icon="📌",
+        icon="/icons/im/dingtalk.webp",
         fields=(
             PlatformField("client_id", "Client ID（应用标识）"),
             PlatformField("client_secret", "Client Secret（应用密钥）", secret=True),
@@ -149,7 +149,7 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform(
         id="wecom",
         name="企业微信",
-        icon="💼",
+        icon="/icons/im/wecom.webp",
         fields=(
             PlatformField("bot_id", "Bot ID（机器人标识）"),
             PlatformField("secret", "Secret（机器人密钥）", secret=True),
@@ -163,7 +163,7 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform(
         id="qq",
         name="QQ",
-        icon="🐧",
+        icon="/icons/im/qq.webp",
         fields=(
             PlatformField("app_id", "App ID（应用标识）"),
             PlatformField("app_secret", "App Secret（应用密钥）", secret=True),
@@ -179,7 +179,7 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform(
         id="discord",
         name="Discord",
-        icon="🎮",
+        icon="/icons/im/discord.webp",
         fields=(PlatformField("token", "Bot token（机器人令牌）", secret=True),),
         docs="https://discord.com/developers/applications",
         steps=(
@@ -191,7 +191,7 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform(
         id="slack",
         name="Slack",
-        icon="#",
+        icon="/icons/im/slack.webp",
         fields=(
             PlatformField("app_token", "App-Level Token（应用令牌）", secret=True, hint="xapp-"),
             PlatformField("bot_token", "Bot Token（机器人令牌）", secret=True, hint="xoxb-"),
@@ -208,7 +208,7 @@ PLATFORMS: tuple[Platform, ...] = (
     Platform(
         id="weixin",
         name="微信",
-        icon="💬",
+        icon="/icons/im/weixin.webp",
         available=False,
         note="微信个人号（iLink 扫码）暂未支持；企业场景请用企业微信。",
         groups=False,

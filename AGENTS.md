@@ -162,7 +162,7 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
 常用可选：`description`、`vendor`、`capabilities`、`config_fields`、`api_key_env`、`base_url_env`、
 `default_gateway`、`default_model`、`protocol`（openai / anthropic / gemini）、`default_auth_style`、
 `default_models`（官方链路预置模型）、`docs_url`、`logo`（官方 Logo 的前端静态资源路径，如
-`/icons/kernels/claude.svg`）、`logo_style`（`mask` = 单色 SVG 遮罩染色；`image` = 真彩色位图
+`/icons/kernels/claude.webp`）、`logo_style`（`mask` = 单色 SVG 遮罩染色；`image` = 真彩色位图
 按原色显示）、`executable`、`auto_provision`、
 `availability()`、`probe()`/`probe_api()`、`auth_status()`（账号型内核的登录态探测，可选）、
 `resume_supported(ctx)`（可选钩子）。
@@ -461,6 +461,9 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
    `AgentDefinition.auth_status()`。登录命令按通用约定输出 `QR_IMAGE=<图片路径>`，框架读成
    `data:` URL 经 `provision.qr` 事件推给界面；登录任务的任务列表 / 重连接口**只对管理员开放**
    （输出里带的是短期凭据，见 §7）。
+   只能交互式登录、没有可代跑子命令的内核（例如 CodeBuddy 的 TUI `/login`）**不要声明假的
+   `login_argv`**：只实现 `auth_status()` 即可 —— `supports_auth()` 会让「内核管理」卡片显示
+   登录状态，但不出现一个点了必然失败的「登录」按钮。
 3. 不要把「怎么装」写进 `api/` 或 `runtime/`（框架层不得硬编码包管理器或内核 id）。
 4. 不支持由平台代管的适配器（进程内 API 内核、用户自备的 `custom-cli`）保持 `provisioner = None`，
    卡片副标题会写明「进程内运行」/「自备可执行文件」。

@@ -14,10 +14,11 @@ from sqlmodel import select
 from .. import attachments
 from ..agents import get_agent
 from ..db import get_session
-from ..models import AgentProfile, Conversation, Gateway, Message, User
+from ..models import AgentProfile, Conversation, Gateway, Message, TraceEvent, User
 from ..runtime import registry
 from ..runtime import skills as skill_service
 from ..runtime import titles
+from ..runtime.trace import MAX_PAGE_LIMIT
 from ..runtime.conversations import (
     is_unread,
     ordered_participants,
@@ -41,6 +42,7 @@ from ..schemas import (
     ConversationUpdate,
     MessageRead,
     SendMessage,
+    TraceEventRead,
 )
 from ..transport.sse import sse_stream
 from .auth import current_user, owner_id_for, require_owned
@@ -258,6 +260,55 @@ async def get_conversation(
         ).model_dump(),
         "messages": [MessageRead.model_validate(m).model_dump() for m in messages],
         "active_run": registry.active_for(conversation_id).snapshot() if registry.active_for(conversation_id) else None,
+    }
+
+
+@router.get("/{conversation_id}/trace")
+async def list_trace_events(
+    conversation_id: str,
+    after_seq: int = 0,
+    limit: int = 100,
+    session: AsyncSession = Depends(get_session),
+    user: Annotated[User, Depends(current_user)] = None,
+) -> dict:
+    """只读分页读取一条对话的轨迹事件（不触发任何运行、不读 ActiveRun 缓冲）。
+
+    排序键是会话内严格递增的 ``seq``；``next_after_seq`` 为空表示没有下一页。
+    """
+    await _owned_conversation(conversation_id, session, user)
+    limit = max(1, min(limit, MAX_PAGE_LIMIT))
+    rows = (
+        await session.execute(
+            select(TraceEvent)
+            .where(TraceEvent.conversation_id == conversation_id, TraceEvent.seq > after_seq)
+            .order_by(TraceEvent.seq)
+            # 多取一条用来判断是否还有下一页，不额外打一次 count。
+            .limit(limit + 1)
+        )
+    ).scalars().all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    items = [
+        TraceEventRead(
+            id=row.id,
+            session_id=row.conversation_id,
+            owner_id=row.owner_id,
+            run_id=row.run_id,
+            turn_index=row.turn_index,
+            seq=row.seq,
+            timestamp=row.created_at,
+            type=row.type,
+            payload=row.payload or {},
+            duration_ms=row.duration_ms,
+            error=row.error,
+            truncated=row.truncated,
+            bytes=row.bytes,
+        ).model_dump()
+        for row in rows
+    ]
+    return {
+        "items": items,
+        "next_after_seq": rows[-1].seq if has_more and rows else None,
     }
 
 
@@ -499,7 +550,10 @@ async def send_message(
             raise HTTPException(status_code=422, detail="指定的智能体已停用")
         require_owned(summon, user)
     try:
-        prepared = await prepare_run(session, conversation_id, payload)
+        # 采集开关只认后端权威值（当前登录用户的设置），不读请求体任何字段。
+        prepared = await prepare_run(
+            session, conversation_id, payload, trace_enabled=bool(user.trace_debug)
+        )
     except ConfigurationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     start_run(prepared)
@@ -518,7 +572,9 @@ async def regenerate(
 ) -> StreamingResponse:
     await _owned_conversation(conversation_id, session, user)
     try:
-        prepared = await regenerate_last(session, conversation_id)
+        prepared = await regenerate_last(
+            session, conversation_id, trace_enabled=bool(user.trace_debug)
+        )
     except ConfigurationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     start_run(prepared)

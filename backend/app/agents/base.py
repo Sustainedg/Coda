@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, AsyncIterator, ClassVar, Iterable, Sequence
+from typing import Any, AsyncIterator, ClassVar, Iterable, Protocol, Sequence
 
 from .events import AgentEvent, EventType
 from .mcp import McpMount, McpServerSpec
@@ -37,6 +37,37 @@ class Runtime(str, Enum):
 
     CLI = "cli"  # 启动子进程
     API = "api"  # 进程内直接发起 HTTP 调用（OpenAI 兼容端点）
+
+
+class TraceSink(Protocol):
+    """轨迹采集的**叶子协议**：适配器只看到这组方法，不依赖存储实现。
+
+    真正的写库实现在 ``runtime.trace.TraceRecorder``；协议放在 ``agents/base.py``
+    是为了让适配器（叶子层）能可选地记录请求/响应，同时不反向依赖 runtime。
+    所有方法都必须**尽力而为**：采集失败不能影响正常回复与事件流。
+    """
+
+    async def request(
+        self,
+        payload: dict[str, Any],
+        *,
+        duration_ms: int | None = None,
+        error: str | None = None,
+        truncated: bool = False,
+    ) -> None: ...
+
+    async def response(
+        self,
+        payload: dict[str, Any],
+        *,
+        duration_ms: int | None = None,
+        error: str | None = None,
+        truncated: bool = False,
+    ) -> None: ...
+
+    async def on_event(self, event: AgentEvent) -> None: ...
+
+    async def flush(self) -> None: ...
 
 
 @dataclass(slots=True)
@@ -249,6 +280,9 @@ class AgentContext:
     #: 框架物化好的内核隔离配置目录（技能与 MCP 共用同一个「家」）；
     #: 适配器据此设置内核的配置目录环境变量。
     home_dir: str | None = None
+    #: 可选的轨迹采集器（``None`` = 本轮没开调试，适配器零开销、零写库）。
+    #: 协议见 :class:`TraceSink`，实现见 ``runtime.trace.TraceRecorder``。
+    trace: TraceSink | None = None
 
     def option(self, key: str, default: Any = None) -> Any:
         value = self.options.get(key, default)
@@ -276,7 +310,7 @@ class AgentDefinition(ABC):
     #: 官方链路可选的模型清单（播种官方网关时作为默认白名单；用户可再改）
     default_models: ClassVar[list[str]] = []
     docs_url: ClassVar[str | None] = None
-    #: 该内核的官方 Logo（前端静态资源路径，如 ``/icons/kernels/claude.svg``）；
+    #: 该内核的官方 Logo（前端静态资源路径，如 ``/icons/kernels/claude.webp``）；
     #: ``None`` 表示界面退回只用文字名。它只是「一张图」，不参与任何运行行为。
     logo: ClassVar[str | None] = None
     #: Logo 的渲染方式：
@@ -360,6 +394,15 @@ class AgentDefinition(ABC):
         框架既用它渲染内核详情，也在一次「登录」动作结束后重新取结论。
         """
         return None
+
+    def supports_auth(self) -> bool:
+        """是否实现了登录态探测（即覆盖了 :meth:`auth_status`）。
+
+        框架据此决定「内核管理」卡片要不要显示登录状态：实现了探测的内核即便
+        没有可代跑的登录命令（例如只有交互式 TUI 才能登录的内核），也值得把
+        「已登录 / 未登录 / 无法判断」摆给管理员看，而不是藏起来。
+        """
+        return type(self).auth_status is not AgentDefinition.auth_status
 
     def availability(self) -> Availability:
         if not self.executable:

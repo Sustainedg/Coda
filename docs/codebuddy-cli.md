@@ -13,10 +13,15 @@
 核心链路（`-p --output-format stream-json` + `--resume` + `--mcp-config` + 技能目录）
 全部现成，不需要任何新框架能力、不需要新增事件类型。
 
-主要差异点只有一个：**模型网关的接法**。CodeBuddy 的官方链路走自家协议
-（`CODEBUDDY_BASE_URL` 会被拼成 `<base>/v2/chat/completions`，不是标准 OpenAI 端点），
-第三方模型只能通过 `models.json` 注入（仅支持 OpenAI 兼容格式）。
-所以自定义网关要写 `models.json`，而不是走 `base_url_env` 环境变量。
+主要差异有两点：
+
+1. **模型网关的接法**：官方链路走自家协议（`CODEBUDDY_BASE_URL` 会被拼成
+   `<base>/v2/chat/completions`，不是标准 OpenAI 端点），第三方模型只能通过
+   `models.json` 注入（仅支持 OpenAI 兼容格式）。所以自定义网关要写 `models.json`，
+   而不是走 `base_url_env` 环境变量。
+2. **官方登录的形态**：没有 `codebuddy login` 子命令，交互登录只在 TUI 的 `/login` 里，
+   token 存**系统密钥环**（容器里通常没有）。无头部署要用 `CODEBUDDY_API_KEY`
+   （并选对 `CODEBUDDY_INTERNET_ENVIRONMENT`）或 `CODEBUDDY_AUTH_TOKEN`。
 
 ---
 
@@ -97,8 +102,8 @@ codebuddy -p "提示词" \
 
 | 路径 | 机制 | 平台对接方式 |
 | --- | --- | --- |
-| 官方（账号登录） | `codebuddy login`，凭据在 `~/.codebuddy` | `gateway_id=null`：不注入任何 env，CLI 自己读本机登录态 |
-| 官方（环境变量） | `CODEBUDDY_API_KEY` / `CODEBUDDY_AUTH_TOKEN` / `CODEBUDDY_BASE_URL` | **不建议**做网关通道：`CODEBUDDY_BASE_URL` 会被拼成 `<base>/v2/chat/completions`（自家协议，不是标准 OpenAI 端点） |
+| 官方（账号登录） | **没有 `codebuddy login` 子命令**（2.185.0 的 Commands 列表里没有）；交互式 TUI 里用斜杠命令 `/login`，选 Chinese / International / Enterprise / iOA 站点后浏览器授权。token 由内核交给**系统密钥环**（macOS Keychain、Linux 上 GNOME Keyring / KWallet、Windows 凭据管理器），不是 `~/.codebuddy/.credentials.json` | `gateway_id=null`：不注入任何 env，CLI 自己读本机登录态 |
+| 官方（环境变量） | `CODEBUDDY_API_KEY` / `CODEBUDDY_AUTH_TOKEN` / `apiKeyHelper`（优先级 AUTH_TOKEN > apiKeyHelper > API_KEY）。**用 API Key 必须同时选对站点**：中国版 `CODEBUDDY_INTERNET_ENVIRONMENT=internal`、iOA=`ioa`、专享版=`cloudhosted`、私有化=`selfhosted`；不设则打国际站 `www.codebuddy.ai` | 走智能体的「环境变量」或适配器的「官方网络环境」字段；**不能**用 `CODEBUDDY_BASE_URL` 当平台网关（会被拼成 `<base>/v2/chat/completions`，自家协议） |
 | 第三方模型 | `models.json`：`{models:[{id,url,apiKey,...}], availableModels}`；`url` 必须是**完整** `/chat/completions` 路径；`apiKey` 支持 `${ENV}` 引用；鉴权固定 `Authorization: Bearer` | `gateway_url + "/chat/completions"` 写成 `url`，密钥写 `${CODEBUDDY_API_KEY}`；`--model` 选注入的 id |
 
 `models.json` 的读取路径：`$CODEBUDDY_CONFIG_DIR/models.json`（用户级）、
@@ -121,7 +126,7 @@ CodeBuddyCliAgent(AgentDefinition)
   name          = "CodeBuddy CLI"
   vendor        = "Tencent"
   executable    = "codebuddy"
-  logo          = "/icons/kernels/codebuddy.svg"     # 新增 24×24 单色 SVG
+  logo          = "/icons/kernels/codebuddy.webp"    # 真彩色位图，logo_style = "image"
   runtime       = Runtime.CLI
   protocol      = "openai"          # 自定义网关只认 OpenAI 兼容
   api_key_env   = "CODEBUDDY_API_KEY"
@@ -152,6 +157,7 @@ CodeBuddyCliAgent(AgentDefinition)
 | key | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `permission_mode` | SELECT | `bypassPermissions` | default / acceptEdits / auto / dontAsk / plan / bypassPermissions。headless 下没有授权弹窗，默认给能真正干活的模式（help 里注明风险，与 claude 适配器的措辞一致） |
+| `network_environment` | SELECT | 空（跟随内核默认 = 国际站） | 官方链路的站点选择 → `CODEBUDDY_INTERNET_ENVIRONMENT`：中国版 `internal`、iOA `ioa`、专享版 `cloudhosted`、私有化 `selfhosted`。只在**没绑自定义网关**时注入（第三方模型服务不需要） |
 | `system_prompt_mode` | SELECT | `append` | append → `--append-system-prompt`；replace → `--system-prompt` |
 | `partial_messages` | BOOLEAN | `True` | 控制 `--include-partial-messages` |
 | `allowed_tools` / `disallowed_tools` | STRING_LIST | — | → `--allowedTools` / `--disallowedTools` |
@@ -177,6 +183,9 @@ if (Path(ctx.home_dir) / "mcp.json").is_file():
     argv += ["--mcp-config", str(home / "mcp.json"), "--strict-mcp-config"]
 
 env = self.effective_env(ctx)          # CODEBUDDY_API_KEY（api_key_env）+ 用户自定义 env
+# 官方站点的选择：只在「没绑自定义网关」时注入，第三方模型服务不需要它
+if options.get("network_environment") and not (ctx.gateway_url and ctx.api_key):
+    env.setdefault("CODEBUDDY_INTERNET_ENVIRONMENT", options["network_environment"])
 if ctx.home_dir:
     env["CODEBUDDY_CONFIG_DIR"] = ctx.home_dir
 if mode == "bypassPermissions" and _is_root():
@@ -270,12 +279,19 @@ def mcp_mount(self, ctx):         # McpMount(home_name="codebuddy-home",
 - 声明了 `skills=True` / `mcp=True` 就**必须**实现对应 mount（`test_architecture.py` 会拦）；
 - `KERNEL_SKILL_MARKERS` 这类「内核路径知识只许出现在适配器里」的守卫同样适用。
 
-### 3.6 probe / system_defaults（P2）
+### 3.6 probe / system_defaults / auth_status
 
 - `probe()`：默认的「可执行文件 + 密钥」检查够用；可加一步
   `codebuddy --version` 成功即认为就绪。
-- `system_defaults()`：读 `~/.codebuddy/settings.json` 的 `env.CODEBUDDY_BASE_URL` 与
-  `model`，对齐 claude 适配器的「界面默认值来自本机真实配置」体验。
+- `system_defaults()`：只读 `model`（`CODEBUDDY_MODEL` > settings 的 `env` > settings 顶层），
+  **不回填网关地址**：`CODEBUDDY_BASE_URL` 是内核自家协议的入口，当平台网关会打错端点。
+- `auth_status()`：只做「配置层」判断，**不联网、不消耗积分**——
+  1. 进程 env 或 `settings*.json` 的 `env` 里有 `CODEBUDDY_AUTH_TOKEN` / `CODEBUDDY_API_KEY`，
+     或配置了 `apiKeyHelper` → `logged_in=None`（已配置，平台不校验有效性）；
+  2. 配置目录里存在**非空**的凭据缓存（`.credentials.json` / `credentials.json`）→ `True`；
+  3. 都没有 → `False`，detail 里给出「TUI `/login` / API Key + 站点 / AUTH_TOKEN」三条修法。
+- 内核**没有** `login` 子命令，所以不声明 `login_argv`：平台不提供「登录」按钮，
+  只展示登录状态（`supports_auth()` 让内核管理卡片显示这一行）。
 
 ---
 
@@ -286,7 +302,7 @@ def mcp_mount(self, ctx):         # McpMount(home_name="codebuddy-home",
 | `backend/app/agents/builtin/codebuddy_cli.py` | **新增**适配器（唯一的功能代码） |
 | `backend/tests/test_adapters.py` | 注册表断言 + invocation/parse/权限/env/models.json 用例（样本用包内文档里的真实输出形状） |
 | `backend/tests/test_architecture.py` | `BUILTIN_IDS` 加 `"codebuddy-cli"` |
-| `frontend/public/icons/kernels/codebuddy.svg` | **新增** 24×24 单色 Logo（只画形状，染色由遮罩做） |
+| `frontend/public/icons/kernels/codebuddy.webp` | **新增**真彩色 Logo（`logo_style = "image"`，原色显示） |
 | `README.md` 「都能接什么」表 | 加一行 `codebuddy-cli` |
 | `docs/codebuddy-cli.md` | 本方案（调研依据） |
 
@@ -305,10 +321,12 @@ runner / skills / mcp 物化层、Docker 镜像（npm 内核走 provisioner；�
    root 环境自动补 `CODEBUDDY_IS_SANDBOX=1`（与 claude 适配器的 root 逃生口同构）。
 4. **安装体积大**：tgz 69MB / 解压 226MB，npm 安装比其他内核慢，内核管理页的
    超时与回显沿用现有 provisioner 机制即可，但要预期「安装」这一步明显更久。
-5. **登录态不可移植**：官方链路依赖服务所在机器的 `codebuddy login`；
-   容器 / 多机部署下应引导用户绑自定义网关。隔离家目录是每次运行从真实配置复制
-   `.credentials.json` 的快照 —— 一次运行里刷新的 token 不会回写真实配置，
-   长期不登录的服务可能遇到「刷新了也白刷新」，重新 `codebuddy login` 即可。
+5. **登录态不可移植**：官方链路依赖服务所在机器上的一次交互式 `/login`，
+   而 token 由内核交给**系统密钥环**——容器 / 无桌面环境里通常没有密钥环，
+   交互登录自然也无法长期保存。这类部署应引导用户改用环境变量凭据
+   （`CODEBUDDY_API_KEY` + 正确的 `CODEBUDDY_INTERNET_ENVIRONMENT`，或 `CODEBUDDY_AUTH_TOKEN`），
+   而不是绑一个 OpenAI 网关（那是另一条链路，计费与模型清单都不同）。
+   隔离家目录会尽力携带 `settings*.json` 与凭据缓存；密钥环不随 `CODEBUDDY_CONFIG_DIR` 隔离。
 6. **`--strict-mcp-config` 的语义以实测为准**：旗标在 CLI 参数解析里确认存在，
    但「是否真的忽略 user/project 配置」要在 P1 验收时实测一次（拿一个本机配置的
    MCP 服务器验证它没被加载）。
@@ -323,8 +341,8 @@ runner / skills / mcp 物化层、Docker 镜像（npm 内核走 provisioner；�
 **P0 — 跑通官方链路（1 个文件 + 测试）**
 适配器骨架（invocation / parse_line / 权限 / root 逃生口 / env）、Logo、README 表格、
 `test_adapters.py` 用真实 stream-json 样本的解析用例 + `test_architecture.py` 注册表用例。
-验收：本机 `codebuddy login` 后，平台里新建 CodeBuddy 智能体 → 对话、流式、工具调用、
-多轮续接全部可用；`内核管理` 页能安装 / 更新 / 卸载。
+验收：本机（或容器内）完成官方授权后，平台里新建 CodeBuddy 智能体 → 对话、流式、
+工具调用、多轮续接全部可用；`内核管理` 页能安装 / 更新 / 卸载，并显示登录状态。
 
 **P1 — 技能与 MCP（与 claude 同构）**
 `skill_roots / discover_skills / skill_mount / skill_invocation` 与

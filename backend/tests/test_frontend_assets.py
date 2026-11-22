@@ -64,14 +64,33 @@ def test_every_kernel_declares_a_logo_that_is_committed():
             f"{definition.id} 用的是位图 Logo，必须声明 logo_style = \"image\""
         )
         blob = path.read_bytes()
-        assert blob[:8] == b"\x89PNG\r\n\x1a\n", f"{path.name} 不是 PNG（当前只校验 PNG 位图）"
-        width, height = struct.unpack(">II", blob[16:24])
+        width, height = _raster_size(path.name, blob)
         assert width == height and width <= MAX_RASTER_SIDE, (
             f"{path.name} 应为正方形且不超过 {MAX_RASTER_SIDE}px，实际 {width}×{height}"
         )
         assert len(blob) <= MAX_RASTER_BYTES, (
             f"{path.name} 超过 {MAX_RASTER_BYTES // 1024} KB，请压缩后再提交"
         )
+
+
+def _raster_size(name: str, blob: bytes) -> tuple[int, int]:
+    """读位图的宽高：只支持仓库里用到的 PNG / WebP（不引第三方依赖）。"""
+    if blob[:8] == b"\x89PNG\r\n\x1a\n":
+        return struct.unpack(">II", blob[16:24])
+    if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+        kind = blob[12:16]
+        if kind == b"VP8X":  # 扩展格式：24 位小端宽高（减一）在 24..30
+            width = int.from_bytes(blob[24:27], "little") + 1
+            height = int.from_bytes(blob[27:30], "little") + 1
+            return width, height
+        if kind == b"VP8 ":  # 有损：帧头 14 位小端宽高
+            width, height = struct.unpack("<HH", blob[26:30])
+            return width & 0x3FFF, height & 0x3FFF
+        if kind == b"VP8L":  # 无损：14 位宽高交错存放
+            bits = int.from_bytes(blob[21:25], "little")
+            return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+        raise AssertionError(f"{name} 的 WebP 子格式不认识：{kind!r}")
+    raise AssertionError(f"{name} 不是 PNG / WebP（只校验这两种位图）")
 
 
 @needs_frontend

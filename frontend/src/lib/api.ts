@@ -16,6 +16,7 @@ import type {
   SkillRescanResult,
   SkillTransferResult, TestResult,
   TitleSettings,
+  TracePage,
   UsageOverview,
   AuthUser,
   AuthSession,
@@ -134,7 +135,7 @@ export const api = {
     request<AuthSession>('/api/auth/login', { method: 'POST', body: JSON.stringify(body) }),
   register: (body: { username: string; password: string; display_name?: string; email?: string }) =>
     request<AuthSession>('/api/auth/register', { method: 'POST', body: JSON.stringify(body) }),
-  updateMe: (body: { display_name?: string | null; email?: string | null }) =>
+  updateMe: (body: { display_name?: string | null; email?: string | null; trace_debug?: boolean }) =>
     request<AuthUser>('/api/auth/me', { method: 'PUT', body: JSON.stringify(body) }),
   /** 上传头像：base64 图片（PNG / JPEG / WebP，≤2 MB），返回更新后的用户。 */
   uploadAvatar: (body: { content_base64: string; name?: string }) =>
@@ -404,6 +405,15 @@ export const api = {
   deleteConversation: (id: string) => request<void>(`/api/conversations/${id}`, { method: 'DELETE' }),
   cancelRun: (conversationId: string) =>
     request<{ ok: boolean }>(`/api/conversations/${conversationId}/cancel`, { method: 'POST' }),
+  /**
+   * 只读轨迹分页：按 `seq` 升序取 `after_seq` 之后的至多 `limit` 条。
+   * `next_after_seq` 为空表示没有下一页。**只有 GET**：打开轨迹不发任何写请求。
+   */
+  fetchTrace: (conversationId: string, afterSeq = 0, limit = 100) =>
+    request<TracePage>(
+      `/api/conversations/${conversationId}/trace?after_seq=${encodeURIComponent(String(afterSeq))}` +
+        `&limit=${encodeURIComponent(String(limit))}`,
+    ),
   resetSession: (conversationId: string) =>
     request<{ ok: boolean }>(`/api/conversations/${conversationId}/session/reset`, { method: 'POST' }),
   /** 上传附件：内容走 base64，省掉 multipart 依赖；服务端落到对话工作目录的 attachments/ */

@@ -7,7 +7,9 @@ Kimi、GLM、Qwen、OpenRouter、vLLM/Ollama…
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import Any, AsyncIterator, Iterable
 
 import httpx
@@ -38,6 +40,55 @@ from ...credentials import scrub
 from ...egress import wrap_client
 
 DEFAULT_MAX_STEPS = 12
+
+#: 轨迹里允许原样保留的 HTTP 头（其余一律掩码为 ``***``）。
+_TRACE_SAFE_HEADERS = {
+    "content-type",
+    "accept",
+    "anthropic-version",
+    "anthropic-beta",
+    "user-agent",
+    "http-referer",
+    "x-title",
+}
+
+
+def _trace_headers(headers: dict[str, str]) -> dict[str, str]:
+    """白名单脱敏：安全头原样保留，其余（含 Authorization / x-api-key）掩码。"""
+    return {
+        key: value if key.lower() in _TRACE_SAFE_HEADERS else "***"
+        for key, value in headers.items()
+    }
+
+
+class _RawSse:
+    """SSE 原始行旁路累积：只留头 128 KiB + 尾 64 KiB，避免长响应撑爆内存。"""
+
+    _HEAD_LIMIT = 128 * 1024
+    _TAIL_LIMIT = 64 * 1024
+
+    def __init__(self) -> None:
+        self._head: list[str] = []
+        self._tail: list[str] = []
+        self._head_bytes = 0
+        self._tail_bytes = 0
+        self.truncated = False
+
+    def add(self, line: str) -> None:
+        size = len(line.encode("utf-8")) + 1
+        if not self.truncated and self._head_bytes + size <= self._HEAD_LIMIT:
+            self._head.append(line)
+            self._head_bytes += size
+            return
+        self.truncated = True
+        self._tail.append(line)
+        self._tail_bytes += size
+        while self._tail and self._tail_bytes > self._TAIL_LIMIT:
+            old = self._tail.pop(0)
+            self._tail_bytes -= len(old.encode("utf-8")) + 1
+
+    def lines(self) -> list[str]:
+        return [*self._head, *self._tail]
 
 
 class OpenAIHarnessBase(AgentDefinition):
@@ -171,7 +222,9 @@ class OpenAIHarnessBase(AgentDefinition):
                     payload.pop("tools", None)
                 collected: dict[str, Any] = {"content": "", "reasoning": "", "tool_calls": []}
                 try:
-                    async for event in self._stream_request(client, url, payload, ctx, collected, totals):
+                    async for event in self._stream_request(
+                        client, url, payload, ctx, collected, totals, step=step
+                    ):
                         yield event
                 except httpx.HTTPStatusError as exc:
                     body = exc.response.text[:500]
@@ -213,34 +266,100 @@ class OpenAIHarnessBase(AgentDefinition):
         ctx: AgentContext,
         collected: dict[str, Any],
         totals: dict[str, int],
+        *,
+        step: int,
     ) -> AsyncIterator[AgentEvent]:
-        async with client.stream("POST", url, json=payload, headers=self.http_headers(ctx)) as response:
-            if response.status_code >= 400:
-                await response.aread()
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                if chunk.get("usage"):
-                    totals["prompt_tokens"] += chunk["usage"].get("prompt_tokens", 0) or 0
-                    totals["completion_tokens"] += chunk["usage"].get("completion_tokens", 0) or 0
-                for choice in chunk.get("choices") or []:
-                    delta = choice.get("delta") or {}
-                    if delta.get("reasoning_content"):
-                        collected["reasoning"] += delta["reasoning_content"]
-                        yield thinking_delta(delta["reasoning_content"])
-                    if delta.get("content"):
-                        collected["content"] += delta["content"]
-                        yield text_delta(delta["content"])
-                    for call in delta.get("tool_calls") or []:
-                        _merge_tool_call(collected["tool_calls"], call)
+        trace = ctx.trace
+        headers = self.http_headers(ctx)
+        started = time.monotonic()
+        raw = _RawSse()
+        status_code: int | None = None
+        finish_reason: str | None = None
+        chunk_count = 0
+        step_usage: dict[str, int] = {}
+
+        if trace is not None:
+            await trace.request(
+                {
+                    "transport": "http",
+                    "method": "POST",
+                    "url": url,
+                    "model": payload.get("model"),
+                    "headers": _trace_headers(headers),
+                    "body": payload,
+                    "step": step,
+                },
+                immediate=True,
+            )
+
+        def payload_for_response(error_text: str | None = None) -> dict[str, Any]:
+            data: dict[str, Any] = {
+                "transport": "http",
+                "status_code": status_code,
+                "finish_reason": finish_reason,
+                "usage": step_usage or None,
+                "raw_sse": raw.lines(),
+                "chunk_count": chunk_count,
+                "step": step,
+            }
+            if error_text:
+                data["error"] = error_text
+            return data
+
+        try:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                status_code = response.status_code
+                if response.status_code >= 400:
+                    await response.aread()
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    raw.add(line)
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    chunk_count += 1
+                    if chunk.get("usage"):
+                        for key in ("prompt_tokens", "completion_tokens"):
+                            value = chunk["usage"].get(key, 0) or 0
+                            totals[key] += value
+                            step_usage[key] = step_usage.get(key, 0) + value
+                    for choice in chunk.get("choices") or []:
+                        # 补读 finish_reason（全仓库此前完全没读，见方案 §10 偏差 4）。
+                        reason = choice.get("finish_reason")
+                        if reason:
+                            finish_reason = reason
+                        delta = choice.get("delta") or {}
+                        if delta.get("reasoning_content"):
+                            collected["reasoning"] += delta["reasoning_content"]
+                            yield thinking_delta(delta["reasoning_content"])
+                        if delta.get("content"):
+                            collected["content"] += delta["content"]
+                            yield text_delta(delta["content"])
+                        for call in delta.get("tool_calls") or []:
+                            _merge_tool_call(collected["tool_calls"], call)
+            if trace is not None:
+                await trace.response(
+                    payload_for_response(),
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    truncated=raw.truncated,
+                )
+        except (Exception, asyncio.CancelledError) as exc:
+            if trace is not None:
+                await trace.response(
+                    payload_for_response(str(exc)),
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    error=str(exc),
+                    truncated=raw.truncated,
+                )
+            raise
 
     async def _execute_tools(
         self,
@@ -331,6 +450,8 @@ class OpenAICompatibleHarness(OpenAIHarnessBase):
     protocol = "openai"
     default_auth_style = "bearer"
     default_models = ["gpt-4o-mini"]
-    logo = "/icons/kernels/openai.svg"
+    logo = "/icons/kernels/openai.webp"
+    #: OpenAI 的立体徽标是真彩色的，按原色显示才认得出来。
+    logo_style = "image"
     #: 通用兼容模板：不在「新建智能体」的内核下拉里推荐，存量智能体照旧可用。
     selectable = False

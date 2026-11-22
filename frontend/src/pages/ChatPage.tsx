@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useNavigate, useParams } from 'react-router-dom'
 import { Composer } from '../components/Composer'
 import { ConversationThread, type ConversationThreadItem } from '../components/ConversationThread'
-import { AgentIcon, FolderIcon, MenuIcon, ModelIcon, PlusIcon, ShareIcon, SpeakerIcon } from '../components/Icons'
+import { AgentIcon, FolderIcon, MenuIcon, ModelIcon, PlusIcon, ShareIcon, SpeakerIcon, TraceIcon } from '../components/Icons'
+import { TraceDrawer } from '../components/TraceDrawer'
 import { AgentAvatar } from '../components/AgentAvatar'
 import { MascotStage } from '../components/MascotStage'
 import type { RenderMessage } from '../components/MessageView'
@@ -85,6 +86,11 @@ export function ChatPage() {
   const sidebarCollapsed = sidebarNarrow || manualCollapsed
   /** 顶栏「新建对话」正在创建（期间按钮置灰，避免连点开出两条） */
   const [creating, setCreating] = useState(false)
+  /**
+   * 轨迹调试抽屉是否打开。按钮显隐只由后端权威开关 `user.trace_debug` 决定
+   * （设置页改它），这里只是「当前这条对话的抽屉开没开」。
+   */
+  const [traceOpen, setTraceOpen] = useState(false)
   /** 「显示工具调用」（输入区齿轮菜单）：关掉后对话只亮最终回复（本机偏好，默认显示） */
   const { showTools, setShowTools } = useShowTools()
   /** 打开 / 轮询到已完成的回复时，把这条对话标为已读（左侧栏的未读点据此消失） */
@@ -260,6 +266,12 @@ export function ChatPage() {
       }
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId])
+
+  // 切到别的对话时收起轨迹抽屉：抽屉里画的是「打开时那条对话」的轨迹，
+  // 留着会让人把上一条的轨迹误认成当前这条的。
+  useEffect(() => {
+    setTraceOpen(false)
   }, [conversationId])
 
   // 流式输出时只在下沿跟随；用户把滚轮往上翻看历史，就停在原处，不再被拽回底部。
@@ -963,6 +975,19 @@ export function ChatPage() {
                 >
                   <PlusIcon size={18} />
                 </button>
+                {/* 调试按钮紧挨「新建对话」：显隐只认后端权威开关 user.trace_debug，
+                    关闭时整颗按钮不渲染（不是 display:none，避免被误点）。 */}
+                {user?.trace_debug === true && (
+                  <button
+                    className={`icon-btn${traceOpen ? ' on' : ''}`}
+                    onClick={() => setTraceOpen((open) => !open)}
+                    aria-label="轨迹调试"
+                    aria-pressed={traceOpen}
+                    title="查看这条对话的调试轨迹（只读，不发写请求）"
+                  >
+                    <TraceIcon size={18} />
+                  </button>
+                )}
               </div>
               <div className="chat-topbar-actions">
                 <button
@@ -1212,6 +1237,11 @@ export function ChatPage() {
           </div>
         )}
       </section>
+
+      {/* 轨迹抽屉是覆盖层的只读旁路：不卸载 ChatPage，正在跑的 SSE 与滚动位置都不丢。 */}
+      {traceOpen && active && user?.trace_debug === true && (
+        <TraceDrawer conversation={active} onClose={() => setTraceOpen(false)} />
+      )}
 
       {scopePanel === 'workspace' && active && (
         <Modal

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../../lib/api'
 import type { AgentProfile, ImChat, ImConnection, ImPeer, ImPlatform } from '../../lib/types'
+import { PlatformIcon } from '../../components/PlatformIcon'
 import { MobileSheet } from '../components/MobileSheet'
 import { MobileTopBar } from '../components/MobileTopBar'
 import { describeError } from '../util'
@@ -162,7 +163,7 @@ export function MobileImPage() {
                   disabled={!platform.available}
                   onClick={() => setAdding(platform)}
                 >
-                  <span style={{ fontSize: 18 }}>{platform.icon}</span>
+                  <PlatformIcon icon={platform.icon} size={20} />
                   <span className="m-item-main">
                     <span className="m-item-title">{platform.name}</span>
                     <span className="m-item-sub">

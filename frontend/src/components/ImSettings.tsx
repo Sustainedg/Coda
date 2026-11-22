@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Modal } from './Modal'
+import { PlatformIcon } from './PlatformIcon'
 import { api, ApiError } from '../lib/api'
 import type { AgentProfile, ImChat, ImConnection, ImPeer, ImPlatform } from '../lib/types'
 
@@ -173,7 +174,8 @@ export function ImSettings() {
                   <div className="card-head">
                     <div style={{ minWidth: 0 }}>
                       <div className="card-title">
-                        {platform?.icon ?? '🔌'} {connection.account_name || connection.platform_name}
+                        <PlatformIcon icon={platform?.icon} fallback="🔌" />
+                        {connection.account_name || connection.platform_name}
                       </div>
                       <div className="card-sub">
                         {connection.platform_name} · {stateText(connection)}
@@ -354,7 +356,8 @@ export function ImSettings() {
                 <div className="card-head">
                   <div style={{ minWidth: 0 }}>
                     <div className="card-title">
-                      {platform.icon} {platform.name}
+                      <PlatformIcon icon={platform.icon} />
+                      {platform.name}
                     </div>
                     <div className="card-sub">
                       {platform.available

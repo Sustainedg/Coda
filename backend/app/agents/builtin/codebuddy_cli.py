@@ -4,12 +4,16 @@ CodeBuddy Code 是 Claude Code 家族的 headless 内核：``-p --output-format 
 的事件形状、``--resume`` 续接、``Skill`` 工具与 ``--mcp-config --strict-mcp-config``
 都与 Claude Code 同构，因此本适配器在结构上刻意与 ``claude_code.py`` 对齐。
 
-两处必须区别对待：
+三处必须区别对待：
 
 * **配置目录**是 ``CODEBUDDY_CONFIG_DIR``（不是 ``CLAUDE_CONFIG_DIR``）；
 * **自定义网关**只能走 ``models.json``（CodeBuddy 仅支持 OpenAI 兼容接口），
   不能像 Claude Code 那样用 ``base_url_env`` —— ``CODEBUDDY_BASE_URL`` 会被内核拼成
-  ``<base>/v2/chat/completions``，那是它自家协议，不是平台的 OpenAI 网关。
+  ``<base>/v2/chat/completions``，那是它自家协议，不是平台的 OpenAI 网关；
+* **官方链路**是「本机账号登录 + 站点选择」：交互式 TUI 里 ``/login`` 完成授权，
+  凭据由内核交给**系统密钥环**（容器里通常没有）。无头部署请改用
+  ``CODEBUDDY_API_KEY``（中国版必须同时设 ``CODEBUDDY_INTERNET_ENVIRONMENT=internal``）
+  或 ``CODEBUDDY_AUTH_TOKEN``，否则请求会打到海外站 www.codebuddy.ai 而鉴权失败。
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ from ..base import (
     AgentContext,
     AgentDefinition,
     AgentRun,
+    AuthStatus,
     Capabilities,
     ConfigField,
     FieldType,
@@ -69,9 +74,16 @@ _MODELS_FILE = "models.json"
 #: 内核自己的用户级配置文件，按顺序合并（后者覆盖前者）。
 _SYSTEM_SETTINGS_FILES = ("settings.json", "settings.local.json")
 
-#: 账号登录凭据（``codebuddy login`` 写在这里）。隔离配置目录会把登录态一起带走，
-#: 因此每次运行前从真实配置目录复制一份，官方链路才能直接用本机账号。
-_AUTH_FILE = ".credentials.json"
+#: 本机的凭据缓存文件（插件选项 / MCP OAuth 等）。**账号登录**的 token 由内核交给
+#: 系统密钥环（macOS Keychain / GNOME Keyring / KWallet / Windows 凭据管理器），
+#: 容器里往往没有密钥环 —— 这时下面这几份缓存是唯一能跟着隔离目录走的东西。
+_CREDENTIAL_FILES = (".credentials.json", "credentials.json")
+
+#: 官方链路的站点选择。国际站不设；中国版 / iOA / 专享 / 私有化各有取值。
+_NETWORK_ENV = "CODEBUDDY_INTERNET_ENVIRONMENT"
+#: 官方链路的两种无头凭据（优先级：AUTH_TOKEN > apiKeyHelper > API_KEY）。
+_AUTH_TOKEN_ENV = "CODEBUDDY_AUTH_TOKEN"
+_API_KEY_ENV = "CODEBUDDY_API_KEY"
 
 #: 平台「技能市场」安装目录（``<config>/skills/.skillhub/<skill>``），可卸载。
 _MARKET_DIRNAME = ".skillhub"
@@ -175,6 +187,25 @@ def read_system_settings(home: str | Path | None = None) -> dict[str, Any]:
     return merged
 
 
+def _setting_present(name: str, file_env: dict[str, Any]) -> bool:
+    """进程环境变量或内核配置的 ``env`` 里是否存在非空的同名项。"""
+    value = os.environ.get(name) or file_env.get(name)
+    return bool(str(value or "").strip())
+
+
+def _credential_cache_names() -> list[str]:
+    """本机存在且非空的凭据缓存文件名；读不到 / 解析不了都当没有。"""
+    found: list[str] = []
+    for name in _CREDENTIAL_FILES:
+        try:
+            data = json.loads((config_dir() / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data:
+            found.append(name)
+    return found
+
+
 def _is_root() -> bool:
     """当前进程是否以 root 身份运行（real uid，与内核的判定一致）。"""
     getuid = getattr(os, "getuid", None)
@@ -219,6 +250,13 @@ class CodeBuddyCliAgent(AgentDefinition):
         latest_argv=npm_cli("view", "@tencent-ai/codebuddy-code", "version"),
         prepare_argv=npm_prepare_argv("@tencent-ai/codebuddy-code"),
         homepage="https://cnb.cool/codebuddy/codebuddy-code",
+        note=(
+            "官方链路要「本机账号登录」：在容器内运行 `codebuddy` 后输入 `/login` 完成授权"
+            "（凭据存系统密钥环，容器里通常没有）。无密钥环的部署请改用"
+            " CODEBUDDY_API_KEY（中国版需把「官方网络环境」设为 internal）"
+            " 或 CODEBUDDY_AUTH_TOKEN，填在智能体的「环境变量」里。"
+            "自定义网关则直接走 models.json，与账号登录无关。"
+        ),
     )
     #: CodeBuddy 的官方链路是「本机账号登录」，不是 API Key 网关；
     #: 这里声明的变量只用于自定义网关（models.json 里的 ``${CODEBUDDY_API_KEY}``）。
@@ -234,7 +272,9 @@ class CodeBuddyCliAgent(AgentDefinition):
     default_auth_style = "bearer"
     default_models = ["default-model"]
     docs_url = "https://cnb.cool/codebuddy/codebuddy-code"
-    logo = "/icons/kernels/codebuddy.svg"
+    logo = "/icons/kernels/codebuddy.webp"
+    #: 紫青渐变的方形标是真彩色的，按原色显示才认得出来。
+    logo_style = "image"
     capabilities = Capabilities(
         streaming=True,
         sessions=True,
@@ -276,6 +316,24 @@ class CodeBuddyCliAgent(AgentDefinition):
                 {"value": "replace", "label": "完全替换系统提示词"},
             ],
         ),
+        ConfigField(
+            "network_environment",
+            "官方网络环境",
+            FieldType.SELECT,
+            default="",
+            options=[
+                {"value": "", "label": "不注入 · 跟随内核默认（国际站 www.codebuddy.ai）"},
+                {"value": "internal", "label": "中国版 · copilot.tencent.com"},
+                {"value": "ioa", "label": "iOA 企业版"},
+                {"value": "cloudhosted", "label": "专享版 · cloudhosted"},
+                {"value": "selfhosted", "label": "私有化部署 · selfhosted"},
+            ],
+            help=(
+                "只影响官方链路（「官方默认」网关或环境变量凭据），绑定自定义网关时不注入。"
+                "用中国版 API 密钥必须选 internal，否则请求会打到海外站 www.codebuddy.ai "
+                "而鉴权失败；专享版 / 私有化部署还需要在 settings.json 里另行配置 endpoint。"
+            ),
+        ),
         ConfigField("partial_messages", "逐字流式输出", FieldType.BOOLEAN, default=True),
         ConfigField(
             "allowed_tools",
@@ -305,6 +363,57 @@ class CodeBuddyCliAgent(AgentDefinition):
             or (str(settings["model"]) if settings.get("model") else None)
         )
         return {"model": model} if model else {}
+
+    # -- 登录状态 ------------------------------------------------------------
+
+    def auth_status(self) -> AuthStatus:
+        """尽力而为地判断官方链路是否已就绪（不联网、不消耗积分）。
+
+        内核把交互登录的 token 交给**系统密钥环**，平台进程读不到，容器里往往也
+        没有密钥环，所以这里只做「配置层」判断，不验证凭据有效性：
+
+        * 环境变量凭据 / ``apiKeyHelper`` 已配置 → ``logged_in=None``（未知，附说明）；
+        * 本机存在非空的凭据缓存文件 → ``logged_in=True``；
+        * 两者都没有 → ``logged_in=False``，并给出可直接照做的修复建议。
+
+        真正的有效性由内核在运行时确认；失败会以错误事件回到对话里，不会被这里掩盖。
+        """
+        settings = read_system_settings()
+        file_env = settings.get("env") if isinstance(settings.get("env"), dict) else {}
+        if _setting_present(_AUTH_TOKEN_ENV, file_env):
+            return AuthStatus(
+                required=True,
+                logged_in=None,
+                detail="已通过 CODEBUDDY_AUTH_TOKEN 配置凭据（平台不联网校验，以运行结果为准）",
+            )
+        if _setting_present(_API_KEY_ENV, file_env):
+            return AuthStatus(
+                required=True,
+                logged_in=None,
+                detail="已通过 CODEBUDDY_API_KEY 配置凭据（平台不联网校验，以运行结果为准）",
+            )
+        if str(settings.get("apiKeyHelper") or "").strip():
+            return AuthStatus(
+                required=True,
+                logged_in=None,
+                detail="已配置 apiKeyHelper 动态获取 token（平台不联网校验）",
+            )
+        caches = _credential_cache_names()
+        if caches:
+            return AuthStatus(
+                required=True,
+                logged_in=True,
+                detail=f"检测到本机凭据缓存（{caches[0]}），以运行结果为准",
+            )
+        return AuthStatus(
+            required=True,
+            logged_in=False,
+            detail=(
+                "未检测到登录凭据：在容器内运行 `codebuddy` 后输入 `/login` 完成交互登录；"
+                "没有系统密钥环的部署请改用 CODEBUDDY_API_KEY"
+                "（中国版需把「官方网络环境」设为 internal）或 CODEBUDDY_AUTH_TOKEN"
+            ),
+        )
 
     # -- 技能 ----------------------------------------------------------------
 
@@ -346,10 +455,11 @@ class CodeBuddyCliAgent(AgentDefinition):
         root = config_dir()
         return SkillMount(
             home_name="codebuddy-home",
-            # 只携带用户偏好与登录态，不携带技能目录：技能由平台按分配严格重建。
-            # 隔离目录是每次对话自己的「家」，不带登录态的话官方链路会变成未登录。
+            # 只携带用户偏好与凭据缓存，不携带技能目录：技能由平台按分配严格重建。
+            # 隔离目录是每次对话自己的「家」，不带这些的话官方链路会变成未登录。
             carry=[
-                (str(root / name), name) for name in (*_SYSTEM_SETTINGS_FILES, _AUTH_FILE)
+                (str(root / name), name)
+                for name in (*_SYSTEM_SETTINGS_FILES, *_CREDENTIAL_FILES)
             ],
             notes=notes,
         )
@@ -435,6 +545,10 @@ class CodeBuddyCliAgent(AgentDefinition):
         argv += [str(a) for a in as_list(options.get("extra_args") or [])]
 
         env = self.effective_env(ctx)
+        # 官方链路的站点选择：只在「没绑自定义网关」时注入，第三方模型服务不需要它。
+        network = str(options.get("network_environment") or "").strip()
+        if network and not (ctx.gateway_url and ctx.api_key):
+            env.setdefault(_NETWORK_ENV, network)
         # root + bypassPermissions 需要内核认作「有意的沙箱」，见 _root_bypass_escape
         sandbox_escape = _root_bypass_escape(ctx)
         if sandbox_escape is not None:

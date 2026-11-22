@@ -8,6 +8,7 @@ import { ImSettings } from '../components/ImSettings'
 import { KernelManager } from '../components/KernelManager'
 import { ProxySettings } from '../components/ProxySettings'
 import { TitleSettingsSection } from '../components/TitleSettings'
+import { TraceSettingsSection } from '../components/TraceSettingsSection'
 import { UpdatePanel } from '../components/UpdatePanel'
 import { api, ApiError } from '../lib/api'
 import { desktopUpdates } from '../lib/desktop'
@@ -150,16 +151,21 @@ export function SettingsPage() {
 
         {tab === 'users' && isAdmin && <UserAdminPanel />}
 
-        {/* 「对话」与「网络」是平台级设置（后端只允许管理员写入）：成员看得到说明，不给编辑入口。 */}
-        {tab === 'chat' &&
-          (isAdmin ? (
-            <TitleSettingsSection />
-          ) : (
-            <section className="card">
-              <div className="card-title">自动起标题由管理员配置</div>
-              <p className="dim small">这一项影响全平台，只有管理员能修改。</p>
-            </section>
-          ))}
+        {/* 「对话」标签：「调试模式」是**用户级**开关（所有人都能改自己的），
+            与平台级的「自动起标题」（管理员）并列；后者仍只给管理员编辑入口。 */}
+        {tab === 'chat' && (
+          <>
+            <TraceSettingsSection />
+            {isAdmin ? (
+              <TitleSettingsSection />
+            ) : (
+              <section className="card">
+                <div className="card-title">自动起标题由管理员配置</div>
+                <p className="dim small">这一项影响全平台，只有管理员能修改。</p>
+              </section>
+            )}
+          </>
+        )}
 
         {tab === 'gateways' && <GatewayManager />}
 

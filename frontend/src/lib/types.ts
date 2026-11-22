@@ -94,6 +94,12 @@ export interface AgentRuntime {
   executable?: string | null
   /** 有多少个智能体在用这个运行时 */
   agents: number
+  /**
+   * 该内核是否支持登录态探测。
+   * 与 `provisioning.commands.login` 分开：有些内核只能在交互式终端里登录
+   * （平台代跑不了），但登录状态照样值得展示。
+   */
+  auth_supported?: boolean
   provisioning: RuntimeProvisioning
 }
 
@@ -563,6 +569,48 @@ export interface ConversationModelOptions {
   gateway?: string | null
   /** 网关白名单里的模型；官方默认时为空，前端允许直接填写模型名 */
   models: string[]
+}
+
+/* ---------- 轨迹调试视图（`GET /api/conversations/{id}/trace`，只读）---------- */
+
+/** 轨迹事件的五类（后端权威定义见 `docs/trace-debug-view-plan.md` §4.1）。 */
+export type TraceEventType =
+  | 'request'
+  | 'response'
+  | 'tool_call'
+  | 'tool_result'
+  | 'context_snapshot'
+
+/**
+ * 一条轨迹事件（只读响应，字段与方案 §4.1 / `TraceEventRead` 对齐）。
+ *
+ * `session_id` 是**平台对话 id**（= `Conversation.id`），不是内核会话 id；
+ * 内核会话 id 在 `payload.kernel_session_id`。`payload` 原样返回（入库前已统一脱敏）。
+ */
+export interface TraceEvent {
+  id: string
+  session_id: string
+  owner_id?: string | null
+  run_id?: string | null
+  /** 该对话第几轮用户消息（0 起） */
+  turn_index: number
+  /** 会话内严格递增：时间线排序与分页的稳定键 */
+  seq: number
+  /** 采集时刻（UTC ISO8601，带 +00:00） */
+  timestamp: string
+  type: TraceEventType
+  payload: Record<string, unknown>
+  duration_ms?: number | null
+  error?: string | null
+  /** payload 是否因体积上限被截断（截断前大小看 `bytes`） */
+  truncated: boolean
+  bytes: number
+}
+
+/** 轨迹分页响应：`next_after_seq` 为空表示没有下一页。 */
+export interface TracePage {
+  items: TraceEvent[]
+  next_after_seq: number | null
 }
 
 /** 一条对话里出现过的智能体（主场 + 被 @ 召唤过的），列表行画头像用。 */
@@ -1177,6 +1225,11 @@ export interface AuthUser {
    * 为空回退到首字母圆。它同时是本地缓存键 —— 换头像就换值。
    */
   avatar?: string | null
+  /**
+   * 轨迹调试开关（用户级，权威真值在 `users.trace_debug`，默认关闭）。
+   * 前端只读它决定调试按钮显隐，改开关必须走 `api.updateMe`，不能只存本地。
+   */
+  trace_debug?: boolean
 }
 
 /** 登录 / 注册成功的响应。 */

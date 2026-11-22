@@ -12,11 +12,12 @@ from typing import AsyncIterator, Callable
 
 from ..agents import AgentContext, AgentDefinition, AgentRun, Runtime
 from ..agents.events import AgentEvent, error, log, run_finished, run_started
-from ..credentials import scrub_event
+from ..credentials import scrub, scrub_event
 from ..egress import proxy_env_for_subprocess
 from ..settings import get_settings
 from .manager import ActiveRun
 from .processes import kill_tree_async
+from .trace import RawCollector
 
 
 #: 读取子进程输出时每次取回的字节数。
@@ -225,6 +226,9 @@ async def stream_cli_run(
         else asyncio.get_event_loop().time() + timeout_seconds
     )
     agent_run: AgentRun = definition.create_run(ctx)
+    trace = ctx.trace
+    #: 旁路累积 stdout 原始行，运行结束/取消时作为一条 response 落轨迹。
+    raw_lines = RawCollector()
     try:
         invocation = agent_run.build_invocation()
     except Exception as exc:  # noqa: BLE001 - 把配置错误显式暴露给用户
@@ -262,6 +266,40 @@ async def stream_cli_run(
         preview = preview[:400] + " …"
     yield log(preview, "command")
 
+    async def trace_response(exit_code: int | None, stderr_text: str = "", error_text: str | None = None) -> None:
+        """把一次子进程运行的结果（原始 stdout 行 + 退出码）落成一条 response。"""
+        if trace is None:
+            return
+        secrets = _run_secrets(ctx)
+        payload: dict = {
+            "transport": "cli",
+            "granularity": "run",
+            "raw_lines": raw_lines.lines(),
+            "exit_code": exit_code,
+        }
+        tail = scrub(stderr_text[-4000:], secrets) if stderr_text else None
+        if tail:
+            payload["stderr_tail"] = tail
+        if error_text:
+            payload["error"] = error_text
+        await trace.response(payload, error=error_text, truncated=raw_lines.truncated)
+
+    # 启动前先记一条 request：即使子进程起不来，也能回看真实启动参数（不是模型 HTTP 请求体）。
+    if trace is not None:
+        await trace.request(
+            {
+                "transport": "cli",
+                "invocation": {
+                    "argv": _redact(invocation.argv, env, *_run_secrets(ctx)),
+                    "stdin": invocation.stdin,
+                    "env_keys": sorted({*invocation.env, *(ctx.credentials or {})}),
+                    "files": sorted((invocation.files or {}).keys()),
+                    "cwd": str(cwd),
+                },
+            },
+            immediate=True,
+        )
+
     try:
         process = await asyncio.create_subprocess_exec(
             # Windows 上 .cmd 垫片要经 cmd.exe 启动（npm 分发内核的默认形态）
@@ -273,11 +311,15 @@ async def stream_cli_run(
             stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError:
-        yield error(f"`{invocation.argv[0]}` 未安装或不在 PATH 中")
+        message = f"`{invocation.argv[0]}` 未安装或不在 PATH 中"
+        await trace_response(None, error_text=message)
+        yield error(message)
         yield run_finished("error")
         return
     except PermissionError as exc:
-        yield error(f"无法执行 `{invocation.argv[0]}`：{exc}")
+        message = f"无法执行 `{invocation.argv[0]}`：{exc}"
+        await trace_response(None, error_text=message)
+        yield error(message)
         yield run_finished("error")
         return
 
@@ -365,22 +407,34 @@ async def stream_cli_run(
                 )
             if line is None:
                 break
-            for event in agent_run.feed(line.decode("utf-8", "replace").rstrip("\n")):
+            text_line = line.decode("utf-8", "replace").rstrip("\n")
+            raw_lines.add(text_line)
+            for event in agent_run.feed(text_line):
                 yield scrub_event(event, _run_secrets(ctx))
             # 适配器可能在解析这一行后排出了要写回内核的请求（双向 JSON-RPC：先 initialize，
             # 拿到 thread id 再 turn/start）。运行层统一代写，管道断了就当作内核已收工。
             alive = True
-            for payload in agent_run.take_outbound():
+            outbound = agent_run.take_outbound()
+            for payload in outbound:
                 alive = await write_stdin(payload)
                 if not alive:
                     break
+            if outbound and trace is not None:
+                # 双向 JSON-RPC 的写回也属于本次运行的「请求」：如实记在 request.outbound，
+                # 不冒充模型 HTTP 请求体（方案 §10 偏差 1）。
+                await trace.request(
+                    {"transport": "cli", "outbound": outbound},
+                    immediate=True,
+                )
             if not alive or agent_run.done:
                 break
 
         leftover = stdout_lines.take_leftover()
         if leftover:
             # 提前收工时可能还剩一条没写换行的尾巴，别丢掉（EOF 路径下这里必为空）。
-            for event in agent_run.feed(leftover.decode("utf-8", "replace")):
+            left_text = leftover.decode("utf-8", "replace")
+            raw_lines.add(left_text)
+            for event in agent_run.feed(left_text):
                 yield scrub_event(event, _run_secrets(ctx))
         for event in agent_run.finish():
             yield scrub_event(event, _run_secrets(ctx))
@@ -403,6 +457,9 @@ async def stream_cli_run(
             )
         stderr_text = "".join(stderr_chunks).strip()
         shutil.rmtree(run_dir, ignore_errors=True)
+
+    # 运行结束 / 取消：把原始 stdout 行与退出码落成一条 response（子进程内部的 HTTP 不可见）。
+    await trace_response(process.returncode, stderr_text)
 
     if stderr_text and process.returncode not in (0, None):
         yield scrub_event(log(stderr_text[-4000:], "stderr"), _run_secrets(ctx))

@@ -52,6 +52,39 @@ def test_claude_code_invocation_and_auth_styles():
     assert "ANTHROPIC_AUTH_TOKEN" not in keyed.env
 
 
+def test_claude_code_system_prompt_disables_snapshot():
+    """注入人格必须同时关掉内核的「系统提示词快照」。
+
+    Claude Code 默认把系统提示词在会话第一次请求时拍成快照，``--resume`` 续接时
+    原样重放旧版本、无视本轮传入的人格文本（append 与 replace 都一样）——平台语义
+    是每轮按智能体当前人格重新注入，因此两种模式都要带上关闭旗标。
+    """
+    definition = get_agent("claude-code")
+
+    # append（默认）：注入人格 → 必须带 --system-prompt-snapshot off
+    appended = definition.build_invocation(ctx())
+    assert "--append-system-prompt" in appended.argv
+    assert appended.argv[appended.argv.index("--system-prompt-snapshot") + 1] == "off"
+
+    # replace（完全覆盖）：同样必须带，否则存量对话续聊时换不掉第一次的旧快照
+    replaced = definition.build_invocation(ctx(options={"system_prompt_mode": "replace"}))
+    assert "--system-prompt" in replaced.argv
+    assert "--append-system-prompt" not in replaced.argv
+    assert replaced.argv[replaced.argv.index("--system-prompt-snapshot") + 1] == "off"
+
+    # resume 场景：续接 + 人格注入，旗标仍在
+    resumed = definition.build_invocation(
+        ctx(session_id="s-1", options={"system_prompt_mode": "replace"})
+    )
+    assert resumed.argv[resumed.argv.index("--resume") + 1] == "s-1"
+    assert resumed.argv[resumed.argv.index("--system-prompt-snapshot") + 1] == "off"
+
+    # 没有人格时不带旗标：快照开着与否无从谈起，保持命令行最小
+    bare = definition.build_invocation(ctx(system_prompt=None))
+    assert "--system-prompt-snapshot" not in bare.argv
+    assert "--append-system-prompt" not in bare.argv
+
+
 def test_claude_code_stream_parsing_dedupes_partial_text():
     definition = get_agent("claude-code")
     context = ctx()
@@ -861,6 +894,8 @@ def _isolate_codebuddy_env(monkeypatch, tmp_path) -> None:
         "CODEBUDDY_CONFIG_DIR",
         "CODEBUDDY_MODEL",
         "CODEBUDDY_API_KEY",
+        "CODEBUDDY_AUTH_TOKEN",
+        "CODEBUDDY_INTERNET_ENVIRONMENT",
         "CODEBUDDY_IS_SANDBOX",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -1077,3 +1112,88 @@ def test_codebuddy_system_defaults_reads_local_settings(monkeypatch, tmp_path):
     assert defaults["model"] == "hy3"
     # 本机 CODEBUDDY_BASE_URL 不能当成平台网关地址回填
     assert "gateway_url" not in defaults
+
+
+def test_codebuddy_network_environment_only_applies_to_official_path(monkeypatch, tmp_path):
+    """官方链路要按站点注入 CODEBUDDY_INTERNET_ENVIRONMENT；自定义网关与它无关。"""
+    _isolate_codebuddy_env(monkeypatch, tmp_path)
+    definition = get_agent("codebuddy-cli")
+
+    # 默认不注入：跟随内核自己的站点选择（国际站）
+    assert "CODEBUDDY_INTERNET_ENVIRONMENT" not in definition.build_invocation(ctx()).env
+
+    official = definition.build_invocation(
+        ctx(gateway_url=None, api_key=None, options={"network_environment": "internal"})
+    )
+    assert official.env["CODEBUDDY_INTERNET_ENVIRONMENT"] == "internal"
+
+    # 绑了自定义网关时请求直接打第三方，站点选择没有意义
+    custom = definition.build_invocation(ctx(options={"network_environment": "internal"}))
+    assert "CODEBUDDY_INTERNET_ENVIRONMENT" not in custom.env
+
+    # 用户自己配的同名环境变量优先
+    manual = definition.build_invocation(
+        ctx(
+            gateway_url=None,
+            api_key=None,
+            options={
+                "network_environment": "internal",
+                "env": {"CODEBUDDY_INTERNET_ENVIRONMENT": "ioa"},
+            },
+        )
+    )
+    assert manual.env["CODEBUDDY_INTERNET_ENVIRONMENT"] == "ioa"
+
+
+def test_codebuddy_auth_status_reports_credential_sources(monkeypatch, tmp_path):
+    """登录态只做「配置层」判断：环境变量凭据 → 未知；本机凭据缓存 → 已登录。"""
+    _isolate_codebuddy_env(monkeypatch, tmp_path)
+    definition = get_agent("codebuddy-cli")
+    cfg = tmp_path / ".codebuddy"
+
+    status = definition.auth_status()
+    assert status.required is True
+    assert status.logged_in is False
+    assert "/login" in (status.detail or "")
+
+    # 非空的凭据缓存算「已登录」
+    cfg.mkdir(parents=True)
+    (cfg / ".credentials.json").write_text(
+        json.dumps({"mcp-server": {"accessToken": "x"}}), encoding="utf-8"
+    )
+    assert definition.auth_status().logged_in is True
+
+    # 空对象只是占位文件，不能当成登录态
+    (cfg / ".credentials.json").write_text("{}", encoding="utf-8")
+    assert definition.auth_status().logged_in is False
+
+    # 环境变量凭据：平台不联网校验，结论是「未知」但要说清来源
+    monkeypatch.setenv("CODEBUDDY_API_KEY", "sk-official")
+    status = definition.auth_status()
+    assert status.logged_in is None
+    assert "CODEBUDDY_API_KEY" in (status.detail or "")
+
+    # 写进 settings.json 的 env 同样要认
+    monkeypatch.delenv("CODEBUDDY_API_KEY")
+    (cfg / "settings.json").write_text(
+        json.dumps({"env": {"CODEBUDDY_AUTH_TOKEN": "oauth-token"}}), encoding="utf-8"
+    )
+    status = definition.auth_status()
+    assert status.logged_in is None
+    assert "CODEBUDDY_AUTH_TOKEN" in (status.detail or "")
+
+    # apiKeyHelper（企业 OAuth 自动刷新）也算「已配置」
+    (cfg / "settings.json").write_text(
+        json.dumps({"apiKeyHelper": "/opt/bin/get-token.sh"}), encoding="utf-8"
+    )
+    status = definition.auth_status()
+    assert status.logged_in is None
+    assert "apiKeyHelper" in (status.detail or "")
+
+
+def test_codebuddy_probes_auth_without_declaring_a_login_command():
+    """内核没有 `login` 子命令：只声明登录态探测，不假装有可代跑的登录动作。"""
+    definition = get_agent("codebuddy-cli")
+    assert definition.supports_auth() is True
+    assert definition.provisioner is not None
+    assert definition.provisioner.supports("login") is False

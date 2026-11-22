@@ -74,7 +74,9 @@ class GeminiCliAgent(AgentDefinition):
     default_auth_style = "query"
     default_models = ["gemini-2.5-pro"]
     docs_url = "https://github.com/google-gemini/gemini-cli"
-    logo = "/icons/kernels/gemini.svg"
+    logo = "/icons/kernels/gemini.webp"
+    #: Gemini CLI 的渐变描边图标是真彩色的，按原色显示才认得出来。
+    logo_style = "image"
     capabilities = Capabilities(
         streaming=True,
         sessions=True,

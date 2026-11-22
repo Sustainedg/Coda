@@ -466,9 +466,15 @@ async def test_list_runtimes_reports_status_and_provisioning(client: httpx.Async
     assert claude["provisioning"]["commands"]["install"]
     assert isinstance(claude["agents"], int)
     # 界面按这个路径渲染官方 Logo，必须随接口一起下发（不能只在前端硬编码）
-    assert claude["logo"] == "/icons/kernels/claude.svg"
+    assert claude["logo"] == "/icons/kernels/claude.webp"
+    assert claude["logo_style"] == "image"
     assert all(item["logo"] for item in payload["items"])
     assert items["openai-harness"]["provisioning"]["supported"] is False
+    # 登录态探测与「有没有可代跑的登录命令」是两件事：只靠 API 密钥的内核不探测，
+    # 账号型内核（豆包 / CodeBuddy）即便没有登录命令也要把状态摆给管理员看。
+    assert claude["auth_supported"] is False
+    assert items["codebuddy-cli"]["auth_supported"] is True
+    assert items["doubao-cli"]["auth_supported"] is True
 
 
 @pytest.mark.asyncio

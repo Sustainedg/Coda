@@ -96,6 +96,15 @@ _MARKET_DIRNAME = ".skillhub"
 #: 分配到的 MCP 服务器写成的独立配置文件（隔离目录内），配合 ``--mcp-config`` 使用。
 _MCP_FILE = "mcp.json"
 
+#: 关闭「系统提示词快照」的旗标：Claude Code 默认把系统提示词在会话**第一次请求**时
+#: 拍成快照，之后每次 ``--resume`` 都原样重放，**即使后续启动传了不同的人格文本**。
+#: 平台每轮运行都按智能体的**当前**人格重新拼 ``--system-prompt`` / ``--append-system-prompt``，
+#: 用户改了人格期望立刻生效；快照机制与之冲突，因此有注入人格时必须一并关掉。
+#: 关掉后每次请求都重新渲染提示词（该旗标的官方语义就是「迭代提示词文本」场景）。
+#: 旗标自 2.1.300（2026-10）起存在，早于它的版本不认这个参数会拒绝启动；
+#: 但平台只管理 2.1.3xx 的官方内核，遇见老内核时可让用户在「额外命令行参数」里自行处理。
+_SNAPSHOT_OFF_ARGS = ("--system-prompt-snapshot", "off")
+
 
 def config_dir(home: str | Path | None = None) -> Path:
     """Claude Code 的配置目录（默认 ``~/.claude``）。"""
@@ -236,7 +245,9 @@ class ClaudeCodeAgent(AgentDefinition):
     default_auth_style = "x-api-key"
     default_models = ["sonnet"]
     docs_url = "https://docs.claude.com/en/docs/claude-code"
-    logo = "/icons/kernels/claude.svg"
+    logo = "/icons/kernels/claude.webp"
+    #: Claude 的橙色放射标是真彩色的，按原色显示才认得出来。
+    logo_style = "image"
     capabilities = Capabilities(
         streaming=True,
         sessions=True,
@@ -487,6 +498,9 @@ class ClaudeCodeAgent(AgentDefinition):
                 else "--append-system-prompt"
             )
             argv += [flag, ctx.system_prompt]
+            # 见 _SNAPSHOT_OFF_ARGS：不关快照的话，续接会话（--resume）会无视本轮
+            # 传进去的人格文本，仍然重放会话第一次请求时记录的旧版本。
+            argv += _SNAPSHOT_OFF_ARGS
 
         if ctx.session_id:
             argv += ["--resume", ctx.session_id]

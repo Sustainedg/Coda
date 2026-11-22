@@ -42,6 +42,9 @@ def _describe(definition: AgentDefinition, agents: int, availability: Availabili
         "executable": definition.executable,
         #: 有多少个未删除的智能体在用这个内核（卸载前提示影响面）
         "agents": agents,
+        #: 是否实现了登录态探测。与 `provisioning.commands.login` 分开：有些内核
+        #: 只能交互式登录（平台代跑不了），但依然值得把登录状态展示出来。
+        "auth_supported": definition.supports_auth(),
         "provisioning": definition.provisioning(availability),
     }
 

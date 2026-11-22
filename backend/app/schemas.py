@@ -548,6 +548,29 @@ class MessageRead(BaseModel):
     agent_profile_id: str | None = None
 
 
+class TraceEventRead(BaseModel):
+    """一条轨迹事件的只读响应模型（字段与方案 §4.1 对齐）。
+
+    ``session_id`` = 平台对话 id（``trace_events.conversation_id``），不是内核会话；
+    ``timestamp`` = 采集时刻（``trace_events.created_at``）。``payload`` 原样返回，
+    入库前已经过统一脱敏。
+    """
+
+    id: str
+    session_id: str
+    owner_id: str | None = None
+    run_id: str | None = None
+    turn_index: int
+    seq: int
+    timestamp: datetime
+    type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    duration_ms: int | None = None
+    error: str | None = None
+    truncated: bool = False
+    bytes: int = 0
+
+
 class AttachmentUpload(BaseModel):
     """上传一个附件。
 

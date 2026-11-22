@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ from .manager import ActiveRun, registry
 from .mcp import prepare_mcp_home
 from .runner import stream_run
 from .skills import prepare_skill_home
+from .trace import TraceRecorder
 
 MAX_HISTORY_MESSAGES = 24
 MAX_HISTORY_CHARS = 40_000
@@ -53,6 +55,8 @@ class PreparedRun:
     #: 是否把内核回报的 session_id 写回对话。主场运行为 True；@ 召唤轮恒为 False
     #: （召唤的智能体只回答这一轮，绝不续接 / 污染主场内核的会话记忆）。
     persist_session: bool = True
+    #: 本轮的轨迹采集器；为 None 表示调试开关关闭（零写库）。
+    trace: TraceRecorder | None = None
 
 
 class ConfigurationError(Exception):
@@ -266,7 +270,13 @@ async def pick_default_profile(
     return active[0] if len(active) == 1 else None
 
 
-async def prepare_run(session: AsyncSession, conversation_id: str, payload: Any) -> PreparedRun:
+async def prepare_run(
+    session: AsyncSession,
+    conversation_id: str,
+    payload: Any,
+    *,
+    trace_enabled: bool = False,
+) -> PreparedRun:
     conversation = await _load(session, Conversation, conversation_id)
 
     # —— @ 召唤：这一轮换被召唤的智能体作答，对话归属与会话记忆保持主场 ——————————
@@ -298,6 +308,8 @@ async def prepare_run(session: AsyncSession, conversation_id: str, payload: Any)
             .order_by(Message.created_at)
         )
     ).scalars().all()
+    #: 本轮是该对话第几条用户消息（0 起）；只写进轨迹，不改 Message 表结构。
+    turn_index = sum(1 for row in existing if row.role == "user")
 
     content = compose_user_content(
         payload.content, getattr(payload, "attachments", None), workspace
@@ -362,6 +374,15 @@ async def prepare_run(session: AsyncSession, conversation_id: str, payload: Any)
     )
     run.user_message_id = user_message.id
     run.assistant_message_id = assistant_message.id
+    trace = await _start_trace(
+        session,
+        conversation=conversation,
+        run=run,
+        ctx=ctx,
+        turn_index=turn_index,
+        user_message_id=user_message.id,
+        trace_enabled=trace_enabled,
+    )
     return PreparedRun(
         conversation=conversation,
         profile=profile,
@@ -375,7 +396,42 @@ async def prepare_run(session: AsyncSession, conversation_id: str, payload: Any)
         mcp_warnings=mcp_warnings,
         title_pending=title_pending,
         persist_session=persist_session,
+        trace=trace,
     )
+
+
+async def _start_trace(
+    session: AsyncSession,
+    *,
+    conversation: Conversation,
+    run: ActiveRun,
+    ctx: AgentContext,
+    turn_index: int,
+    user_message_id: str | None,
+    trace_enabled: bool,
+) -> TraceRecorder | None:
+    """开关打开时建采集器并同步写一条 ``context_snapshot``。
+
+    判定点唯一在这里（由 API 层从 ``current_user.trace_debug`` 传入），
+    不读请求体里任何开关字段；关闭时返回 ``None``，适配器拿到的是零开销的空值。
+    """
+    if not trace_enabled:
+        return None
+    try:
+        recorder = await TraceRecorder.create(
+            session,
+            conversation_id=conversation.id,
+            owner_id=conversation.owner_id,
+            run_id=run.id,
+            turn_index=turn_index,
+            ctx=ctx,
+            user_message_id=user_message_id,
+        )
+    except Exception:  # noqa: BLE001 - 采集失败不能影响本轮正常启动
+        logger.warning("初始化轨迹采集失败", exc_info=True)
+        return None
+    ctx.trace = recorder
+    return recorder
 
 
 def _merge_part(parts: list[dict[str, Any]], kind: str, text: str) -> None:
@@ -411,6 +467,10 @@ async def _execute_prepared(prepared: PreparedRun) -> None:
                 run.publish(event.to_dict())
     except asyncio.CancelledError:
         # 服务关闭：consume_run 的 finally 已经落库并登记结束，这里只补齐事件流。
+        # 取消可能打断 consume_run 的 flush，这里再补一次，避免丢最后一批轨迹。
+        if prepared.trace is not None:
+            with contextlib.suppress(Exception):
+                await prepared.trace.flush()
         run.publish(error("运行已中断").to_dict())
         run.publish(run_finished("cancelled").to_dict())
         registry.finish(run, "cancelled")
@@ -469,6 +529,9 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
 
     try:
         async for event in stream_run(prepared.definition, prepared.ctx, prepared.run):
+            # 采集是旁路：工具事件在这里统一落轨迹（两条 runtime 汇合后唯一的稳定位置）。
+            if prepared.trace is not None:
+                await prepared.trace.on_event(event)
             if event.type is EventType.MESSAGE_DELTA and event.text:
                 text_parts.append(event.text)
                 _merge_part(parts, "text", event.text)
@@ -542,9 +605,17 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
         # 先落库再登记结束：重连方看到 active_run 消失时，数据库里一定已经是最终消息，
         # 不会出现「运行没了、消息还停在 streaming」的空窗。
         registry.finish(prepared.run, status)
+        # 消息 commit 之后再 flush 轨迹：保证「消息已可见 → 轨迹也可读」。
+        if prepared.trace is not None:
+            try:
+                await prepared.trace.flush()
+            except Exception:  # noqa: BLE001 - 轨迹落盘失败不能影响运行收尾
+                logger.warning("轨迹落盘失败", exc_info=True)
 
 
-async def regenerate_last(session: AsyncSession, conversation_id: str) -> PreparedRun:
+async def regenerate_last(
+    session: AsyncSession, conversation_id: str, *, trace_enabled: bool = False
+) -> PreparedRun:
     """用当前智能体配置重跑最近一轮用户消息。"""
     conversation = await _load(session, Conversation, conversation_id)
     rows = (
@@ -574,6 +645,8 @@ async def regenerate_last(session: AsyncSession, conversation_id: str) -> Prepar
         )
     ).scalars().all()
     history = _clip_history(list(history_rows))
+    #: 重生成复用「被重跑那条用户消息」的序号（0 起），与下一次正常发送的 turn_index 对齐。
+    turn_index = sum(1 for row in history_rows if row.role == "user")
     ctx = await build_context(
         session, definition, profile, gateway, conversation, last_user.content, history, workspace
     )
@@ -605,6 +678,15 @@ async def regenerate_last(session: AsyncSession, conversation_id: str) -> Prepar
     )
     run.user_message_id = last_user.id
     run.assistant_message_id = assistant_message.id
+    trace = await _start_trace(
+        session,
+        conversation=conversation,
+        run=run,
+        ctx=ctx,
+        turn_index=turn_index,
+        user_message_id=last_user.id,
+        trace_enabled=trace_enabled,
+    )
     return PreparedRun(
         conversation=conversation,
         profile=profile,
@@ -616,6 +698,7 @@ async def regenerate_last(session: AsyncSession, conversation_id: str) -> Prepar
         assistant_message=assistant_message,
         skill_warnings=skill_warnings,
         mcp_warnings=mcp_warnings,
+        trace=trace,
     )
 
 

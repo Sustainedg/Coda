@@ -134,9 +134,14 @@ export function MobileRuntimesPage() {
       const items = (await api.listRuntimes()).filter((item) => !HIDDEN_RUNTIME_IDS.has(item.id))
       setRuntimes(items)
       setError(null)
-      // 账号型内核：列表里带登录状态的，顺手探一次（只有少数内核声明登录命令）。
+      // 账号型内核：列表里带登录状态的，顺手探一次（有登录命令或实现了登录态探测）。
       for (const item of items) {
-        if (item.provisioning.commands?.login?.length) void loadAuth(item)
+        if (
+          item.provisioning.installed &&
+          (item.provisioning.commands?.login?.length || item.auth_supported)
+        ) {
+          void loadAuth(item)
+        }
       }
       // 「检查更新」是每个内核一次远端查询，不能挡住首屏：卡片先出来，结果到了再补。
       // 该接口仅管理员可用，成员不要自动触发。
@@ -315,6 +320,8 @@ export function MobileRuntimesPage() {
                 (updateTarget !== null || !canCheck || !remote)
               const busy = provisionJobs[runtime.id]?.status === 'running'
               const loginSupported = Boolean(provisioning.commands?.login?.length)
+              // 没有登录命令、但实现了登录态探测的内核：只展示状态，不给登录按钮。
+              const authSupported = loginSupported || Boolean(runtime.auth_supported)
               const authInfo = auth[runtime.id]
               const loggedIn = authInfo?.logged_in === true
               return (
@@ -326,9 +333,15 @@ export function MobileRuntimesPage() {
                       <div className="m-item-sub runtime-sub">
                         <span>{kernelSummary(runtime, current)}</span>
                         {upToDate && <span className="pill ok">已是最新</span>}
-                        {loginSupported && provisioning.installed && (
+                        {authSupported && provisioning.installed && (
                           <span className={`pill ${loggedIn ? 'ok' : 'warn'}`}>
-                            {authLoading[runtime.id] ? '检查登录…' : loggedIn ? '已登录' : '未登录'}
+                            {authLoading[runtime.id]
+                              ? '检查登录…'
+                              : authInfo?.logged_in === true
+                                ? '已登录'
+                                : authInfo?.logged_in === false
+                                  ? '未登录'
+                                  : '登录未知'}
                           </span>
                         )}
                       </div>

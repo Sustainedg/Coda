@@ -342,7 +342,13 @@ export function KernelManager() {
   const openDetail = (runtime: AgentRuntime) => {
     setOpenId(runtime.id)
     // 账号型内核：打开详情时探一次登录状态（用户主动触发，不拖慢列表）。
-    if (runtime.provisioning.commands?.login?.length) void loadAuth(runtime)
+    // 有登录命令或实现了登录态探测的都算（后者只能展示状态，没有登录入口）。
+    if (
+      runtime.provisioning.installed &&
+      (runtime.provisioning.commands?.login?.length || runtime.auth_supported)
+    ) {
+      void loadAuth(runtime)
+    }
     // 这个内核还有没看完的任务：一进来就把日志接上（进度页与安装动作在同一个窗口里）。
     if (provisionJobs[runtime.id] && job?.runtimeId !== runtime.id) void viewProgress(runtime.id)
   }
@@ -560,8 +566,11 @@ function KernelDetail({
   const canCheck = isAdmin && Boolean(provisioning.commands?.latest?.length)
   const current = provisioning.version ? versionCore(provisioning.version) : null
   const busy = job?.status === 'running'
-  // 账号型内核：支持登录命令的才显示登录入口；登录态由 /auth 接口现探。
+  // 账号型内核：只有声明了登录命令才显示「登录」按钮；登录状态则只要适配器
+  // 实现了探测（`auth_supported`）就展示 —— 有些内核只能交互式登录，平台代跑不了，
+  // 但「已登录 / 未登录 / 无法判断」对管理员仍然有用。
   const loginSupported = Boolean(provisioning.commands?.login?.length)
+  const authSupported = loginSupported || Boolean(runtime.auth_supported)
   const loggedIn = auth?.logged_in === true
   const authLabel = authLoading
     ? '检查中…'
@@ -603,7 +612,7 @@ function KernelDetail({
         <dd>{managed ? '平台代管（可安装 / 更新 / 卸载）' : runtime.runtime === 'api' ? '进程内运行' : '自备可执行文件'}</dd>
         <dt>当前版本</dt>
         <dd>{current ?? '—'}</dd>
-        {loginSupported && (
+        {authSupported && provisioning.installed && (
           <>
             <dt>登录状态</dt>
             <dd className={loggedIn ? undefined : 'dim'}>{authLabel}</dd>

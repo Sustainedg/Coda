@@ -145,7 +145,9 @@ class HermesAgent(AgentDefinition):
         "google/gemini-2.5-pro",
     ]
     docs_url = "https://hermes-agent.nousresearch.com/docs/"
-    logo = "/icons/kernels/hermes.svg"
+    logo = "/icons/kernels/hermes.webp"
+    #: 黑白线稿头像，按原色显示（遮罩染色会把留白处也涂掉）。
+    logo_style = "image"
     capabilities = Capabilities(
         streaming=True,
         sessions=True,

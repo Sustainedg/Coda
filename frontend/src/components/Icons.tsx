@@ -289,3 +289,18 @@ export function LogoutIcon(props: IconProps) {
     </Icon>
   )
 }
+
+/** 时间线：一条竖轴串三个节点（轨迹调试视图的入口，只读旁路的意思） */
+export function TraceIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M6 4.5v15" />
+      <circle cx="6" cy="6.5" r="1.7" />
+      <circle cx="6" cy="12" r="1.7" />
+      <circle cx="6" cy="17.5" r="1.7" />
+      <path d="M11 6.5h9" />
+      <path d="M11 12h9" />
+      <path d="M11 17.5h9" />
+    </Icon>
+  )
+}

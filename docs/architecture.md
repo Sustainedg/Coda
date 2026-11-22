@@ -192,6 +192,9 @@ class AgentDefinition(ABC):
   `AgentDefinition.auth_status()`，详情弹层据此显示「已登录 / 未登录」和「登录」按钮。
   登录命令按通用约定输出 `QR_IMAGE=<图片路径>`，框架读出图片（校验 PNG/JPEG/WebP 与大小）
   后以 `provision.qr` 事件推给前端；登录结束后重新调一次 `auth_status()` 收尾。
+  只能交互式登录、没有可代跑子命令的内核（例如 CodeBuddy 的 TUI `/login`）**不要声明
+  `login_argv`**：`GET /api/runtimes` 会带 `auth_supported=true`，前端只展示登录状态，
+  不显示一个点了必然失败的「登录」按钮。
 - **已经是最新版就不给「更新」按钮**：界面先查一次最新版本，只有确实更高才显示
   「更新到 <版本>」；查不到（该适配器没声明 `latest_argv`、查询失败或还没查）时保留普通
   「更新」，免得用户失去升级手段。

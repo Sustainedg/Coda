@@ -66,6 +66,8 @@ class UserRead(BaseModel):
     #: 为空表示没上传过，界面回退到「显示名首字母」。
     #: 它同时是缓存键 —— 换头像就换值，浏览器不必猜什么时候该重取。
     avatar: str | None = None
+    #: 轨迹调试开关（用户级，默认关闭）：只有它为 True 时运行层才采集轨迹。
+    trace_debug: bool = False
 
 
 class LoginResponse(BaseModel):
@@ -92,6 +94,8 @@ class UpdateUserRequest(BaseModel):
     email: str | None = Field(default=None, max_length=200)
     role: str | None = None
     is_active: bool | None = None
+    #: 轨迹调试开关；只有用户自己（``PUT /me``）会写，管理员改用户时不碰它。
+    trace_debug: bool | None = None
 
 
 def _to_read(user: User) -> UserRead:
@@ -104,6 +108,7 @@ def _to_read(user: User) -> UserRead:
         is_active=user.is_active,
         created_at=user.created_at,
         avatar=user.avatar_file,
+        trace_debug=bool(user.trace_debug),
     )
 
 
@@ -253,6 +258,8 @@ async def update_me(
             row.display_name = payload.display_name.strip() or None
         if payload.email is not None:
             row.email = payload.email.strip() or None
+        if payload.trace_debug is not None:
+            row.trace_debug = payload.trace_debug
         row.updated_at = datetime.now(timezone.utc)
         session.add(row)
         await session.commit()

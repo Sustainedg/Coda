@@ -129,7 +129,9 @@ class DeepSeekHarnessAgent(AgentDefinition):
     default_auth_style = "x-api-key"
     default_models = ["deepseek-flash", "deepseek-v4-pro"]
     docs_url = "https://deepseek-harness.github.io/deepseek-harness/"
-    logo = "/icons/kernels/deepseek.svg"
+    logo = "/icons/kernels/deepseek.webp"
+    #: 蓝鲸标是真彩色的，按原色显示才认得出来。
+    logo_style = "image"
     capabilities = Capabilities(
         streaming=True,
         sessions=True,

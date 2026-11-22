@@ -65,7 +65,7 @@ def render_module() -> str:
         "/**",
         " * 内核 Logo 的内嵌资源（**由 `scripts/gen_kernel_logos.py` 生成，别手改**）。",
         " *",
-        " * 键是后端适配器声明的 `logo` 路径（`/icons/kernels/xxx.svg`）；",
+        " * 键是后端适配器声明的 `logo` 路径（`/icons/kernels/xxx.webp`）；",
         " * 值是图形本身 —— SVG 存原文（前端拼成 data URL），位图存 data URL。",
         " * 「内核管理」页渲染图标时直接用这份内嵌资源：没有请求、没有二次解码，",
         " * 进入页面即显示。源文件在 `frontend/public/icons/kernels/`，改完图形重跑脚本。",

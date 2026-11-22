@@ -8,7 +8,7 @@
  * 桌面端与移动端**共用这一份**（两端样式表各自给尺寸与配色）：新增图标就往这里加，
  * 别再各写一份。
  */
-import type { ReactNode } from 'react'
+import type { ComponentType, ReactNode } from 'react'
 
 interface IconProps {
   /** 边长（px），默认 20 */
@@ -16,8 +16,14 @@ interface IconProps {
   className?: string
 }
 
-/** 所有线条图标的公共外壳：24 的坐标系、圆头圆角、描边跟随文字颜色。 */
-function Icon({ size = 20, className, children }: IconProps & { children: ReactNode }) {
+/** 所有线条图标的公共外壳：24 的坐标系、圆头圆角、描边跟随文字颜色。
+ *  描边粗细默认 1.8；主导航那几枚按设计稿传 1.75（略轻一点，一列排下来不抢眼）。 */
+function Icon({
+  size = 20,
+  className,
+  strokeWidth = 1.8,
+  children,
+}: IconProps & { strokeWidth?: number; children: ReactNode }) {
   return (
     <svg
       className={className}
@@ -26,7 +32,7 @@ function Icon({ size = 20, className, children }: IconProps & { children: ReactN
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.8}
+      strokeWidth={strokeWidth}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
@@ -288,6 +294,103 @@ export function LogoutIcon(props: IconProps) {
       <path d="M21 12H9" />
     </Icon>
   )
+}
+
+/* 左侧主导航（桌面侧栏 + 移动抽屉共用）：这 6 枚只用于主导航，圆角线框 + 1.75 描边，
+   比上面那批操作图标略轻一点，一列排下来不抢眼。颜色一律 currentColor，由样式表按
+   `--nav-icon` 着色（静止态品牌紫、hover / 选中提亮到 --brand），见 index.css / mobile.css。 */
+
+/** 对话：一个带小尾巴的气泡，里面三个点。 */
+export function ChatIcon(props: IconProps) {
+  return (
+    <Icon {...props} strokeWidth={1.75}>
+      <path d="M8.2 17.75H16.25A4.25 4.25 0 0 0 20.5 13.5V8.75A4.25 4.25 0 0 0 16.25 4.5H7.75A4.25 4.25 0 0 0 3.5 8.75V13.5A4.25 4.25 0 0 0 5.65 17.2L4.6 19.65A0.55 0.55 0 0 0 5.35 20.35L8.2 17.75Z" />
+      <circle cx="8.5" cy="11.15" r="0.92" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="11.15" r="0.92" fill="currentColor" stroke="none" />
+      <circle cx="15.5" cy="11.15" r="0.92" fill="currentColor" stroke="none" />
+    </Icon>
+  )
+}
+
+/** 智能体：圆头机器人（天线 + 两侧耳朵 + 两只竖眼）。 */
+export function AgentNavIcon(props: IconProps) {
+  return (
+    <Icon {...props} strokeWidth={1.75}>
+      <path d="M12 7.25V4.75" />
+      <circle cx="12" cy="3.5" r="1.25" />
+      <rect x="4.5" y="7.25" width="15" height="12.25" rx="4.25" />
+      <path d="M2.5 13.25H4.5" />
+      <path d="M19.5 13.25H21.5" />
+      <path d="M9.5 12V14.5" />
+      <path d="M14.5 12V14.5" />
+    </Icon>
+  )
+}
+
+/** 协作组：前面一个人，后面一个稍小的人（团队 / 工作组）。 */
+export function WorkspaceGroupIcon(props: IconProps) {
+  return (
+    <Icon {...props} strokeWidth={1.75}>
+      <circle cx="9.25" cy="8" r="3.25" />
+      <path d="M3.5 19.25V18.75A5 5 0 0 1 8.5 13.75H10A5 5 0 0 1 15 18.75V19.25" />
+      <circle cx="16.5" cy="9" r="2.35" />
+      <path d="M16.75 14.15A3.85 3.85 0 0 1 20.5 18V19.25" />
+    </Icon>
+  )
+}
+
+/** 技能：三块圆角方块 + 右上角一颗四角星（能力包）。 */
+export function SkillsIcon(props: IconProps) {
+  return (
+    <Icon {...props} strokeWidth={1.75}>
+      <rect x="3.75" y="3.75" width="6.75" height="6.75" rx="2" />
+      <rect x="3.75" y="13.5" width="6.75" height="6.75" rx="2" />
+      <rect x="13.5" y="13.5" width="6.75" height="6.75" rx="2" />
+      <path d="M16.88 3.25Q17.2 6.8 20.75 7.12Q17.2 7.45 16.88 11Q16.55 7.45 13 7.12Q16.55 6.8 16.88 3.25Z" />
+    </Icon>
+  )
+}
+
+/** MCP：一只斜插的电源插头（对接外部服务器的「接口」）。 */
+export function McpIcon(props: IconProps) {
+  return (
+    <Icon {...props} strokeWidth={1.75}>
+      <path d="M12.6 8.6L15.8 5.4" />
+      <path d="M15.4 11.4L18.6 8.2" />
+      <path d="M10.7 6.7L17.3 13.3" />
+      <path d="M11.5 7.5L9 10A3.54 3.54 0 0 0 14 15L16.5 12.5Z" />
+      <path d="M9 15L5.3 18.7" />
+    </Icon>
+  )
+}
+
+/** 用量：三根高低不同的圆角柱子（柱状图）。 */
+export function UsageIcon(props: IconProps) {
+  return (
+    <Icon {...props} strokeWidth={1.75}>
+      <rect x="4" y="12" width="3.75" height="8" rx="1.5" />
+      <rect x="10.125" y="4.5" width="3.75" height="15.5" rx="1.5" />
+      <rect x="16.25" y="8.5" width="3.75" height="11.5" rx="1.5" />
+    </Icon>
+  )
+}
+
+/** 主导航的图标 key（`NAV[].icon` 里存的就是它，两端菜单各自写字面量、靠测试比对一致）。 */
+export type NavIconName = 'chat' | 'agents' | 'collab' | 'skills' | 'mcp' | 'usage'
+
+const NAV_ICONS: Record<NavIconName, ComponentType<IconProps>> = {
+  chat: ChatIcon,
+  agents: AgentNavIcon,
+  collab: WorkspaceGroupIcon,
+  skills: SkillsIcon,
+  mcp: McpIcon,
+  usage: UsageIcon,
+}
+
+/** 按 key 取主导航图标：桌面侧栏与移动抽屉共用这一张映射表。 */
+export function NavIcon({ name, ...props }: IconProps & { name: NavIconName }) {
+  const Component = NAV_ICONS[name]
+  return <Component {...props} />
 }
 
 /** 时间线：一条竖轴串三个节点（轨迹调试视图的入口，只读旁路的意思） */

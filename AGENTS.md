@@ -372,7 +372,10 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
 - **输入区 / 顶栏的图标是线条 SVG**：`components/Icons.tsx`（两端共用，`stroke="currentColor"`，
   尺寸走 `size`）。各系统的 emoji 字体大小、粗细都不一样（📎 在 iOS 上尤其大），一排小图标永远
   对不齐，也不跟主题换色；这类「要跟文字同色的操作图标」**不要**再用 emoji，新的就往这个文件里加。
-  （抽屉导航、空状态里那种大号装饰性图标仍可用 emoji。）
+  **左侧主导航（桌面侧栏 + 移动抽屉）也已改成线条 SVG**：`NAV[].icon` 存 `NavIconName` key
+  （`'chat' | 'agents' | 'collab' | 'skills' | 'mcp' | 'usage'`），图形统一由 `NavIcon` 按 key 取；
+  两端菜单各自写字面量、由 `test_main_nav_is_the_same_menu_on_both_ends` 比对一致 ——
+  加菜单项要同时改两处 `NAV` + `Icons.tsx` 的映射表。（空状态里那种大号装饰性图标仍可用 emoji。）
 - **输入区只有一份**：`components/Composer.tsx`（两端共用，受控：草稿 / 附件 / 上传 / 发送都
   由页面给）。对话页与协作运行页（含聊天弹层）都用它，**不要**再各写一个输入框 —— 两处的交互与
   样式必须完全一致（样式仍是两端各一份：共享段逐字一致，有守卫测试

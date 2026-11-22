@@ -397,6 +397,10 @@ class AcmeHarness(OpenAIHarnessBase):
 - **「操作图标」用线条 SVG**（`src/components/Icons.tsx`，两端共用）：输入区、顶栏这类
   需要与文字同色的小图标，emoji 的尺寸与颜色随系统而变、同一排对不齐；这类图标一律
   `stroke="currentColor"`，尺寸走 `size` 参数。
+  **左侧主导航（桌面侧栏 + 移动抽屉）也是线条 SVG**：`NAV[].icon` 存 `NavIconName` key
+  （`'chat' | 'agents' | 'collab' | 'skills' | 'mcp' | 'usage'`），图形统一由 `NavIcon` 按 key 取；
+  两端菜单各自写字面量、由 `tests/test_mobile_web.py::test_main_nav_is_the_same_menu_on_both_ends`
+  比对一致，加菜单项要同时改两处 `NAV` 与 `Icons.tsx` 的映射表。
 - **安装归「内核管理」，配置归「智能体」**：内核的安装 / 更新 / 卸载在「设置 → 内核管理」
   （两端都有，桌面端是设置里的标签页）；智能体（内核 + 网关 + 模型 + 人格 + 技能）有自己的配置页
   —— 移动端是 `mobile/pages/MobileAgentsPage.tsx`（有守卫断言它必须存在），**不要**再把「实例配置」

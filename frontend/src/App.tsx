@@ -2,7 +2,12 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { NavLink, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import { BrandMark } from './components/BrandMark'
 import { UserAvatar } from './components/UserAvatar'
-import { LogoutIcon, SettingsIcon } from './components/Icons'
+import {
+  NavIcon,
+  LogoutIcon,
+  SettingsIcon,
+  type NavIconName,
+} from './components/Icons'
 import { ConversationList } from './components/ConversationList'
 import { api } from './lib/api'
 import {
@@ -23,13 +28,15 @@ import { UsagePage } from './pages/UsagePage'
 
 //: 与移动端抽屉的主导航**同一份菜单**（顺序、命名、图标都一样）：
 //: 「内核管理」「自定义网关」不在菜单里，收在「设置」页的标签页里（移动端是配置入口）。
-const NAV = [
-  { to: '/chat', icon: '💬', label: '对话' },
-  { to: '/agents', icon: '🤖', label: '智能体' },
-  { to: '/collab', icon: '🤝', label: '协作组' },
-  { to: '/skills', icon: '🧩', label: '技能' },
-  { to: '/mcp', icon: '🔌', label: 'MCP' },
-  { to: '/usage', icon: '📊', label: '用量' },
+//: 图标存的是 `NavIconName` key，真实图形在 components/Icons.tsx 的 `NavIcon` 里取
+//: （两端共用的线条 SVG，颜色走 `--nav-icon`，hover / 选中换成品牌色，不用 emoji）。
+const NAV: { to: string; icon: NavIconName; label: string }[] = [
+  { to: '/chat', icon: 'chat', label: '对话' },
+  { to: '/agents', icon: 'agents', label: '智能体' },
+  { to: '/collab', icon: 'collab', label: '协作组' },
+  { to: '/skills', icon: 'skills', label: '技能' },
+  { to: '/mcp', icon: 'mcp', label: 'MCP' },
+  { to: '/usage', icon: 'usage', label: '用量' },
 ]
 
 /** 老的「协作设置」深链 → 智能体页的协作组标签，并尽量保留原来选中的那条协作组。 */
@@ -131,7 +138,7 @@ export default function App() {
               to={item.to}
               className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
             >
-              <span className="nav-icon">{item.icon}</span>
+              <span className="nav-icon"><NavIcon name={item.icon} size={20} /></span>
               <span className="nav-label">{item.label}</span>
               {/* 折叠后只剩图标：hover 时从图标右侧弹出名字气泡（CSS 控制，只在折叠态显示） */}
               <span className="nav-tip">{item.label}</span>

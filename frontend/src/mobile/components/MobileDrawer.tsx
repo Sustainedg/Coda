@@ -11,16 +11,19 @@ import { BrandMark } from '../../components/BrandMark'
 import { UserAvatar } from '../../components/UserAvatar'
 import { AgentAvatar } from '../../components/AgentAvatar'
 import { ConversationAvatar } from '../../components/ConversationAvatar'
-import { LogoutIcon, SettingsIcon } from '../../components/Icons'
+import { NavIcon, LogoutIcon, SettingsIcon, type NavIconName } from '../../components/Icons'
 
-/** 抽屉上半部分的主导航：对应曾经固定在底部的 Tab（「对话」是回聊天页的入口）。 */
-const NAV = [
-  { to: '/chat', icon: '💬', label: '对话' },
-  { to: '/agents', icon: '🤖', label: '智能体' },
-  { to: '/collab', icon: '🤝', label: '协作组' },
-  { to: '/skills', icon: '🧩', label: '技能' },
-  { to: '/mcp', icon: '🔌', label: 'MCP' },
-  { to: '/usage', icon: '📊', label: '用量' },
+/**
+ * 抽屉上半部分的主导航：对应曾经固定在底部的 Tab（「对话」是回聊天页的入口）。
+ * 图标存 `NavIconName` key，图形取 `components/Icons.tsx` 的共享线条 SVG（与桌面侧栏同一张表）。
+ */
+const NAV: { to: string; icon: NavIconName; label: string }[] = [
+  { to: '/chat', icon: 'chat', label: '对话' },
+  { to: '/agents', icon: 'agents', label: '智能体' },
+  { to: '/collab', icon: 'collab', label: '协作组' },
+  { to: '/skills', icon: 'skills', label: '技能' },
+  { to: '/mcp', icon: 'mcp', label: 'MCP' },
+  { to: '/usage', icon: 'usage', label: '用量' },
 ]
 
 interface Props {
@@ -175,7 +178,7 @@ export function MobileDrawer({ open, onClose, version }: Props) {
               className={({ isActive }) => `m-drawer-link${isActive ? ' active' : ''}`}
               onClick={onClose}
             >
-              <span className="m-drawer-link-icon">{item.icon}</span>
+              <span className="m-drawer-link-icon"><NavIcon name={item.icon} size={20} /></span>
               <span>{item.label}</span>
               <span className="m-drawer-chevron">›</span>
             </NavLink>

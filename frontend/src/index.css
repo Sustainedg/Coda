@@ -22,6 +22,9 @@
   --brand: #d94fd0;
   --brand-soft: rgba(217, 79, 208, 0.14);
   --brand-strong: #b93ab0;
+  /* 左侧导航图标：静止态用品牌紫的浅一档（深底上细线条才看得清），
+     hover / 选中换成亮一档的 --brand（见 .nav-link .nav-icon）。浅色主题下面覆盖。 */
+  --nav-icon: #cf76c0;
   /* 品牌色柔光：思考动画那三点外面那圈光晕 */
   --brand-glow: rgba(217, 79, 208, 0.45);
   --accent: #6ee7d1;
@@ -95,6 +98,8 @@
   --brand-soft: rgba(182, 59, 169, 0.1);
   --brand-strong: #932a88;
   --brand-glow: rgba(182, 59, 169, 0.32);
+  /* 导航图标：白底上用压深后的品牌紫（就是设计稿给的 #8F2477） */
+  --nav-icon: #8f2477;
   --accent: #0e9c85;
   --accent-soft: rgba(14, 156, 133, 0.1);
 
@@ -279,7 +284,16 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .nav-link:hover { background: var(--bg-hover); color: var(--text); }
 .nav-link.active { background: var(--brand-soft); color: #f6d9f4; }
-.nav-link .nav-icon { flex: none; width: calc(20px * var(--sbs)); text-align: center; font-size: calc(17px * var(--sbs)); line-height: 1; }
+/* 导航图标是线条 SVG（components/Icons.tsx 的 NavIcon）：盒子定尺寸，svg 铺满盒子，
+   颜色走 --nav-icon（静止态是品牌紫的一档浅色，深底上看得清），hover / 选中提亮到 --brand。 */
+.nav-link .nav-icon {
+  flex: none; display: grid; place-items: center;
+  width: calc(20px * var(--sbs)); height: calc(20px * var(--sbs));
+  color: var(--nav-icon);
+}
+.nav-link .nav-icon svg { display: block; width: 100%; height: 100%; }
+.nav-link:hover .nav-icon,
+.nav-link.active .nav-icon { color: var(--brand); }
 .nav-chevron { margin-left: auto; color: var(--text-dim); }
 .nav-badge { margin-left: auto; font-size: calc(10px * var(--sbs)); padding: 1px calc(7px * var(--sbs)); border-radius: 20px; background: var(--bg-hover); color: var(--text-muted); }
 
@@ -364,9 +378,9 @@ code, pre, .mono { font-family: var(--mono); }
 .app-shell.collapsed .sidebar-conversations { display: none; }
 /* 折叠态的导航图标：行距放大（呼吸感），图标 hover 弹大一档，名字气泡从右侧滑入。
    气泡平时藏在图标左边外侧（看不见），hover 时滑到右侧并淡入 —— 不用 JS，纯 CSS。 */
-/* 折叠态的导航图标：比展开态大 10%（19px vs 17px，窄栏里更好点）、行距再放宽一档 */
+/* 折叠态的导航图标：比展开态大 10%（22px vs 20px，窄栏里更好点）、行距再放宽一档 */
 .app-shell.collapsed .nav-link { justify-content: center; padding: calc(11px * var(--sbs)) calc(8px * var(--sbs)); }
-.app-shell.collapsed .nav-link .nav-icon { font-size: calc(19px * var(--sbs)); transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.app-shell.collapsed .nav-link .nav-icon { width: calc(22px * var(--sbs)); height: calc(22px * var(--sbs)); transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1); }
 .app-shell.collapsed .nav-link:hover .nav-icon { transform: scale(1.28); }
 .nav-tip {
   display: none; position: absolute; left: calc(100% + 10px); top: 50%;
@@ -2001,7 +2015,7 @@ code, pre, .mono { font-family: var(--mono); }
   /* 窄屏与折叠态同构：图标大 10% + 行距放宽 + hover 弹大 + 名字气泡
      （见 .app-shell.collapsed 那段）；账号区同样只留头像。 */
   .nav-link { justify-content: center; padding: calc(11px * var(--sbs, 1)) calc(8px * var(--sbs, 1)); }
-  .nav-link .nav-icon { font-size: calc(19px * var(--sbs, 1)); transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1); }
+  .nav-link .nav-icon { width: calc(22px * var(--sbs, 1)); height: calc(22px * var(--sbs, 1)); transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1); }
   .nav-link:hover .nav-icon { transform: scale(1.28); }
   .sidebar-user-name { display: none; }
   .sidebar-user-btn { justify-content: center; padding: 7px 0; }

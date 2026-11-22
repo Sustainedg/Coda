@@ -29,6 +29,8 @@
   --brand: #d94fd0;
   --brand-soft: rgba(217, 79, 208, 0.14);
   --brand-strong: #b93ab0;
+  /* 抽屉导航图标：静止态品牌紫浅一档，选中换亮一档 --brand（浅色主题在下面覆盖） */
+  --nav-icon: #cf76c0;
   /* 品牌色柔光：思考动画那三点外面那圈光晕 */
   --brand-glow: rgba(217, 79, 208, 0.45);
   --accent: #6ee7d1;
@@ -102,6 +104,8 @@
   --brand-soft: rgba(182, 59, 169, 0.1);
   --brand-strong: #932a88;
   --brand-glow: rgba(182, 59, 169, 0.32);
+  /* 导航图标：白底上用压深后的品牌紫（设计稿的 #8F2477） */
+  --nav-icon: #8f2477;
   --accent: #0e9c85;
   --accent-soft: rgba(14, 156, 133, 0.1);
 
@@ -293,7 +297,11 @@ code, pre, .mono { font-family: var(--mono); }
   border-radius: var(--radius-sm); color: var(--text-muted); font-size: calc(14px * var(--sbs)); font-weight: 550;
 }
 .m-drawer-link.active { background: var(--brand-soft); color: #f6d9f4; }
-.m-drawer-link-icon { font-size: calc(17px * var(--sbs)); line-height: 1; }
+/* 导航图标是线条 SVG（与桌面侧栏同一张 NavIcon 表）：盒子定尺寸，svg 铺满；
+   颜色走 --nav-icon，选中提亮到 --brand。 */
+.m-drawer-link-icon { flex: none; display: grid; place-items: center; width: calc(20px * var(--sbs)); height: calc(20px * var(--sbs)); color: var(--nav-icon); }
+.m-drawer-link-icon svg { display: block; width: 100%; height: 100%; }
+.m-drawer-link.active .m-drawer-link-icon { color: var(--brand); }
 .m-drawer-chevron { margin-left: auto; color: var(--text-dim); }
 .m-drawer-section { flex: 1; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
 .m-drawer-section-head {

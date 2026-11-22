@@ -12,21 +12,23 @@
          放在 head 末尾：它要读的 meta（theme-color、状态栏样式）都在前面，又早于任何样式与脚本。 -->
     <script>
       ;(function () {
+        var mode = null
         try {
-          var mode = localStorage.getItem('coda.theme')
-          var light =
-            mode === 'light' ||
-            (mode === 'auto' && window.matchMedia('(prefers-color-scheme: light)').matches)
-          document.documentElement.dataset.theme = light ? 'light' : 'dark'
-          if (!light) return
-          var themeColor = document.querySelector('meta[name="theme-color"]')
-          if (themeColor) themeColor.setAttribute('content', '#fefeff')
-          // 浅色外壳下状态栏也要切成系统默认样式，否则 iOS 独立应用里是一排看不见的白字。
-          var statusBar = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')
-          if (statusBar) statusBar.setAttribute('content', 'default')
+          mode = localStorage.getItem('coda.theme')
         } catch (error) {
-          /* 读不到设置就按默认深色渲染 */
+          /* 隐私模式读不到存储：当成「没设置过」，下面按跟随系统处理 */
         }
+        // 没设置过 = 跟随系统：只有显式选了深色才固定深色，其余看系统的深浅色。
+        var light =
+          mode === 'light' ||
+          (mode !== 'dark' && window.matchMedia('(prefers-color-scheme: light)').matches)
+        document.documentElement.dataset.theme = light ? 'light' : 'dark'
+        if (!light) return
+        var themeColor = document.querySelector('meta[name="theme-color"]')
+        if (themeColor) themeColor.setAttribute('content', '#fefeff')
+        // 浅色外壳下状态栏也要切成系统默认样式，否则 iOS 独立应用里是一排看不见的白字。
+        var statusBar = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')
+        if (statusBar) statusBar.setAttribute('content', 'default')
       })()
     </script>
   </head>

@@ -8,12 +8,13 @@
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .graph import effective_output_contract
 from .schemas import Duty, NodeSpec, TicketAction, TicketState, WorkspaceScope
-from .tickets import render_protocol_guide
+from .tickets import FENCE, render_protocol_guide
 
 DUTY_LABELS: dict[Duty, str] = {
     Duty.COORDINATOR: "协调者",
@@ -561,4 +562,43 @@ def build_chat_prompt(
    光在正文里说“按这个做”是不会传下去的。
 7. 用户问「团队里有哪些人 / 谁负责什么」时，照上面的名册回答（岗位 + 职责，入口是谁）；
    名册之外的人不存在，不要编造，也不要凭印象说某个岗位空缺。
+"""
+
+
+def build_repair_prompt(
+    *,
+    order: Any,
+    error_text: str,
+    assignees: Sequence[str],
+    rework: Sequence[str],
+    duty_label: str = "",
+    node_key: str = "",
+) -> str:
+    """路由拼写错误的一次性修复 prompt：**只含**上轮工单、错误原因与合法枚举。
+
+    刻意不带工单历史、名册、长对话 —— 修复轮是同一步内的格式纠正，不是重新决策；
+    上下文越短，模型越只能做一件事：把错误的 assignee/rework_to 换成合法 key。
+    岗位头保留一行（与正常步骤同格式）：内核（与测试替身）都靠它识别「我是谁」。
+    """
+    order_json = json.dumps(order, ensure_ascii=False, indent=2, default=str)
+    assignee_keys = "、".join(sorted(assignees)) or "（无）"
+    rework_keys = "、".join(sorted(rework)) or "（无）"
+    header = f"[协议修复] 协作任务 · 你的岗位：{duty_label}（{node_key}）\n" if node_key else ""
+    return f"""{header}[协议修复] 你刚输出的一份工单指令里，路由目标填错了。这不是新任务，也不要重做任何工作。
+
+上一轮你输出的 work_order（仅供对照，**不要原样重发**）：
+```
+{order_json}
+```
+
+系统校验给出的错误：
+{error_text}
+
+合法取值（只能从中选）：
+- assignee：{assignee_keys}
+- rework_to：{rework_keys}
+
+请输出**修正后的完整 work_order**：保持原来的 action / ticket 内容不变，只把错误的路由目标
+（assignee 或 rework_to，包括 tickets 里每张子工单的 assignee）换成上面列表里的一个 key。
+不要解释，不要输出别的内容，只给一个 {FENCE} 代码块，内容是修正后的 JSON 对象。
 """

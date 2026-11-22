@@ -1454,3 +1454,25 @@ ticket.updated 6 / run.status 1`，且 6 步时间线与 2 张工单的字段与
 | `frontend/src/components/MobileCollabProgress.tsx` · `mobile/mobile.css` | 删除小标题与提示，`.m-collab-progress-head` 样式随之移除 |
 | `frontend/src/index.css` | 删除进度覆盖层标题相关样式；流程图在覆盖层内改为铺满 |
 | `docs/architecture.md` §11 | 补记「界面只留图本身」 |
+
+### M20 路由目标「源头减熵 + 克制归一 + 一次修复」
+
+**关注点**：模型把「允许派发的对象」整串照抄进 `assignee`（真实故障：`SEO（dev）` 被原样
+派发、语义校验打回、运行挂起等用户）；更早的设计里显示名一旦重名，别名映射整体失效，
+连括号形式都救不回来。CLI 适配层没有 Schema / Tool 硬约束通道（`AgentContext` 无 schema
+载荷、`Capabilities` 无能力位、11 个内置内核零支持），只能走「源头减熵 + 代码兜底」。
+
+| 关注点 | 做法 |
+| --- | --- |
+| 源头减熵 | 协议说明在「允许派发的对象」之外单列一行**纯 key 清单**（`assignee / rework_to 的合法取值：dev、dev-2、dev-3`），id 与给人看的显示名分列；delegate 示例里的 `assignee` 一律写纯 key（示例是模型最强的模仿锚点，示例写拼接串就是教模型照抄拼接串） |
+| 克制归一 | `resolve_order_targets` 接收全图 `node_keys` + `node_labels`：清洗只做 strip + NFKC；`显示名（key）` 括号形式**无条件**归一（key 自带、无歧义，显示名重名不影响）；纯 key 原样通过；裸显示名仍只认全图唯一（重名不猜）。刻意**不做**模糊正则截取：误撞另一节点的显示名会静默派错人，宁可报错阻塞 |
+| 一次修复轮 | 语义校验报「不能把…」且错误目标**字面包含**某个合法 key / 显示名时，`engine._repair_round` 用 `build_repair_prompt`（只含原工单 + 错误 + 合法枚举，不带历史长对话）就地让模型重写一次；修复结果同样过归一 + 校验。预算见底不发起；编造角色（与任何合法值无字面关联）、漏字段、动作越权**绝不重试** |
+| 用量与步数 | 修复轮的 token 并进本步 `usage`（共享字典），步数不另计 —— 它是同一步内的纠错，不是新的一步 |
+
+| 文件 | 内容 |
+| --- | --- |
+| `backend/app/collab/tickets.py` | `clean_target_text()`（strip + NFKC）、`split_wrapped_target()` / `_key_from_wrapped()`、`_wrapped_forms()`（括号形式枚举）；`resolve_order_targets()` 增加 `node_keys` / `node_labels` 参数与括号形式无条件归一；`is_repairable_routing_error()`（含 `bad_target` 字面关联判定）；协议说明新增纯 key 清单行、示例 assignee 改纯 key |
+| `backend/app/collab/prompt.py` | `build_repair_prompt()`：一次性修复轮的精简 prompt（原工单 + 错误 + 合法枚举 + 岗位头） |
+| `backend/app/collab/engine.py` | `_RepairPlan` / `_repair_plan()` / `_repair_round()` / `_parse_validate()` / `_bad_routing_target()`；预算门槛检查；修复轮用量并入本步 |
+| `backend/tests/test_collab_tickets.py` | 表驱动归一化用例：括号形式（重名/双侧/内侧空白）、清洗（全半角/首尾空白）、纯 key 与唯一显示名、重名与编造不猜、子工单 assignee 同路径、修复分类器（可修/不可修）、纯 key 清单渲染 |
+| `backend/tests/test_collab_engine.py` | 端到端：拼写类错误就地修复后整链跑完（修复 prompt 只含枚举）；编造角色直接 BLOCKED 不发起修复轮 |

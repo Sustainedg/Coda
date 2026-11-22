@@ -362,8 +362,10 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
   对不齐，底栏就会浮起来留缝或被工具栏压住；`env(safe-area-inset-*)` 负责刘海与 Home 条。
 - **外观（深色 / 浅色 / 跟随系统）只有一份实现**：`src/lib/theme.ts`（模式存在 localStorage，
   解析结果写在 `<html data-theme>`；两个入口 HTML 各有一段等价的内联脚本做首屏防闪）。
-  配色一律走 CSS 变量：`index.css` / `mobile.css` 的 `:root` 是深色默认，浅色只加
-  `[data-theme='light']` 覆盖块 —— **新写颜色不要写死深色**，先加变量、再补浅色值；
+  **没设置过默认「跟随系统」**（`readThemeMode()` 返回 `'auto'`，只有显式选过深色才固定深色）——
+  模块与两段内联脚本必须同一套判定，否则首屏会闪错色。
+  配色一律走 CSS 变量：`index.css` / `mobile.css` 的 `:root` 是深色兜底（脚本没跑起来时用），
+  浅色只加 `[data-theme='light']` 覆盖块 —— **新写颜色不要写死深色**，先加变量、再补浅色值；
   原生外壳（状态栏 / 系统导航条）的配色由 `applyTheme()` 同步 `meta[name=theme-color]`。
 - **移动端外壳贴住屏幕底边**：输入区（`.m-composer`）**不照搬**底部安全区 —— iOS 独立应用里
   `env(safe-area-inset-bottom)` 是 34px，而 Home 条本身只占 ~13px，照搬会在输入框下面留出一条

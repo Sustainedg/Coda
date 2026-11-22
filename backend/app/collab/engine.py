@@ -21,9 +21,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Sequence
+from typing import Any, AsyncIterator, Mapping, Sequence
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +49,7 @@ from .graph import (
     validate_graph,
 )
 from .prompt import (
+    DUTY_LABELS,
     ENTRY_REPORT_ACTIONS,
     ChatHistoryEntry,
     ChatTicketView,
@@ -55,6 +57,7 @@ from .prompt import (
     TeamMember,
     TicketView,
     build_chat_prompt,
+    build_repair_prompt,
     build_step_prompt,
     ticket_code,
 )
@@ -62,6 +65,7 @@ from .tickets import (
     extract_chat_body,
     ensure_ask_options,
     extract_body,
+    is_repairable_routing_error,
     merge_chat_update,
     parse_chat_advance,
     parse_chat_update,
@@ -115,6 +119,26 @@ class TurnError(Exception):
 
 class ChatError(Exception):
     """入口智能体聊天没法开始（没写内容、图不合法、上一条还在回复等）。"""
+
+
+@dataclass(slots=True)
+class _RepairPlan:
+    """一次「路由拼写错误就地修复」所需的全部上下文（同一个 step 内的纠错）。"""
+
+    session: AsyncSession
+    run: CollabRun
+    ticket: CollabTicket
+    node: NodeSpec
+    step_id: str
+    aliases: Mapping[str, str]
+    node_keys: Sequence[str]
+    node_labels: Mapping[str, str]
+    is_entry: bool
+    escalated: bool
+    closing_report: bool
+    #: **共享用量字典**（就是本步的 ``usage``）：修复轮产生的 token 数直接并进来，
+    # 落库、聚合都走原有通道，不需要新的事件类型或聚合点。
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1028,11 +1052,12 @@ async def _run_step(
     reviewer = reviewer_of(graph, node.key)
     rework = rework_targets(graph, node.key)
     labels = {key: (spec.label or key) for key, spec in node_map(graph).items()}
-    label_counts: dict[str, int] = {}
-    for label in labels.values():
-        if label:
-            label_counts[label] = label_counts.get(label, 0) + 1
-    # 只接受唯一的显示名映射；同名节点必须由模型写 key，避免猜错接收人
+    label_counts: Counter[str] = Counter(
+        label for label in labels.values() if label
+    )
+    # 只接受唯一的显示名映射；同名节点必须由模型写 key，避免猜错接收人。
+    # （重名显示名进不了 aliases，但「显示名（key）」的括号形式仍会无条件归一 ——
+    # key 自身无歧义，见 resolve_order_targets。）
     aliases = {
         label: key
         for key, label in labels.items()
@@ -1160,30 +1185,37 @@ async def _run_step(
     parse_warning: str | None = None
 
     if step_status == "complete" and error_text is None:
-        parsed = parse_work_order(raw_text)
-        if not parsed.ok or parsed.order is None:
-            error_text = f"产出不符合工单协议：{parsed.error or '未给出 work_order 块'}"
-            step_status = "error"
-        else:
-            body = extract_body(raw_text)
-            parse_warning = parsed.warning
-            resolve_order_targets(parsed.order, aliases)
-            # ask_user 漏给 options 时不把用户堵在协议错误上：补成可点卡片继续推进。
-            ensure_ask_options(parsed.order)
-            semantic = validate_order_ctx(
-                parsed.order,
+        # 解析 → 归一 → 语义校验；路由目标填错（如照抄了「SEO（dev）」展示串）时，
+        # 用**只含上轮错误 + 合法枚举**的精简上下文就地让模型重写一次（见 _repair_round），
+        # 不把完整历史长对话再喂一遍；编造角色等不可修复错误直接落 BLOCKED。
+        order, body, parse_warning, error_text = await _parse_validate(
+            raw_text,
+            aliases=aliases,
+            node_keys=list(node_map(prepared.graph)),
+            node_labels=labels,
+            node=node,
+            assignees=assignees,
+            rework=rework,
+            is_entry=is_entry,
+            escalated=ticket.state == TicketState.ESCALATED.value,
+            closing_report=closing_report,
+            repair_plan=_repair_plan(
+                session,
+                prepared,
+                run,
+                ticket,
                 node,
-                assignees,
-                rework,
+                step_id=step.id,
+                aliases=aliases,
+                node_labels=labels,
                 is_entry=is_entry,
                 escalated=ticket.state == TicketState.ESCALATED.value,
-                allowed_actions=ENTRY_REPORT_ACTIONS if closing_report else None,
-            )
-            if semantic:
-                error_text = semantic
-                step_status = "error"
-            else:
-                order = parsed.order
+                closing_report=closing_report,
+                usage_sink=usage,
+            ),
+        )
+        if error_text:
+            step_status = "error"
 
     step.content = body or raw_text
     step.parts = parts
@@ -1245,6 +1277,191 @@ async def _run_step(
 
     async for event in _safe_apply(session, prepared, run, ticket, node, order, reviewer, state):
         yield event
+
+
+async def _parse_validate(
+    raw_text: str,
+    *,
+    aliases: Mapping[str, str],
+    node_keys: Sequence[str],
+    node_labels: Mapping[str, str],
+    node: NodeSpec,
+    assignees: Sequence[str],
+    rework: Sequence[str],
+    is_entry: bool,
+    escalated: bool,
+    closing_report: bool,
+    repair_plan: "_RepairPlan | None",
+) -> tuple[Any, str, str | None, str | None]:
+    """解析 + 归一 + 校验一轮产出；可修复的路由错误就地重写一次。
+
+    返回 ``(order, body, parse_warning, error_text)``：``order`` 为 None 即失败，
+    ``error_text`` 面向用户。``repair_plan`` 为 None（关闭修复/纯函数场景）时行为与
+    旧路径完全一致——解析、归一、校验，一次定生死。
+    """
+    parsed = parse_work_order(raw_text)
+    if not parsed.ok or parsed.order is None:
+        return None, "", None, f"产出不符合工单协议：{parsed.error or '未给出 work_order 块'}"
+
+    body = extract_body(raw_text)
+    warning = parsed.warning
+    resolve_order_targets(
+        parsed.order, aliases, node_keys=node_keys, node_labels=node_labels
+    )
+    # ask_user 漏给 options 时不把用户堵在协议错误上：补成可点卡片继续推进。
+    ensure_ask_options(parsed.order)
+    semantic = validate_order_ctx(
+        parsed.order,
+        node,
+        assignees,
+        rework,
+        is_entry=is_entry,
+        escalated=escalated,
+        allowed_actions=ENTRY_REPORT_ACTIONS if closing_report else None,
+    )
+    if not semantic:
+        return parsed.order, body, warning, None
+
+    # 路由目标填错才值得让模型重写一次：只认「错误目标里字面包含某个合法值」的
+    # 格式/拼写错误；与任何合法值都无关联的编造角色直接判死 —— 重试只会把
+    # 同一个幻觉换个写法再来一遍。
+    bad_target = _bad_routing_target(parsed.order, assignees, rework)
+    if repair_plan is None or not is_repairable_routing_error(
+        semantic,
+        bad_target=bad_target,
+        legal_keys=[*assignees, *rework],
+        legal_labels=list(node_labels.values()),
+    ):
+        return None, body, warning, semantic
+    # 修复轮也是一次模型调用：预算（步数/token）已经见底时不再发起，按原错误落 BLOCKED
+    budget = budget_from_storable(repair_plan.run.budget)
+    used_tokens = sum(
+        v for v in (repair_plan.run.usage or {}).values() if isinstance(v, (int, float))
+    )
+    if (repair_plan.run.steps_used or 0) >= budget.max_steps or (
+        budget.max_tokens and used_tokens >= budget.max_tokens
+    ):
+        return None, body, warning, semantic
+    repaired = await _repair_round(
+        parsed.order, semantic, assignees=assignees, rework=rework, plan=repair_plan
+    )
+    if repaired is None:
+        return None, body, warning, semantic
+    return repaired, body, warning, None
+
+
+def _bad_routing_target(order: Any, assignees: Sequence[str], rework: Sequence[str]) -> str | None:
+    """找出那份被判「不能把」的工单里第一个**不合法**的路由目标。
+
+    外层 assignee / rework_to / 每张子工单的 assignee 依次找；都没有时返回 None
+    （意味着错误其实不在路由字段上，修复轮无从下手）。
+    """
+    candidates = []
+    if order.assignee and order.assignee not in assignees:
+        candidates.append(order.assignee)
+    if order.rework_to and order.rework_to not in rework:
+        candidates.append(order.rework_to)
+    for draft in order.tickets or []:
+        if draft.assignee and draft.assignee not in assignees:
+            candidates.append(draft.assignee)
+    return candidates[0] if candidates else None
+
+
+def _repair_plan(
+    session: AsyncSession,
+    prepared: PreparedTurn,
+    run: CollabRun,
+    ticket: CollabTicket,
+    node: NodeSpec,
+    *,
+    step_id: str,
+    aliases: Mapping[str, str],
+    node_labels: Mapping[str, str],
+    is_entry: bool,
+    escalated: bool,
+    closing_report: bool,
+    usage_sink: dict[str, Any],
+) -> _RepairPlan:
+    """组装修复轮的上下文。参数全部来自 _run_step 作用域，就近传入、不留隐式状态。"""
+    return _RepairPlan(
+        session=session,
+        run=run,
+        ticket=ticket,
+        node=node,
+        step_id=step_id,
+        aliases=aliases,
+        node_keys=list(node_map(prepared.graph)),
+        node_labels=node_labels,
+        is_entry=is_entry,
+        escalated=escalated,
+        closing_report=closing_report,
+        usage=usage_sink,
+    )
+
+
+async def _repair_round(
+    order: Any,
+    error_text: str,
+    *,
+    assignees: Sequence[str],
+    rework: Sequence[str],
+    plan: "_RepairPlan",
+) -> Any | None:
+    """路由拼写类错误的一次性自动修复：只喂「错误 + 合法枚举」，不带历史长对话。
+
+    成功返回修正后的 WorkOrder；模型仍写不对（或修复轮本身出错）就返回 None，
+    由调用方按原错误进 BLOCKED。修复轮的用量并进本步（``plan.usage.update``），
+    步数只算一步（它是同一步的纠错，不是新的一步）。
+    """
+    prompt = build_repair_prompt(
+        order=order,
+        error_text=error_text,
+        assignees=assignees,
+        rework=rework,
+        duty_label=DUTY_LABELS[plan.node.duty],
+        node_key=plan.node.key,
+    )
+    try:
+        prepared = await execution.prepare_step(
+            plan.session,
+            run=plan.run,
+            node=plan.node,
+            step_id=plan.step_id,
+            prompt=prompt,
+        )
+    except execution.StepError:
+        # 修复轮的准备失败不该把原始错误吞掉：按「修不了」处理
+        return None
+    handle = execution.registry.register(
+        plan.run.id, f"{plan.step_id}:repair", prepared.profile.name, plan.node.key
+    )
+    text_parts: list[str] = []
+    usage: dict[str, Any] = {}
+    try:
+        async for event in execution.stream_step(prepared, handle):
+            _accumulate(event, text_parts, [], usage)
+    except Exception:  # noqa: BLE001 - 修复轮失败回退到原错误（铁律 11：主错误仍显式暴露）
+        return None
+    finally:
+        execution.registry.finish(f"{plan.step_id}:repair")
+    plan.usage.update(usage)
+    parsed = parse_work_order("".join(text_parts))
+    if not parsed.ok or parsed.order is None:
+        return None
+    # 修复结果同样要过归一 + 校验；不过就按原错误判死，绝不让修复轮变成新的攻击面
+    resolve_order_targets(
+        parsed.order, plan.aliases, node_keys=plan.node_keys, node_labels=plan.node_labels
+    )
+    semantic = validate_order_ctx(
+        parsed.order,
+        plan.node,
+        assignees,
+        rework,
+        is_entry=plan.is_entry,
+        escalated=plan.escalated,
+        allowed_actions=ENTRY_REPORT_ACTIONS if plan.closing_report else None,
+    )
+    return parsed.order if semantic is None else None
 
 
 def validate_order_ctx(

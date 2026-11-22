@@ -326,7 +326,15 @@ open ──(被领取)──▶ working ──submit(有审查者)──▶ revi
 - **一轮出现多个合法块 → 取最后一个**，并产出 `collab.notice(warn)` 说明偏差。工具型内核（Claude Code 等）
   会把中间草稿和最终答复写进同一段输出，一律判死会让整条链路白跑。
 - 解析后再做**语义校验**（`validate_order`），任一不通过 → 该步 `error`、工单 `blocked`、运行 `waiting_user`。
-- 模型把 `assignee` 写成显示名（「CTO」）时，`resolve_order_targets` 只在**唯一匹配**时归一成 key；同名节点不猜。
+- **路由目标归一化**（`resolve_order_targets`）：`assignee` / `rework_to` / 子工单 `assignee` 在校验前先归一 ——
+  清洗只做 strip + NFKC（全半角括号、全角空格）；「显示名（key）」这类**自带 key** 的括号形式
+  **无条件**归一（key 本身无歧义，显示名重名也不影响）；纯 key 原样通过；裸显示名只在
+  **全图唯一**时映射，重名不猜。刻意不做模糊正则截取：误撞另一个节点的显示名会**静默派错人**，
+  宁可报错阻塞。
+- **路由拼写错误的一次性修复轮**（`engine._repair_round`）：语义校验报「不能把…」且**错误目标里字面
+  包含**某个合法 key / 显示名时，用只含「原工单 + 错误原因 + 合法枚举」的精简 prompt
+  （`prompt.build_repair_prompt`，不带历史长对话）就地让模型重写一次；修复结果同样过归一 + 校验，
+  仍不对则按原错误落 `blocked`。编造角色（与任何合法值无字面关联）、漏字段、动作越权**绝不重试**。
 - 模型把长说明写进 `description` / `desc` / `detail` / `说明` 等字段时会被接住（没有 `goal` 就当 `goal`，
   否则并进 `requirements`），不会静默丢失。
 - `ask_user` 漏给 `options` 时，`ensure_ask_options` 会从问题正文的项目符号或「A 还是 B」句式恢复，

@@ -2,8 +2,9 @@
  * 外观（主题）设置：深色 / 浅色 / 跟随系统。
  *
  * 两端共用同一份：模式存在 localStorage 的同一个键上，解析出的主题写在
- * `<html data-theme="dark|light">`，CSS 只需要一套 `:root`（深色，也是默认）+ 一个
- * `[data-theme='light']` 覆盖块（`index.css` 与 `mobile.css` 各一份）。
+ * `<html data-theme="dark|light">`，CSS 只需要一套 `:root`（深色，作为无脚本时的兜底）
+ * + 一个 `[data-theme='light']` 覆盖块（`index.css` 与 `mobile.css` 各一份）。
+ * 没设置过时默认「跟随系统」—— 系统是深色就深色，是浅色就浅色。
  *
  * 入口 HTML 里还有一段等价的内联脚本（两个入口各一份，刻意写得极简）：它必须在首屏
  * 渲染前就把 `data-theme` 定下来，否则浅色用户每次打开都会先闪一下深色外壳。
@@ -23,22 +24,22 @@ export const THEME_COLORS: Record<ResolvedTheme, string> = { dark: '#11101b', li
 
 /** 设置页里的三个选项（两端共用同一份文案）。 */
 export const THEME_OPTIONS: { value: ThemeMode; label: string; hint: string }[] = [
-  { value: 'dark', label: '深色', hint: '默认，夜间与暗环境最舒服' },
+  { value: 'dark', label: '深色', hint: '夜间与暗环境最舒服' },
   { value: 'light', label: '浅色', hint: '白天或强光下更清楚' },
-  { value: 'auto', label: '跟随系统', hint: '随系统 / 手机的深色模式自动切换' },
+  { value: 'auto', label: '跟随系统', hint: '默认，随系统 / 手机的深色模式自动切换' },
 ]
 
 const LIGHT_QUERY = '(prefers-color-scheme: light)'
 
-/** 读设置里的模式；没设置过就是深色（老客户端升级上来外观不变）。 */
+/** 读设置里的模式；没设置过就跟随系统（首次打开按系统深浅色决定）。 */
 export function readThemeMode(): ThemeMode {
   try {
     const raw = localStorage.getItem(THEME_STORAGE_KEY)
     if (raw === 'light' || raw === 'dark' || raw === 'auto') return raw
   } catch {
-    /* 隐私模式下 localStorage 可能不可用：退回默认值即可 */
+    /* 隐私模式下 localStorage 可能不可用：退回默认值（跟随系统）即可 */
   }
-  return 'dark'
+  return 'auto'
 }
 
 function systemTheme(): ResolvedTheme {

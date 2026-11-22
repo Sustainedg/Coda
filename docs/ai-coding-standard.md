@@ -405,10 +405,10 @@ class AcmeHarness(OpenAIHarnessBase):
   （两端都有，桌面端是设置里的标签页）；智能体（内核 + 网关 + 模型 + 人格 + 技能）有自己的配置页
   —— 移动端是 `mobile/pages/MobileAgentsPage.tsx`（有守卫断言它必须存在），**不要**再把「实例配置」
   塞回内核页（`MobileAgentSettings.tsx` 已取消：密钥归网关）。
-- **外观（深色 / 浅色 / 跟随系统）只有一份实现**（`src/lib/theme.ts`）：解析结果写在
-  `<html data-theme>`，两端样式表各自的 `:root` 是深色默认、浅色只加 `[data-theme='light']`
-  覆盖块。**界面里不要写死深色**：先加 CSS 变量、再补浅色值；两端都要用到的新配色，两份样式表
-  一起加（共享段还要逐字一致，见 `backend/tests/test_mobile_web.py`）。原生外壳的配色由
+- **外观（深色 / 浅色 / 跟随系统）只有一份实现**（`src/lib/theme.ts`）：**没设置过默认「跟随系统」**，
+  解析结果写在 `<html data-theme>`，两端样式表各自的 `:root` 是深色兜底（脚本未执行时用）、浅色只加
+  `[data-theme='light']` 覆盖块。**界面里不要写死深色**：先加 CSS 变量、再补浅色值；两端都要用到的新配色，
+  两份样式表一起加（共享段还要逐字一致，见 `backend/tests/test_mobile_web.py`）。原生外壳的配色由
   `applyTheme()` 同步 `meta[name=theme-color]`，别在别处硬编码主题色。
 - **输入区只有一份**：`src/components/Composer.tsx`（受控：草稿 / 附件 / 上传 /
   发送都由页面给），两端的对话页与协作运行页共用；不要再各写一个输入框。

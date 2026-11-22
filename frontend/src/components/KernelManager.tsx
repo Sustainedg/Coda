@@ -7,6 +7,7 @@ import { useAuth } from './AuthGate'
 import { api, ApiError } from '../lib/api'
 import { formatListTime } from '../lib/datetime'
 import { trackKernelLogoReady } from '../lib/kernelIcons'
+import { updateTargetOf, versionCore } from '../lib/runtimeVersion'
 import type {
   ActiveCollabRun,
   AgentRuntime,
@@ -126,6 +127,11 @@ export function KernelManager() {
         ),
       )
       setError(null)
+      // 账号型内核：重新检测也顺手重探一次登录态 —— 用户在终端里 /login 之后，
+      // 回到页面点一下「重新检测」就能把「未登录」翻成「已登录」。
+      if (runtime.provisioning.installed && (runtime.provisioning.commands?.login?.length || runtime.auth_supported)) {
+        void loadAuth(runtime)
+      }
     } catch (e) {
       setError(describe(e))
     } finally {
@@ -162,6 +168,16 @@ export function KernelManager() {
       const apiMs = performance.now() - apiStartedAt
       setRuntimes(items)
       setError(null)
+      // 账号型内核：列表里顺手探一次登录状态（与移动端同一策略），卡片才能直接
+      // 显示「已登录 / 未登录」，而不是非得点开详情才知道（探测是本地配置读取）。
+      for (const item of items) {
+        if (
+          item.provisioning.installed &&
+          (item.provisioning.commands?.login?.length || item.auth_supported)
+        ) {
+          void loadAuth(item)
+        }
+      }
       // 「检查更新」是每个内核一次远端查询（npm view 之类），不能挡住首屏：
       // 卡片先出来，查到结果再逐个补上。该接口仅管理员可用，成员不要自动触发。
       setLoading(false)
@@ -446,6 +462,9 @@ export function KernelManager() {
               key={runtime.id}
               runtime={runtime}
               latest={latest[runtime.id]}
+              checking={Boolean(checking[runtime.id])}
+              auth={auth[runtime.id] ?? null}
+              authLoading={Boolean(authLoading[runtime.id])}
               busy={provisionJobs[runtime.id]?.status === 'running'}
               runningAction={provisionJobs[runtime.id]?.status === 'running' ? provisionJobs[runtime.id].action : null}
               onOpen={() => openDetail(runtime)}
@@ -489,20 +508,44 @@ export function KernelManager() {
 function KernelCard({
   runtime,
   latest,
+  checking,
+  auth,
+  authLoading,
   busy,
   runningAction,
   onOpen,
 }: {
   runtime: AgentRuntime
   latest?: RuntimeLatest
+  checking: boolean
+  auth: RuntimeAuth | null
+  authLoading: boolean
   busy: boolean
   runningAction: RuntimeAction | null
   onOpen: () => void
 }) {
   const provisioning = runtime.provisioning
-  const remote = latest?.latest ?? null
   const current = provisioning.version ? versionCore(provisioning.version) : null
-  const upToDate = Boolean(remote && current && versionCore(remote) === current)
+  // 查到比本机**更高**的远端版本才算「有更新」；没查到更新（还没查完 / 查询失败 /
+  // 远端不比本机新）就默认按「已是最新」显示 —— 远端查询是 npm view，很慢，不能空等。
+  // 连「查询最新版本」命令都没有的内核不参与这个默认（无从判断，别给假结论）。
+  const canCheckVersion = Boolean(provisioning.commands?.latest?.length)
+  const updateTarget = updateTargetOf(provisioning.version, latest)
+  const versionPillTitle = checking
+    ? '正在查询远端最新版本…'
+    : latest?.error
+      ? `远端版本查询失败（${latest.error}），暂按已是最新显示`
+      : undefined
+  // 账号型内核：实现了登录态探测就在卡片上亮出「已登录 / 未登录」（与移动端一致）。
+  const authSupported = Boolean(provisioning.commands?.login?.length) || Boolean(runtime.auth_supported)
+  const loggedIn = auth?.logged_in === true
+  const authLabel = authLoading
+    ? '检查登录…'
+    : loggedIn
+      ? '已登录'
+      : auth?.logged_in === false
+        ? '未登录'
+        : '登录未知'
   return (
     <button
       type="button"
@@ -516,9 +559,21 @@ function KernelCard({
           <span className="card-title">{runtime.name}</span>
           <span className="card-sub runtime-sub">
             <span>{kernelSummary(runtime, current)}</span>
-            {upToDate && <span className="pill ok">已是最新</span>}
-            {busy && runningAction && (
+            {busy && runningAction ? (
               <span className="pill brand">正在{ACTION_LABELS[runningAction]}…</span>
+            ) : provisioning.installed && current && canCheckVersion ? (
+              updateTarget ? (
+                <span className="pill warn" title={`远端最新版本 ${updateTarget}，点卡片进详情更新`}>
+                  可更新 {updateTarget}
+                </span>
+              ) : (
+                <span className="pill ok" title={versionPillTitle}>
+                  已是最新
+                </span>
+              )
+            ) : null}
+            {authSupported && provisioning.installed && (
+              <span className={`pill ${loggedIn ? 'ok' : 'warn'}`}>{authLabel}</span>
             )}
           </span>
           <span className="dim small">{detectedLabel(provisioning.checked_at)}</span>
@@ -581,8 +636,8 @@ function KernelDetail({
         : auth?.detail ?? '未知'
   // 查到比本机更高的版本才提示「更新到 X」；已经是最新版就不给更新入口。
   // 查不到（不支持 / 失败 / 还没查）时保留普通「更新」，免得失去升级手段。
-  const updateTarget = remote && current && versionCore(remote) !== current ? remote : null
-  const upToDate = Boolean(remote && current && versionCore(remote) === current)
+  const updateTarget = updateTargetOf(provisioning.version, latest)
+  const upToDate = Boolean(remote && current && !updateTarget)
   const showUpdate =
     isAdmin &&
     managed &&
@@ -603,6 +658,7 @@ function KernelDetail({
         <span className={`pill ${provisioning.installed ? 'ok' : managed ? 'warn' : ''}`}>
           {provisioning.installed ? '已安装' : managed ? '未安装' : '不适用'}
         </span>
+        {updateTarget && <span className="pill warn">可更新到 {updateTarget}</span>}
       </div>
 
       {managed && provisioning.note && <div className="banner warn">{provisioning.note}</div>}
@@ -630,6 +686,14 @@ function KernelDetail({
         <dt>检测时间</dt>
         <dd>{detectedLabel(provisioning.checked_at)}</dd>
       </dl>
+
+      {/* 未登录时把适配器给出的登录方式亮出来（多行指引，保留换行）。
+          有些内核（如 CodeBuddy）没有可代跑的登录命令，这块就是唯一的「登录方式」。 */}
+      {authSupported && provisioning.installed && auth?.logged_in === false && auth.detail && (
+        <div className="banner warn" style={{ whiteSpace: 'pre-line' }}>
+          {auth.detail}
+        </div>
+      )}
 
       <div className="row wrap" style={{ gap: 8 }}>
         {isAdmin && managed && !provisioning.installed && provisioning.commands?.install?.length ? (
@@ -723,11 +787,6 @@ function kernelSummary(runtime: AgentRuntime, current: string | null): string {
 /** 「检测于 …」：安装状态是后端缓存 + 定时检测的，不是每次打开页面实时探的。 */
 function detectedLabel(checkedAt: string | null | undefined): string {
   return checkedAt ? `检测于 ${formatListTime(checkedAt)}` : '尚未检测'
-}
-
-/** 从版本字符串里抽出可比较的核心版本号（`2.1.316 (Claude Code)` → `2.1.316`）。 */
-function versionCore(value: string): string {
-  return value.match(/\d+\.\d+(?:\.\d+)?/)?.[0] ?? value.trim()
 }
 
 function describe(error: unknown): string {

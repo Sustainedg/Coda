@@ -2,7 +2,8 @@
    Coda —— 设计变量与基础原语
    ============================================================ */
 :root {
-  /* 外观：深色是默认（浅色看下面的 [data-theme='light']）。color-scheme 决定原生控件、
+  /* 外观：`:root` 是深色（无脚本 / 首屏脚本没跑起来时的兜底），浅色看下面的 [data-theme='light']。
+     默认「跟随系统」由 theme.ts 与入口内联脚本决定。color-scheme 决定原生控件、
      滚动条、下拉框按哪套配色渲染，必须和下面的变量成套。 */
   color-scheme: dark;
   --bg: #0b0a12;
@@ -43,7 +44,7 @@
   --advance-border: rgba(94, 158, 255, 0.34);
   --advance-bg: linear-gradient(135deg, rgba(94, 158, 255, 0.1), rgba(123, 92, 255, 0.06));
 
-  /* 协作编排画布：深色是默认（浅色在下面 [data-theme='light'] 的变量块里逐支覆盖） */
+  /* 协作编排画布：深色兜底（浅色在下面 [data-theme='light'] 的变量块里逐支覆盖） */
   --canvas-bg: #0d0c16;
   --canvas-dot: rgba(255, 255, 255, 0.055);
   --canvas-hud-bg: rgba(13, 12, 22, 0.82);

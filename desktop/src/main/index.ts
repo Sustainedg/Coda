@@ -7,7 +7,7 @@
  * 窗口策略（桌面版价值点）：关窗 = 隐藏到托盘，后端继续跑
  * → IM 在线、工单协作、生成中的回复都不中断。
  */
-import { app, BrowserWindow, Tray, Menu, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, Tray, Menu, dialog, ipcMain, shell, nativeTheme } from 'electron';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { findFreePort, isPortInUse } from './ports';
@@ -303,13 +303,15 @@ async function pickPort(): Promise<number> {
 }
 
 function createWindow(): void {
+  // 窗口底色跟随系统深浅色：默认外观是「跟随系统」，浅色系统下窗口不该先露一块深色，
+  // 否则页面加载前会闪一下深色。真实配色仍以页面里的 <html data-theme> 为准。
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 960,
     minHeight: 640,
     show: false,
-    backgroundColor: '#0f1117',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0f1117' : '#f4f3fa',
     title: 'Coda',
     icon: process.platform === 'darwin' ? undefined : path.join(iconsDir(), 'icon.png'),
     autoHideMenuBar: true,
@@ -371,14 +373,24 @@ function splashIconDataUri(): string {
 /** 启动页（等待后端就绪时显示）：品牌图标 + 呼吸光晕 + 环形进度。 */
 async function loadSplash(): Promise<void> {
   const icon = splashIconDataUri();
+  // 启动页也跟随系统深浅色，避免浅色系统下先闪一块深色再跳到浅色页面。
+  const dark = nativeTheme.shouldUseDarkColors;
+  const pageBg = dark ? '#0b0a12' : '#f4f3fa';
+  const textColor = dark ? '#e8eaf0' : '#1f1b33';
+  const subColor = dark ? '#7d7899' : '#8a85a6';
+  const msgColor = dark ? '#9aa0b0' : '#5f5a78';
+  const ringBorder = dark ? 'rgba(255, 255, 255, 0.09)' : 'rgba(35, 32, 58, 0.12)';
+  const logoShadow = dark
+    ? '0 18px 44px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08) inset'
+    : '0 18px 44px rgba(35, 32, 58, 0.18), 0 0 0 1px rgba(35, 32, 58, 0.06) inset';
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     html, body { height: 100%; margin: 0; }
     body {
       background:
         radial-gradient(620px 420px at 50% 16%, rgba(224, 83, 214, 0.16), transparent 70%),
         radial-gradient(520px 380px at 82% 88%, rgba(107, 76, 240, 0.12), transparent 72%),
-        #0b0a12;
-      color: #e8eaf0;
+        ${pageBg};
+      color: ${textColor};
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
                    "Microsoft YaHei", sans-serif;
       display: flex; align-items: center; justify-content: center;
@@ -395,15 +407,15 @@ async function loadSplash(): Promise<void> {
       filter: blur(6px); animation: breathe 3.2s ease-in-out infinite;
     }
     .logo { width: 84px; height: 84px; border-radius: 22px; display: block; position: relative;
-      box-shadow: 0 18px 44px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08) inset; }
+      box-shadow: ${logoShadow}; }
     .name { margin-top: 6px; font-size: 17px; font-weight: 600; letter-spacing: 0.06em; }
-    .sub { font-size: 10.5px; letter-spacing: 0.22em; color: #7d7899; text-transform: uppercase; }
+    .sub { font-size: 10.5px; letter-spacing: 0.22em; color: ${subColor}; text-transform: uppercase; }
     .spinner {
       width: 22px; height: 22px; margin-top: 10px; border-radius: 50%;
-      border: 2px solid rgba(255, 255, 255, 0.09); border-top-color: #e053d6;
+      border: 2px solid ${ringBorder}; border-top-color: #e053d6;
       animation: spin 0.85s linear infinite;
     }
-    #msg { font-size: 12.5px; color: #9aa0b0; min-height: 18px; letter-spacing: 0.02em; }
+    #msg { font-size: 12.5px; color: ${msgColor}; min-height: 18px; letter-spacing: 0.02em; }
     @keyframes spin { to { transform: rotate(360deg); } }
     @keyframes breathe { 0%, 100% { opacity: 0.55; transform: scale(0.96); } 50% { opacity: 1; transform: scale(1.04); } }
     @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }

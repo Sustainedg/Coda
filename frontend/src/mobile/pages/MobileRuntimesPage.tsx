@@ -11,6 +11,7 @@ import type {
 } from '../../lib/types'
 import { RefreshIcon } from '../../components/Icons'
 import { KernelLogo } from '../../components/KernelLogo'
+import { updateTargetOf, versionCore } from '../../lib/runtimeVersion'
 import { MobileSheet } from '../components/MobileSheet'
 import { MobileTopBar } from '../components/MobileTopBar'
 import { describeError, relativeTime } from '../util'
@@ -307,11 +308,9 @@ export function MobileRuntimesPage() {
               const remote = latest[runtime.id]?.latest ?? null
               const canCheck = isAdmin && Boolean(provisioning.commands?.latest?.length)
               const current = provisioning.version ? versionCore(provisioning.version) : null
-              // 查到更高版本才提示「更新到 X」；已经是最新版就不给更新入口。
-              // 查不到（不支持 / 失败 / 还没查）时保留普通「更新」，免得失去升级手段。
-              const updateTarget = remote && current && versionCore(remote) !== current ? remote : null
-              // 远端最新版本与本机一致时，在版本号旁边挂一个「已是最新」。
-              const upToDate = Boolean(remote && current && versionCore(remote) === current)
+              // 查到比本机**更高**的远端版本才提示「更新到 X」；没查到更新（还没查完 /
+              // 查询失败 / 已是最新）就默认按「已是最新」显示，不让状态一直空着。
+              const updateTarget = updateTargetOf(provisioning.version, latest[runtime.id])
               const showUpdate =
                 isAdmin &&
                 managed &&
@@ -332,7 +331,15 @@ export function MobileRuntimesPage() {
                       <div className="m-item-title">{runtime.name}</div>
                       <div className="m-item-sub runtime-sub">
                         <span>{kernelSummary(runtime, current)}</span>
-                        {upToDate && <span className="pill ok">已是最新</span>}
+                        {busy ? null : provisioning.installed && current && Boolean(provisioning.commands?.latest?.length) ? (
+                          updateTarget ? (
+                            <span className="pill warn">可更新 {updateTarget}</span>
+                          ) : (
+                            <span className="pill ok" title={latest[runtime.id]?.error ? `远端版本查询失败（${latest[runtime.id]?.error}），暂按已是最新显示` : undefined}>
+                              已是最新
+                            </span>
+                          )
+                        ) : null}
                         {authSupported && provisioning.installed && (
                           <span className={`pill ${loggedIn ? 'ok' : 'warn'}`}>
                             {authLoading[runtime.id]
@@ -510,9 +517,4 @@ function kernelSummary(runtime: AgentRuntime, current: string | null): string {
 function detectedLabel(checkedAt: string | null | undefined): string {
   const text = relativeTime(checkedAt)
   return text ? `检测于 ${text}` : '尚未检测'
-}
-
-/** 从版本字符串里抽出可比较的核心版本号（`2.1.316 (Claude Code)` → `2.1.316`）。 */
-function versionCore(value: string): string {
-  return value.match(/\d+\.\d+(?:\.\d+)?/)?.[0] ?? value.trim()
 }

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -986,16 +988,94 @@ def merge_chat_update(brief: dict[str, Any], update: ChatUpdate) -> tuple[dict[s
     return merged, changed
 
 
-def resolve_order_targets(order: WorkOrder, aliases: Mapping[str, str]) -> None:
-    """把岗位显示名归一成节点 key。
+def clean_target_text(value: str) -> str:
+    """路由目标的**克制清洗**：只做 strip 与 NFKC 归一（全角括号/空格 → 半角）。
 
-    模型经常把 ``assignee`` 写成「CTO」而不是图上的节点 key；提示词里虽然同时给了两者，
-    但校验与派发都只认 key。这里只做**唯一匹配**的归一（同名节点不猜），
-    避免为了一个显示名把整轮工单打回。
-
-    注意：这里只认**当前图上的显示名**。旧 key（用户在编辑器里改过 id 之后）不在映射里，
-    也无从推断，所以提示词里绝不能出现任何写死的示例 key（见 ``render_protocol_guide``）。
+    刻意不做更激进的正则截取（比如从「dev(测试)」里抠出 ``dev``）：那种「看起来能修」的
+    模糊匹配一旦恰好撞上另一个节点的显示名，就会**静默派错人** —— 宁可报错阻塞，
+    也不要盲猜（真实故障复盘：``SEO（dev）`` 被当成不认识的目标打回，而更早的版本差点
+    用模糊匹配把活派给名字相近的另一个岗位）。
     """
+    return unicodedata.normalize("NFKC", value).strip()
+
+
+#: 「显示名（key）」展示形式的拆解：全角/半角括号都认。这是提示词自己渲染的格式，
+#: 拆它不涉及「猜」—— 括号里那段是引擎亲手放进去的 key。
+_WRAPPED_SPLIT = re.compile(r"^(?P<name>[^（()]*)[（(](?P<key>[^）)]*)[）)]$")
+
+
+def split_wrapped_target(value: str) -> tuple[str, str] | None:
+    """把「显示名（key）」拆成 ``(显示名, key)``；不是这种形式返回 None。"""
+    match = _WRAPPED_SPLIT.match(clean_target_text(value))
+    if not match:
+        return None
+    name = match.group("name").strip()
+    key = match.group("key").strip()
+    if not name or not key:
+        return None
+    return name, key
+
+
+def _key_from_wrapped(value: str) -> str | None:
+    """从「显示名（key）」里取 key；不是这种形式返回 None（纯函数，仅供协议渲染）。"""
+    parts = split_wrapped_target(value)
+    return parts[1] if parts else None
+
+
+def _wrapped_forms(alias: str, key: str) -> frozenset[str]:
+    """「显示名（key）」这类**自带 key** 的展示形式，全角/半角括号都认。
+
+    这种形式无歧义（括号里/外的 key 是图上的真 id），因此即使显示名重名也照常归一 ——
+    真实故障：两个节点都叫「SEO」时别名映射整体失效，``SEO（dev）`` 不再被归一，
+    整轮 split 被打回，用户只能手动改剧本。两侧顺序、括号内侧空白都规整。
+    """
+    forms: set[str] = set()
+    for left, right in ((alias, key), (key, alias)):
+        for open_, close in ("（）", "()"):
+            forms.add(f"{left}{open_}{right}{close}")
+            forms.add(f"{left} {open_}{right}{close}")
+            forms.add(f"{left}{open_} {right} {close}")
+    return frozenset(clean_target_text(form) for form in forms)
+
+
+def resolve_order_targets(
+    order: WorkOrder,
+    aliases: Mapping[str, str],
+    *,
+    node_keys: Sequence[str] = (),
+    node_labels: Mapping[str, str] | None = None,
+) -> None:
+    """把路由目标（assignee / rework_to / 每张子工单的 assignee）归一成节点 key。
+
+    只做**精确匹配**，任何一步对不上就原样返回、交给校验层报错：
+
+    1. 先清洗：strip + NFKC（全半角括号、全角空格都会被规整成半角）；
+    2. 括号形式（``SEO（dev）`` / ``dev（SEO）``）：**无条件**按括号里的真 key 归一 ——
+       显示名重名也不影响，因为 key 本身无歧义；``node_labels`` 是全图 key→显示名，
+       重名的显示名在这里也各有各的 key，不会互相顶替；
+    3. 纯 key：原样通过；
+    4. 显示名：只在**全图唯一**时映射（``aliases`` 由调用方按唯一性筛好；
+       重名显示名不进映射，不猜）。
+
+    模糊正则截取（从 ``dev(测试)`` 里抠 ``dev``）**刻意不做**：一旦误撞另一个节点的
+    显示名就是静默派错人，比报错阻塞恶劣得多。
+    """
+    keys = {clean_target_text(k) for k in node_keys}
+    wrapped: dict[str, str] = {}
+    # 括号形式的两个来源，方向**相反**，必须分开解包：
+    #   aliases      = {显示名: key}（唯一显示名，老调用方式）
+    #   node_labels  = {key: 显示名}（全图，引擎的新调用方式；重名显示名也各有一席）
+    for label, key in aliases.items():
+        if not label or label == key:
+            continue
+        for form in _wrapped_forms(label, key):
+            wrapped[form] = key
+    for key, label in (node_labels or {}).items():
+        if not label or label == key:
+            continue
+        for form in _wrapped_forms(label, key):
+            wrapped[form] = key
+
     normalized: dict[str, str] = {}
     for alias, key in aliases.items():
         if alias and alias not in normalized:
@@ -1005,18 +1085,18 @@ def resolve_order_targets(order: WorkOrder, aliases: Mapping[str, str]) -> None:
     def resolve(value: str | None) -> str | None:
         if not value:
             return value
-        text = value.strip()
+        text = clean_target_text(value)
         if not text:
             return value
+        # 括号形式自带 key，无歧义，无条件归一
+        if text in wrapped:
+            return wrapped[text]
+        # 纯 key（或清洗后恰好等于某个 key）直接通过
+        if text in keys:
+            return text
         exact = normalized.get(text) or normalized.get(text.lower())
         if exact:
             return exact
-        for alias, key in aliases.items():
-            if not alias or alias == key:
-                continue
-            wrapped = {f"{alias}（{key}）", f"{alias}({key})", f"{key}（{alias}）", f"{key}({alias})"}
-            if text in wrapped:
-                return key
         return value
 
     assignee = resolve(order.assignee)
@@ -1030,6 +1110,41 @@ def resolve_order_targets(order: WorkOrder, aliases: Mapping[str, str]) -> None:
         resolved = resolve(draft.assignee)
         if resolved != draft.assignee:
             draft.assignee = resolved
+
+
+def is_repairable_routing_error(
+    error: str | None,
+    *,
+    bad_target: str | None = None,
+    legal_keys: Sequence[str] = (),
+    legal_labels: Sequence[str] = (),
+) -> bool:
+    """这个语义校验错误**值不值得让同一个模型立刻重写一轮**。
+
+    前提先窄化：``validate_order`` 里「填了目标但填错」的报错都以「不能把」开头
+    （工单/子工单/rework 三种）。在这个前提下再区分两类：
+
+    - **格式/拼写类**（可修复）：错误目标 ``bad_target`` 里**字面包含**某个合法 key 或
+      合法显示名（如 ``CTO-cto``、``CTO／cto``）。这是确定性的字符串包含，不是模糊
+      相似度——包含意味着模型写的时候面对的就是这个真目标，只是混了装饰字符。
+    - **编造类**（不可修复）：与任何合法值都无字面关联（如「不存在的人」）。重试只会
+      把同一个幻觉换个写法再来一遍，必须进 BLOCKED 由用户判断。
+
+    其余错误（漏字段、动作越权、入口规则）不以「不能把」开头，天然归为不可修复。
+    把新错误加进 ``validate_order`` 时必须同步检查这里的分类是否仍然成立。
+    """
+    if not error or not error.startswith("不能把"):
+        return False
+    if not bad_target:
+        return False
+    text = clean_target_text(bad_target)
+    if not text:
+        return False
+    for legal in (*legal_keys, *legal_labels):
+        cleaned = clean_target_text(str(legal))
+        if cleaned and cleaned.lower() in text.lower():
+            return True
+    return False
 
 
 def validate_order(
@@ -1170,6 +1285,18 @@ def render_protocol_guide(
         f"你本轮的岗位是「{duty_label}」，允许的动作：{action_list}。",
         f"允许派发的对象：{assignee_text}。{reviewer_text}",
     ]
+    if assignees:
+        # id 与描述**分列**：`assignees` 由 prompt 层渲染成「显示名（key）」，整串照抄是
+        # 真实高频故障（SEO（dev）被原样写进 assignee）；单独再给一行**纯 key 清单**，
+        # 模型抄哪一行都抄到的是合法值，不制造「拼接串」这种脏数据源头。
+        pure_keys = sorted(
+            _key_from_wrapped(str(item)) or str(item) for item in assignees
+        )
+        rules.append(
+            f"assignee / rework_to 的合法取值（只能从中选一个，整串原样照抄）："
+            f"{'、'.join(pure_keys)}。"
+            "上面名单里的括号只是给人看的说明；填进 JSON 的必须是括号内那段 key。"
+        )
     if TicketAction.DELEGATE in actions:
         rules.append(
             "delegate 必须给 assignee：填「允许派发的对象」里括号内的那段节点 key"
@@ -1320,8 +1447,14 @@ def _delegate_example(assignees: Sequence[str]) -> dict[str, Any]:
     有多个派发对象时，示例直接演示「每张子工单带各自的 assignee」的形状：
     模型对示例形状的模仿远强于对规则文字的记忆（真实故障：规则里要求每张写 assignee、
     示例里却没有这个字段，模型思考里计划了、落笔时照示例形状丢掉了）。
+
+    示例里的 assignee 一律写**纯 key**（``Ark（dev-3）`` 这类展示串要先拆开）：
+    示例是模型最强的模仿锚点，示例自己写拼接串，模型就会照抄拼接串 ——
+    那正是「SEO（dev）被原样填进 assignee」这类故障的源头。
     """
-    keys = sorted(assignees)
+    keys = sorted(
+        _key_from_wrapped(str(item)) or str(item) for item in assignees
+    )
     example: dict[str, Any] = {
         "action": "delegate",
         "mode": "split",

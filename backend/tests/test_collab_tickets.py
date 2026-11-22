@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import json
+
 from app.collab.schemas import TicketAction
 from app.collab.tickets import (
     ChatUpdate,
@@ -12,6 +14,7 @@ from app.collab.tickets import (
     escape_inner_quotes,
     extract_body,
     extract_chat_body,
+    is_repairable_routing_error,
     merge_chat_update,
     normalize_title,
     parse_chat_advance,
@@ -358,9 +361,10 @@ def test_protocol_guide_demands_per_ticket_assignee_when_multiple_assignees():
     # 字段白名单必须包含 assignee：漏了它，模型会按「白名单没有」把刚被要求的
     # 字段主动丢掉（第二次真实故障：思考里计划了、落笔时按白名单删掉了）
     assert "assignee / title" in guide
-    # 示例直接演示每张带 assignee 的形状（形状锚定比规则文字有效）
-    assert '"assignee": "coco（dev）"' in guide
-    assert '"assignee": "ark（dev-2）"' in guide
+    # 示例直接演示每张带 assignee 的形状（形状锚定比规则文字有效）；
+    # 示例里的 assignee 必须是**纯 key**：示例写展示串，模型就会照抄展示串
+    assert '"assignee": "dev"' in guide
+    assert '"assignee": "dev-2"' in guide
 
 
 def test_protocol_guide_keeps_fallback_wording_for_single_assignee():
@@ -404,6 +408,137 @@ def test_display_names_are_normalized_to_node_keys():
     assert ambiguous is not None
     resolve_order_targets(ambiguous, {})  # 调用方对重名节点不提供映射
     assert ambiguous.assignee == "CTO"
+
+
+# --- 路由目标归一化（表驱动：清洗 + 括号形式 + 唯一显示名 + 重名歧义） ----------
+
+#: 图：dev 的显示名是 SEO；dev-2 与 dev-3 显示名重名（都是「测试」）
+LABELS = {
+    "lead": "lead",
+    "dev": "SEO",
+    "dev-2": "测试",
+    "dev-3": "测试",
+    "qa": "QA",
+}
+#: 唯一显示名才进 aliases（引擎构建规则的同构复刻）
+UNIQUE_ALIASES = {"SEO": "dev"}
+
+
+def resolve_assignee(raw: str) -> str | None:
+    """把 raw 填进 assignee 跑完整归一，返回归一后的值。"""
+    order = parse_work_order(
+        f'```{FENCE}\n{{"action":"delegate","assignee":{json.dumps(raw)},"mode":"handoff"}}\n```'
+    ).order
+    assert order is not None
+    resolve_order_targets(
+        order,
+        UNIQUE_ALIASES,
+        node_keys=list(LABELS),
+        node_labels=LABELS,
+    )
+    return order.assignee
+
+
+def test_wrapped_form_is_normalized_even_when_labels_collide():
+    """括号形式自带 key（无歧义）：显示名重名也必须照常归一 —— 本次重构的直接动因。
+
+    真实故障：两个节点都叫「测试」，别名映射整体失效，模型照抄「SEO（dev）」被打回，
+    整轮 split 挂起等用户。括号里的 key 是引擎亲手渲染的，按它归一不涉及任何「猜」。
+    """
+    assert resolve_assignee("SEO（dev）") == "dev"
+    assert resolve_assignee("SEO(dev)") == "dev"
+    assert resolve_assignee("dev（SEO）") == "dev"
+    # 重名显示名的括号形式同样认：各有各的 key，互不顶替
+    assert resolve_assignee("测试（dev-2）") == "dev-2"
+    assert resolve_assignee("测试（dev-3）") == "dev-3"
+    assert resolve_assignee("dev-3（测试）") == "dev-3"
+
+
+def test_target_cleaning_handles_whitespace_and_fullwidth_noise():
+    """清洗层：strip + NFKC（全角空格、首尾空白），不改大小写、不做模糊截取。"""
+    assert resolve_assignee("  dev  ") == "dev"
+    assert resolve_assignee("　dev　") == "dev"  # 全角空格
+    assert resolve_assignee(" SEO（dev） ") == "dev"
+    assert resolve_assignee("SEO（ dev ）") == "dev"
+
+
+def test_pure_keys_and_unique_display_names_pass_through():
+    """纯 key 原样通过；唯一显示名映射；大小写不敏感（沿用旧规则）。"""
+    assert resolve_assignee("dev") == "dev"
+    assert resolve_assignee("dev-2") == "dev-2"
+    assert resolve_assignee("SEO") == "dev"
+    assert resolve_assignee("seo") == "dev"
+
+
+def test_colliding_display_names_and_unknown_targets_stay_unresolved():
+    """重名显示名与编造目标**绝不猜**：原样保留，交给校验层报错阻塞。
+
+    模糊截取（从「测试（dev-2」里抠 key）刻意不做：误撞显示名会静默派错人。
+    """
+    assert resolve_assignee("测试") == "测试"  # 重名：不猜
+    assert resolve_assignee("不存在的人") == "不存在的人"  # 编造：不猜
+    assert resolve_assignee("SEO（不存在）") == "SEO（不存在）"  # 括号里的不是 key：不猜
+    assert resolve_assignee("dev(测试)") == "dev(测试)"  # 首段是 key 后缀像显示名：不猜
+
+
+def test_child_ticket_assignees_are_normalized_the_same_way():
+    """拆多张时每张子工单的 assignee 走同一条归一路径（照抄展示串是高频故障）。"""
+    raw = (
+        f'```{FENCE}\n{{"action":"delegate","assignee":"dev","mode":"split",'
+        '"tickets":['
+        '{"assignee":"SEO（dev）","title":"甲"},'
+        '{"assignee":"dev-2","title":"乙"},'
+        '{"assignee":"测试（dev-3）","title":"丙"}'
+        "]}\n```"
+    )
+    order = parse_work_order(raw).order
+    assert order is not None
+    resolve_order_targets(order, UNIQUE_ALIASES, node_keys=list(LABELS), node_labels=LABELS)
+    assert [draft.assignee for draft in order.tickets] == ["dev", "dev-2", "dev-3"]
+
+
+def test_repairable_routing_errors_are_classified_conservatively():
+    """只有「错误目标字面包含某个合法值」的拼写错误可修复；编造/漏填/越权一律判死。"""
+    # 格式/拼写类：错误目标里包含合法 key 或显示名 → 可修复
+    assert is_repairable_routing_error(
+        "不能把工单交给「X」；你只能派给：a、b", bad_target="CTO-cto", legal_keys=["cto"]
+    )
+    assert is_repairable_routing_error(
+        "不能把子工单「t」交给「X」；你只能派给：a、b",
+        bad_target="cto／cto", legal_keys=["cto"],
+    )
+    assert is_repairable_routing_error(
+        "不能把工单退给「X」；你只能退给：a", bad_target="SEO", legal_labels=["SEO"]
+    )
+    # 编造角色：与任何合法值都无字面关联 → 不可修复
+    assert not is_repairable_routing_error(
+        "不能把工单交给「不存在的人」；你只能派给：a、b",
+        bad_target="不存在的人", legal_keys=["cto", "se"],
+    )
+    assert not is_repairable_routing_error(
+        "不能把工单交给「不存在的人」", bad_target="不存在的人", legal_keys=[], legal_labels=[]
+    )
+    # 漏 bad_target、非「不能把」类错误、空值 → 全部不可修复
+    assert not is_repairable_routing_error("不能把工单交给「X」", bad_target=None, legal_keys=["cto"])
+    assert not is_repairable_routing_error("delegate 必须给出 assignee；你只能派给：a、b")
+    assert not is_repairable_routing_error("本轮不允许的动作：delegate；你只能做：done")
+    assert not is_repairable_routing_error("只有入口节点能向用户提问（ask_user）")
+    assert not is_repairable_routing_error("review 必须给出 verdict；取值：pass 或 changes_requested")
+    assert not is_repairable_routing_error(None)
+    assert not is_repairable_routing_error("")
+
+
+def test_protocol_guide_lists_pure_keys_separately_from_display_names():
+    """协议给一行**纯 key 清单**：id 与描述分列，不给「拼接串」当照抄源头。"""
+    guide = render_protocol_guide(
+        duty_label="协调者",
+        actions=(TicketAction.DELEGATE,),
+        assignees=["SEO（dev）", "测试（dev-2）"],
+    )
+    assert "assignee / rework_to 的合法取值" in guide
+    assert "dev、dev-2" in guide  # 纯 key 单独一行，机器可读
+    # 括号只是给人看的说明——这句必须点破，防止整串照抄
+    assert "括号只是给人看的说明" in guide
 
 
 # --- 近似重名（防「复读式拆解」） ------------------------------------------
@@ -477,7 +612,11 @@ def test_coordinator_example_demonstrates_delegation():
         duty=Duty.COORDINATOR,
     )
     assert '"action": "delegate"' in guide
-    assert '"assignee": "Leo-SDE（SDE）"' in guide
+    # 示例里的 assignee 是纯 key（展示串已拆开），不再诱导照抄
+    assert '"assignee": "SDE"' in guide
+    # 示例区（四重围栏内）绝不能再出现展示串
+    example_block = guide.split("````", 2)[1] if "````" in guide else ""
+    assert "Leo-SDE" not in example_block
 
     # 没有 duty 时维持原样（工程师仍然看到 submit 示例），改动不外溢
     engineer_guide = render_protocol_guide(

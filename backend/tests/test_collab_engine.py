@@ -1563,3 +1563,78 @@ async def test_escalated_ticket_cannot_be_delegated_back_down(
     # 提示词里压根没教它这么做，运行时再兜一道
     cto_prompts = prompts_of(prompts(scenario["state_dir"]), "cto")
     assert "delegate" not in allowed_actions_line(cto_prompts[-1])
+
+
+async def test_routed_target_typo_is_repaired_in_place_and_run_continues(
+    client: httpx.AsyncClient, tmp_path: Path
+):
+    """路由目标的拼写错误：同一步内自动修复，不再挂起等用户。
+
+    标准照抄（「CTO（cto）」）已被归一化直接吃掉，走不到修复轮；这里用归一化救不了的
+    形态（把 key 写成同岗位的另一个变体「cto-2」，图里没有这个节点）验证修复轮本身：
+    修复 prompt 只喂「原工单 + 错误 + 合法枚举」，一次纠错后整条链继续推进。
+    """
+    typo_handoff = {
+        "action": "delegate",
+        "assignee": "cto-2",
+        "mode": "handoff",
+        "ticket": {
+            "title": "登录页改造为暗色主题",
+            "goal": "在不改动后端的前提下支持暗色主题",
+            "requirements": ["新增主题开关"],
+            "acceptance": ["刷新后主题保持"],
+        },
+    }
+    # 修复轮：替身按剧本顺序取下一个 payload —— 给回修正后的工单
+    fixed_handoff = {
+        "action": "delegate",
+        "assignee": "cto",
+        "mode": "handoff",
+        "ticket": {
+            "title": "登录页改造为暗色主题",
+            "goal": "在不改动后端的前提下支持暗色主题",
+            "requirements": ["新增主题开关"],
+            "acceptance": ["刷新后主题保持"],
+        },
+    }
+    script = {
+        "ceo": [typo_handoff, fixed_handoff, CLOSING],
+        "cto": [{"action": "done", "remark": "完成"}],
+    }
+    scenario = await make_scenario(script, tmp_path)
+    run_id, events = await start_run(client, scenario["agent_profiles"], "把登录页改成暗色主题")
+
+    # 修复轮成功：整条链继续走完，而不是卡在 waiting_user
+    detail = (await client.get(f"/api/collab/runs/{run_id}")).json()
+    assert detail["status"] == "done", detail.get("error")
+    # ceo 的工单步骤是 complete（修复轮吞掉了打回），target_key 已是正确 key
+    ceo_steps = [s for s in detail["steps"] if s["role_key"] == "ceo"]
+    assert ceo_steps[0]["status"] == "complete"
+    assert ceo_steps[0]["action"] == "delegate" and ceo_steps[0]["target_key"] == "cto"
+    # 修复轮的 prompt 只含错误与合法枚举，不带完整的历史长对话
+    repair_prompts = [p for p in prompts(scenario["state_dir"]) if "[协议修复]" in p]
+    assert repair_prompts, "应当发起过一次修复轮"
+    assert "合法取值" in repair_prompts[-1]
+    assert "cto-2" in repair_prompts[-1]
+
+
+async def test_fabricated_role_is_never_repaired_and_blocks_the_run(
+    client: httpx.AsyncClient, tmp_path: Path
+):
+    """编造不存在角色的 assignee：绝不自动重试（重试只会换个写法再幻觉一次），直接 BLOCKED。"""
+    fabricated = {
+        "action": "delegate",
+        "assignee": "不存在的人",
+        "mode": "handoff",
+        "ticket": {"title": "查一下工作目录", "goal": "列出文件", "acceptance": ["给出清单"]},
+    }
+    script = {"ceo": [fabricated], "cto": [{"action": "done", "remark": "完成"}]}
+    scenario = await make_scenario(script, tmp_path)
+    run_id, _ = await start_run(client, scenario["agent_profiles"], "把登录页改成暗色主题")
+
+    detail = (await client.get(f"/api/collab/runs/{run_id}")).json()
+    assert detail["status"] == "waiting_user"
+    assert "不能把工单交给「不存在的人」" in (detail["error"] or "")
+    # 没有修复轮：编造角色不属于「格式/拼写」错误，重试不解决幻觉
+    repair_prompts = [p for p in prompts(scenario["state_dir"]) if "[协议修复]" in p]
+    assert repair_prompts == []

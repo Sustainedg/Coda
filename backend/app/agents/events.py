@@ -50,8 +50,17 @@ def thinking_delta(text: str) -> AgentEvent:
     return AgentEvent(EventType.THINKING_DELTA, text=text)
 
 
-def tool_call(name: str, call_id: str | None = None, **input_: Any) -> AgentEvent:
-    return AgentEvent(EventType.TOOL_CALL, name=name, call_id=call_id, payload={"input": input_})
+def tool_call(
+    tool_name: str, call_id: str | None = None, /, **input_: Any
+) -> AgentEvent:
+    """构造一次工具调用事件。
+
+    两个位置参数都用 positional-only（``/``）声明：适配器会把模型给的入参
+    ``**arguments`` 原样展开，而工具入参里出现 ``name`` / ``call_id`` 这类键
+    非常常见（例如 ``mcp_create`` 的 ``name``），普通形参会被它们撞上并抛
+    ``got multiple values for argument``。
+    """
+    return AgentEvent(EventType.TOOL_CALL, name=tool_name, call_id=call_id, payload={"input": input_})
 
 
 def tool_result(call_id: str | None, output: str, is_error: bool = False) -> AgentEvent:

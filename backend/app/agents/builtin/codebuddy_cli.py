@@ -409,9 +409,10 @@ class CodeBuddyCliAgent(AgentDefinition):
             required=True,
             logged_in=False,
             detail=(
-                "未检测到登录凭据：在容器内运行 `codebuddy` 后输入 `/login` 完成交互登录；"
-                "没有系统密钥环的部署请改用 CODEBUDDY_API_KEY"
-                "（中国版需把「官方网络环境」设为 internal）或 CODEBUDDY_AUTH_TOKEN"
+                "未检测到登录凭据，可任选一种方式登录：\n"
+                "① 在服务所在机器的终端里运行 codebuddy，输入 /login 完成账号授权（按提示选择站点）；\n"
+                "② 无头 / 容器部署改用环境变量凭据：在智能体的「环境变量」里配置"
+                " CODEBUDDY_API_KEY（中国版需把「官方网络环境」设为 internal）或 CODEBUDDY_AUTH_TOKEN。"
             ),
         )
 

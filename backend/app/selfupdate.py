@@ -305,7 +305,8 @@ def restart_command() -> list[str]:
 async def check_latest(*, client: httpx.AsyncClient | None = None) -> Release | None:
     """查询 GitHub 最新 Release；网络失败抛 :class:`SelfUpdateError`。
 
-    返回 None 表示“没有可安装的版本”（最新 Release 的 tag 不是版本号、或没带产物包）。
+    返回 None 表示“最新 Release 不是版本发布”（tag 不是版本号）；
+    版本 tag 存在但产物缺失时抛错，避免把发布事故伪装成“没有新版”。
     """
     url = f"{api_base()}/repos/{repo_slug()}/releases/latest"
     kwargs = await _client_kwargs() if client is None else {}
@@ -323,7 +324,18 @@ async def check_latest(*, client: httpx.AsyncClient | None = None) -> Release | 
         raise SelfUpdateError(f"访问 GitHub 失败：{exc}") from None
     if not isinstance(data, dict):
         raise SelfUpdateError("GitHub 返回了意外的数据结构")
-    return parse_release(data)
+    release = parse_release(data)
+    if release is None:
+        # 版本 tag 已经发出来、却没有 coda.tar.gz，说明发布只完成了一半。
+        # 此时返回 None 会让界面看起来“没有新版”，把发布事故伪装成已是最新；
+        # 直接报出缺什么，用户与维护者都能立刻定位。
+        tag = _fetch_dict(data, "tag_name")
+        if _normalize_version(tag):
+            raise SelfUpdateError(
+                f"最新 Release {tag} 缺少 {_ASSET_NAME}（或产物名不正确），可能发布尚未完成；"
+                "请维护者补传更新包与 .sha256 后再检测"
+            )
+    return release
 
 
 async def _resolve_sha256(release: Release, *, client: httpx.AsyncClient | None) -> str | None:

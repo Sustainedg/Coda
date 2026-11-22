@@ -7,6 +7,7 @@ execv 重启不测（exec 会替换测试进程本身）—— schedule_restart 
 from __future__ import annotations
 
 import io
+import json
 import sys
 import tarfile
 from pathlib import Path
@@ -25,6 +26,17 @@ from app.selfupdate import (
     version_eq,
     version_gt,
 )
+
+
+def test_desktop_release_version_matches_backend():
+    """桌面端与后端必须同版本发布，否则 tag 构建会在发布阶段失败。"""
+    root = Path(__file__).resolve().parents[2]
+    package = json.loads((root / "desktop/package.json").read_text(encoding="utf-8"))
+    lock = json.loads((root / "desktop/package-lock.json").read_text(encoding="utf-8"))
+    expected = selfupdate.__version__.lstrip("V")
+    assert package["version"] == expected
+    assert lock["version"] == expected
+    assert lock["packages"][""]["version"] == expected
 
 
 # ---------- 版本号解析与比较 ----------
@@ -109,6 +121,19 @@ def test_parse_release_ok():
 )
 def test_parse_release_rejects(payload: dict):
     assert parse_release(payload) is None
+
+
+async def test_check_latest_reports_version_release_without_asset():
+    """最新 Release 是版本号但没带产物时，不能静默当成“没有新版”。
+
+    GitHub 的 /releases/latest 会选中这个空 Release；以前 parse_release 返回 None，
+    界面只显示当前版本、既不报错也不提示，看起来像检测功能失效。
+    """
+    payload = _release_json("v0.1.5", with_asset=False)
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(SelfUpdateError, match="coda.tar.gz"):
+            await selfupdate.check_latest(client=client)
 
 
 @pytest.mark.parametrize(

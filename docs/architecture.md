@@ -568,7 +568,9 @@ agent_profiles(id, name, avatar, avatar_preset, avatar_file, tagline, descriptio
 credentials(id, name, description, value_encrypted, created_at, updated_at, deleted_at, owner_id)
 agent_credentials(agent_profile_id→agent_profiles, credential_id→credentials，复合主键 + position)
 conversations(id, title, agent_profile_id→agent_profiles, session_id, workspace_dir, model, archived,
-              last_read_at, owner_id)   # last_read_at 为空 = 升级前的旧对话，一律当已读
+              last_read_at, context_summary, context_compacted_count, context_compacted_at, owner_id)
+              # last_read_at 为空 = 升级前的旧对话，一律当已读
+              # context_summary / context_compacted_count 是自动压缩的摘要与已折叠条数（原文仍全在 messages）
 messages(id, conversation_id→conversations, role, content, parts JSON, usage JSON, status, error,
          agent_profile_id)   # agent_profile_id 为空 = 对话归属的智能体；非空 = @ 召唤的智能体
                                # 回答的那一轮（消息仍在对话流里，归属与主场会话记忆不变）

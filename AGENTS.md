@@ -345,8 +345,8 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
   样式写进 `src/mobile/mobile.css`。移动端页面**不得**引用 `src/pages/`、`src/App.tsx` 或
   `src/index.css`（有守卫测试 `tests/test_mobile_web.py`），但可以复用 `src/lib/*` 与
   `DynamicForm` / `MessageView` / `MarkdownView` / `ConversationThread` / `CollabAgentThread` /
-  `KernelLogo` / `TicketBoardKit` / `Composer` / `Icons` / `McpPicker` / `McpServerForm` /
-  `McpAssignPanel` / `TeamAvatarStack` / `ConversationExportForm`
+  `KernelLogo` / `TicketBoardKit` / `Composer` / `ContextMeter` / `Icons` / `McpPicker` /
+  `McpServerForm` / `McpAssignPanel` / `TeamAvatarStack` / `ConversationExportForm`
   这些纯展示组件（对话气泡只有 `MessageView` 一份，线程装配只有 `ConversationThread` 一份）。
 - **两端功能对齐、交互各表**：桌面端有的能力（例如协作组编排）移动端也要能用，但按触屏重做交互 ——
   移动端**不引用**桌面端的编排画布（`components/CollabCanvas` 等），协作组改用表单式编辑
@@ -547,8 +547,9 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
 - **多用户归属**：网关、智能体、凭据、对话、MCP 服务器、协作组与协作运行都有 `owner_id`。
   接口按 `current_user` 过滤：非管理员列表只回自己的行（网关额外包含官方链路、扫描来的 MCP
   是只读共享目录），按 id 读取别人的行返回 404；跨用户引用（网关 / 凭据 / 平台通用 MCP /
-  协作图节点上的智能体）必须在写入或启动运行前拒绝。管理员可看全部，但凭据仍只能以
-  环境变量注入、事件仍要脱敏。
+  协作图节点上的智能体）必须在写入或启动运行前拒绝。**对话内容（含消息 / 附件 / 轨迹 /
+  上下文用量 / 文件）始终只对本人可见，管理员也不豁免**（用 `require_owned_strict`）；
+  其余资产管理员可看全部，但凭据仍只能以环境变量注入、事件仍要脱敏。
 - **鉴权开关**：`CODA_AUTH_ENABLED` 默认开启（多用户形态）；单用户开箱即用可显式设为
   `false`。空库首启配置 `CODA_ADMIN_USERNAME` / `CODA_ADMIN_PASSWORD`，不配置时
   第一个注册的账号成为管理员；`CODA_REGISTRATION_OPEN` 控制自助注册。

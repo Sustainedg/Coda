@@ -205,7 +205,9 @@ POST /api/conversations/{id}/messages
   网关、智能体、凭据、对话、
   MCP 服务器、协作组与协作运行都有可空 `owner_id`。非管理员列表只回自己的行（网关额外包含
   官方链路、扫描来的 MCP 是只读共享目录），按 id 读取别人的行返回 404；跨用户引用必须在
-  写入或启动运行前拒绝。管理员可看全部。鉴权开关默认开启，单用户部署可显式关闭。
+  写入或启动运行前拒绝。**对话内容（消息 / 附件 / 轨迹 / 上下文用量）只对本人可见，管理员
+  也不豁免**（`require_owned_strict`）；其余资产管理员可看全部。鉴权开关默认开启，单用户
+  部署可显式关闭。
 - **Conversation 快照 `agent_profile_id`**：历史对话必须可复现，即使智能体之后改了内核 / 网关 / 模型。
 - 外键 `ON DELETE RESTRICT`：仍被**未删除**的智能体引用的网关删除返回 409（避免历史断裂）；
   智能体与自定义网关本身用 `deleted_at` 软删除 —— 被历史引用时只打标记，从可选列表消失但不打断历史。
@@ -382,7 +384,8 @@ class AcmeHarness(OpenAIHarnessBase):
   有自己的路由（`MobileApp.tsx`）、样式表（`mobile.css`）、左侧抽屉与底部弹层。桌面端页面 / 入口 /
   样式表与移动端**互不引用**（守卫见 `backend/tests/test_mobile_web.py`）；两端只共享 `lib/*` 与
   `DynamicForm` / `MessageView` / `MarkdownView` / `ConversationThread` / `CollabAgentThread` /
-  `TicketBoardKit` / `Composer` / `Icons` / `McpPicker` / `McpServerForm` / `McpAssignPanel` /
+  `TicketBoardKit` / `Composer` / `ContextMeter` / `Icons` / `McpPicker` / `McpServerForm` /
+  `McpAssignPanel` /
   `AuthGate` / `LoginScreen` / `AccountPanel` / `UserAdminPanel` / `TeamAvatarStack` /
   `ConversationExportForm`
   等纯展示组件，以及 `lib/agentStream` 里的事件归约。共享组件的样式必须两端样式表各写一份

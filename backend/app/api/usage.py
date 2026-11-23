@@ -211,7 +211,8 @@ async def usage_overview(
     ``start`` / ``end`` 是 ISO 8601 时间点（``end`` 为开区间），只统计这个窗口内的消息；
     都不传则统计全部历史。``tz_offset`` 是「按天」分桶用的本地时区偏移（分钟，东为正）——
     过滤用绝对时刻，分桶按用户所在时区，两者才不会在跨零点的日子里打架。
-    非管理员只统计自己的对话；管理员统计全部。
+    非管理员只统计自己的对话；管理员统计平台总量，但「按对话」榜单仍只列自己的
+    （对话标题取自用户正文，属于隐私，不能因为管理员角色就露出去）。
     """
     lower = _parse_instant(start, "开始时间")
     upper = _parse_instant(end, "结束时间")
@@ -284,8 +285,13 @@ async def usage_overview(
     by_agent.sort(key=lambda item: item["tokens"]["total"], reverse=True)
 
     by_conversation: list[dict[str, Any]] = []
+    own_owner_id = owner_id_for(user)
     for conversation_id, bucket in per_conversation.items():
         conversation = conversations.get(conversation_id)
+        # 对话标题可能来自用户正文：管理员也只在自己的对话里看到名字，
+        # 平台总量 / 按智能体 / 按天仍按管理员口径汇总（不含具体对话内容）。
+        if conversation is not None and conversation.owner_id != own_owner_id:
+            continue
         profile = profiles.get(conversation.agent_profile_id) if conversation else None
         by_conversation.append(
             {

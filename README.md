@@ -387,6 +387,7 @@ docs/
   architecture.md             一次运行的完整时序、事件协议、扩展点
   im.md                       IM：支持哪些平台、配对与消息路由、分层
   ai-coding-standard.md       编码规范详版
+  context-usage.md            上下文用量按钮与自动压缩
   collaboration-design.md     多智能体协作设计详版
   collab-mechanism.md        协作机制与功能手册
   collab-guide.html           协作机制图文版（浏览器直接打开）

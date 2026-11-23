@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
+from starlette.concurrency import run_in_threadpool
 
 from ..agents import AgentContext, AgentDefinition, EventType, get_agent
 from ..agents.events import AgentEvent, error, log, run_finished
@@ -21,6 +22,7 @@ from ..db import SessionLocal
 from ..image_ingest import ingest_images
 from ..models import AgentProfile, Conversation, Gateway, Message
 from ..settings import get_settings
+from . import context as context_service
 from .credentials import decrypt_for_profile
 from .gateway import bind_gateway
 from .manager import ActiveRun, registry
@@ -50,6 +52,8 @@ class PreparedRun:
     skill_warnings: list[str] = field(default_factory=list)
     #: MCP 物化过程中的说明/告警，同为 log 事件
     mcp_warnings: list[str] = field(default_factory=list)
+    #: 上下文自动压缩的说明（成功 / 失败 / 正在压缩），以 log 事件推给界面
+    context_notices: list[str] = field(default_factory=list)
     #: 这条对话是不是「刚开头」（标题还是兜底值）：是就交给调用方安排一次自动起标题
     title_pending: bool = False
     #: 是否把内核回报的 session_id 写回对话。主场运行为 True；@ 召唤轮恒为 False
@@ -175,6 +179,75 @@ def _clip_history(rows: list[Message]) -> list[dict[str, str]]:
             break
         picked.append({"role": row.role, "content": row.content})
     return list(reversed(picked))
+
+
+async def _auto_compact_context(
+    conversation: Conversation,
+    rows: list[Message],
+    *,
+    system_prompt: str | None,
+    prompt: str,
+    settings: context_service.ContextSettings,
+) -> list[str]:
+    """用量达到阈值时压缩更早的历史；返回给运行日志的说明（失败也不打断本轮）。
+
+    压缩是确定性的裁剪 + 摘要，不调模型、不阻塞用户继续输入；原始消息一条不删
+    —— 只把「更早那一段」记进摘要并抬高偏移量，对话记录与导出保持完整。
+    失败时**不改任何已存上下文**，本轮沿用原始历史。
+
+    估算与裁剪都是纯 CPU（逐字扫正文）：丢进线程池执行，避免长对话把事件循环
+    （以及正在推送的 SSE）堵住。
+    """
+    active = context_service.active_messages(rows, conversation)
+    used = await run_in_threadpool(
+        context_service.estimate_usage,
+        system_prompt,
+        conversation.context_summary,
+        active,
+        prompt,
+    )
+    if used < settings.threshold_tokens:
+        return []
+    if not context_service.begin_compaction(conversation.id):
+        return ["上下文压缩正在进行中，本轮沿用原上下文"]
+    try:
+        outcome = await run_in_threadpool(
+            context_service.compact_context,
+            active,
+            previous_summary=conversation.context_summary,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            settings=settings,
+        )
+        conversation.context_summary = outcome.summary
+        conversation.context_compacted_count += outcome.dropped
+        conversation.context_compacted_at = datetime.now(timezone.utc)
+        # 内核侧的会话不认我们裁剪后的历史：清掉会话 id，让本轮改用注入的历史（含摘要）。
+        conversation.session_id = None
+        context_service.finish_compaction(
+            conversation.id,
+            ok=True,
+            before_tokens=outcome.before_tokens,
+            after_tokens=outcome.after_tokens,
+            dropped=outcome.dropped,
+        )
+        logger.info(
+            "上下文已自动压缩：对话 %s 折叠 %s 条较早消息（估算 %s → %s tokens）",
+            conversation.id,
+            outcome.dropped,
+            outcome.before_tokens,
+            outcome.after_tokens,
+        )
+        return [
+            f"上下文已自动压缩：{outcome.dropped} 条较早消息折叠为摘要"
+            f"（估算 {outcome.before_tokens} → {outcome.after_tokens} tokens）"
+        ]
+    except Exception as exc:  # noqa: BLE001 - 压缩失败不能拖垮本轮对话
+        context_service.finish_compaction(
+            conversation.id, ok=False, before_tokens=used, error=str(exc)
+        )
+        logger.warning("上下文自动压缩失败，已保留原上下文", exc_info=True)
+        return [f"上下文自动压缩失败，已保留原上下文继续本轮：{exc}"]
 
 
 def resolve_attachment(relative: str, workspace: str) -> str:
@@ -317,7 +390,17 @@ async def prepare_run(
     user_message = Message(conversation_id=conversation.id, role="user", content=content)
     session.add(user_message)
 
-    history = _clip_history(list(existing))
+    # —— 上下文自动压缩：先量一量这一轮会不会顶到阈值，再决定历史怎么裁 ————————
+    existing_rows = list(existing)
+    context_settings = await context_service.read_settings(session, conversation.owner_id)
+    context_notices = await _auto_compact_context(
+        conversation,
+        existing_rows,
+        system_prompt=profile.system_prompt,
+        prompt=content,
+        settings=context_settings,
+    )
+    history = context_service.build_history(existing_rows, conversation, _clip_history)
     if summon_profile_id:
         # 召唤轮：无可续接会话是常态，共享对话历史（只含最终回复）作为前置上下文。
         ctx = await build_context(
@@ -394,6 +477,7 @@ async def prepare_run(
         assistant_message=assistant_message,
         skill_warnings=skill_warnings,
         mcp_warnings=mcp_warnings,
+        context_notices=context_notices,
         title_pending=title_pending,
         persist_session=persist_session,
         trace=trace,
@@ -526,6 +610,9 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
         yield log(f"技能：{warning}", "warn")
     for warning in prepared.mcp_warnings:
         yield log(f"MCP：{warning}", "warn")
+    for notice in prepared.context_notices:
+        # 上下文自动压缩的说明：成功 / 失败都要让用户看得到（按钮与详情面板也会展示）。
+        yield log(notice, "info")
 
     try:
         async for event in stream_run(prepared.definition, prepared.ctx, prepared.run):
@@ -644,7 +731,17 @@ async def regenerate_last(
             .order_by(Message.created_at)
         )
     ).scalars().all()
-    history = _clip_history(list(history_rows))
+    history_rows = list(history_rows)
+    #: 与正常发送同一套上下文压缩判定（重跑一轮也要守住上限）。
+    context_settings = await context_service.read_settings(session, conversation.owner_id)
+    context_notices = await _auto_compact_context(
+        conversation,
+        history_rows,
+        system_prompt=profile.system_prompt,
+        prompt=last_user.content,
+        settings=context_settings,
+    )
+    history = context_service.build_history(history_rows, conversation, _clip_history)
     #: 重生成复用「被重跑那条用户消息」的序号（0 起），与下一次正常发送的 turn_index 对齐。
     turn_index = sum(1 for row in history_rows if row.role == "user")
     ctx = await build_context(
@@ -698,6 +795,7 @@ async def regenerate_last(
         assistant_message=assistant_message,
         skill_warnings=skill_warnings,
         mcp_warnings=mcp_warnings,
+        context_notices=context_notices,
         trace=trace,
     )
 

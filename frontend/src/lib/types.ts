@@ -559,6 +559,54 @@ export interface ConversationDetail {
   active_run: ActiveRunInfo | null
 }
 
+/**
+ * 上下文自动压缩的最近一次状态（进程内记录；重启后回到「尚未压缩」）。
+ * 展示在输入框上方的上下文按钮 / 详情面板里。
+ */
+export interface ContextCompactionState {
+  /** compacting = 进行中；ok = 成功；error = 失败（原上下文保留） */
+  status: 'compacting' | 'ok' | 'error'
+  at: string
+  before_tokens?: number
+  after_tokens?: number
+  dropped?: number
+  error?: string | null
+}
+
+/**
+ * 一条对话的上下文窗口用量（`GET /api/conversations/{id}/context`）。
+ *
+ * 数字全部由后端 `runtime.context` 估算：展示、阈值判断、压缩决策共用同一口径，
+ * 前端不另算一套。`percent` 是真实百分比（可能超过 100，说明已超限；
+ * 进度条宽度由界面自己截断）。
+ */
+export interface ContextUsage {
+  used_tokens: number
+  limit_tokens: number
+  threshold_tokens: number
+  /** 触发阈值占上限的比例（0~1） */
+  threshold_ratio: number
+  percent: number
+  /** 已折叠进摘要的消息条数（原文仍保留在消息表里） */
+  compacted_count: number
+  compacted_at: string | null
+  /** 压缩策略简述：给详情面板直出 */
+  strategy: string
+  /** 估算口径说明 */
+  estimation: string
+  compaction: ContextCompactionState | null
+}
+
+/** 上下文窗口配置（`GET/PUT /api/system/context`，按用户持久化）。 */
+export interface ContextSettings {
+  limit_tokens: number
+  threshold_ratio: number
+  threshold_tokens: number
+  defaults: { limit_tokens: number; threshold_ratio: number }
+  /** 上限的合理下限；低于它不落盘 */
+  min_limit_tokens: number
+}
+
 /** 这条对话可选的模型（`GET /conversations/{id}/models`）。 */
 export interface ConversationModelOptions {
   /** 当前对话单独指定的模型；为空表示跟随智能体默认 */

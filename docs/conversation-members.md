@@ -153,6 +153,7 @@ class ConversationInvite(SQLModel, table=True):
 
 补充规则：
 - **L1（对话列表）**：`list_conversations` 的过滤改为「自己的 ∪ 被邀的」（成员视角带 `role: "member"` 标记，拥有者带 `role: "owner"`）；管理员仍看全部。成员看到的对话行不可删除/归档（前端按 role 隐藏按钮）。
+  > 注意：本方案开工前，**当前代码已把对话内容收紧为「仅本人可见，管理员也不豁免」**（`require_owned_strict`）。实施成员功能时，「管理员/成员能看到哪些对话」要按本方案的可见性规则重新定义，不能直接沿用现有的 owner-only 检查。
 - **L2（召唤校验放宽）**：`send_message` 里召唤校验从「必须是自己的」改为「**自己的 或 已在 `conversation_agents` 表里**」；其余召唤逻辑（`prepare_run` 内部）**零改动**。
 - **L3（成员智能体归属）**：添加成员智能体时 `require_owned(agent, user)`——只能添加自己的；别人的智能体只有拥有者/管理员能拉进来（拥有者添加时同样过 `require_owned`，即拥有者也只能拉自己的，除非是管理员）。**删除智能体时**：`conversation_agents` 行随对话 CASCADE；智能体本体软删除（`deleted_at`）后成员面板显示"已删除"灰态、不可召唤（召唤校验含 `deleted_at is None`）。
 - **L4（被移除后）**：成员被移除 → 立即失去访问（`_accessible_conversation` 查表即失效，无需清 token）。

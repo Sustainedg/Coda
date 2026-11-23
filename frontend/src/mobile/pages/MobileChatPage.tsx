@@ -4,6 +4,7 @@ import { MessageView, type RenderMessage } from '../../components/MessageView'
 import { applyAgentEvent, emptyAgentStream, type AgentStreamState } from '../../lib/agentStream'
 import { api, ApiError, conversationFileUrl, isNetworkError, streamGet, streamPost } from '../../lib/api'
 import { useComposerDraft } from '../../lib/composerDraft'
+import { contextRefreshKey, useContextMeter } from '../../lib/contextUsage'
 import { findUnusedConversation } from '../../lib/conversations'
 import { formatListTime } from '../../lib/datetime'
 import { MediaUrlProvider, composeWithAttachments } from '../../lib/media'
@@ -38,6 +39,7 @@ import { useAuth } from '../../components/AuthGate'
 import { AgentAvatar } from '../../components/AgentAvatar'
 import { MascotStage } from '../../components/MascotStage'
 import { Composer } from '../../components/Composer'
+import { ContextMeter } from '../../components/ContextMeter'
 import { MobileMenuButton, useMobileMenu } from '../components/MobileMenuButton'
 import { MobileSheet } from '../components/MobileSheet'
 import { ConversationExportForm } from '../../components/ConversationExportForm'
@@ -532,6 +534,14 @@ export function MobileChatPage() {
   /** 这条对话是否正在出一轮回复（本端读流 / 另一台设备在跑 / 服务端还有 active_run）。 */
   const runActive = busy || remoteRunning || Boolean(activeRun)
 
+  // 输入框上方的上下文用量（与桌面端共用组件与取数口径；预览 /m 入口自带一份 mobile.css）。
+  const contextMeter = useContextMeter(
+    active?.id ?? null,
+    // 条数 + 正文总长 + 本轮状态：另一台设备补完正文时也会触发刷新（见 lib/contextUsage）。
+    contextRefreshKey(messages, live?.status),
+    runActive,
+  )
+
   /**
    * `/clear` 命令：清掉智能体的会话记忆（下一轮从零开始），不作为消息发出。
    * 与桌面端同一条语义 —— 命令在输入链路里就被拦下，不会进入对话。
@@ -542,6 +552,8 @@ export function MobileChatPage() {
     try {
       await api.resetSession(active.id)
       await open(active.id)
+      // 摘要与折叠进度也清了：输入框上方的用量重新取一次。
+      void contextMeter.reload()
       setNotice('已清除智能体记忆，下一轮重新开始')
     } catch (e) {
       reportError(e)
@@ -1162,6 +1174,16 @@ export function MobileChatPage() {
                 </div>
               )}
               <div className="composer-scope">
+                <ContextMeter
+                  usage={contextMeter.usage}
+                  settings={contextMeter.settings}
+                  loading={contextMeter.loading}
+                  error={contextMeter.error}
+                  saving={contextMeter.saving}
+                  saveError={contextMeter.saveError}
+                  notice={contextMeter.notice}
+                  onSave={contextMeter.save}
+                />
                 <button
                   type="button"
                   className="composer-scope-btn"

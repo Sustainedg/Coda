@@ -332,6 +332,86 @@ async def test_usage_only_counts_own_conversations(client):
     assert {row["id"] for row in bob_usage["by_conversation"]} == {bob_conv["id"]}
 
 
+async def test_admin_cannot_read_other_users_conversations(client):
+    """对话内容是本人隐私：管理员也不能列 / 读 / 写别人的对话（列表、详情、消息、附件…）。"""
+    root = await _register(client, "root")  # 首任注册者自动是管理员
+    alice = await _register(client, "alice")
+    alice_agent = await _create_agent(client, alice["access_token"], "Alice 智能体")
+    alice_conv = await _create_conversation(client, alice["access_token"], alice_agent["id"])
+
+    root_agent = await _create_agent(client, root["access_token"], "Root 智能体")
+    root_conv = await _create_conversation(client, root["access_token"], root_agent["id"])
+    root_headers = _auth(root["access_token"])
+
+    items = (await client.get("/api/conversations", headers=root_headers)).json()["items"]
+    assert {item["id"] for item in items} == {root_conv["id"]}, "管理员列表里不该出现别人的对话"
+
+    for path in (
+        f"/api/conversations/{alice_conv['id']}",
+        f"/api/conversations/{alice_conv['id']}/context",
+        f"/api/conversations/{alice_conv['id']}/trace",
+        f"/api/conversations/{alice_conv['id']}/models",
+        f"/api/conversations/{alice_conv['id']}/stream",
+    ):
+        resp = await client.get(path, headers=root_headers)
+        assert resp.status_code == 404, f"{path} 不该对管理员开放：{resp.text}"
+
+    # 写操作同样拒绝：发消息 / 传附件 / 重置记忆 / 删除
+    assert (
+        await client.post(
+            f"/api/conversations/{alice_conv['id']}/messages",
+            json={"content": "偷看"},
+            headers=root_headers,
+        )
+    ).status_code == 404
+    assert (
+        await client.post(
+            f"/api/conversations/{alice_conv['id']}/attachments",
+            json={"name": "a.txt", "content_base64": "aGVsbG8="},
+            headers=root_headers,
+        )
+    ).status_code == 404
+    assert (
+        await client.post(
+            f"/api/conversations/{alice_conv['id']}/session/reset", headers=root_headers
+        )
+    ).status_code == 404
+    assert (
+        await client.delete(f"/api/conversations/{alice_conv['id']}", headers=root_headers)
+    ).status_code == 404
+
+    # 自己的对话照旧能开（不是把管理员整个禁掉）
+    assert (
+        await client.get(f"/api/conversations/{root_conv['id']}", headers=root_headers)
+    ).status_code == 200
+
+
+async def test_admin_usage_keeps_totals_but_not_other_conversation_titles(client):
+    """管理员仍看平台总量，但「按对话」榜单不暴露别人的对话标题（标题常取自用户正文）。"""
+    root = await _register(client, "root")
+    alice = await _register(client, "alice")
+    alice_agent = await _create_agent(client, alice["access_token"], "Alice 智能体")
+    alice_conv = await _create_conversation(client, alice["access_token"], alice_agent["id"])
+
+    async with SessionLocal() as session:
+        session.add(
+            Message(
+                conversation_id=alice_conv["id"],
+                role="assistant",
+                content="ok",
+                usage={"input_tokens": 42},
+                created_at=utcnow(),
+            )
+        )
+        await session.commit()
+
+    usage = (
+        await client.get("/api/usage/overview", headers=_auth(root["access_token"]))
+    ).json()
+    assert usage["tokens"]["input"] == 42, "平台总量对管理员仍应汇总"
+    assert usage["by_conversation"] == [], "不该把别人的对话标题列给管理员"
+
+
 async def test_file_url_accepts_token_query_for_img_tags(client):
     alice, _bob = await _member_pair(client)
     agent = await _create_agent(client, alice["access_token"], "Alice 智能体")

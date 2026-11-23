@@ -15,6 +15,7 @@ from .. import attachments
 from ..agents import get_agent
 from ..db import get_session
 from ..models import AgentProfile, Conversation, Gateway, Message, TraceEvent, User
+from ..runtime import context as context_service
 from ..runtime import registry
 from ..runtime import skills as skill_service
 from ..runtime import titles
@@ -45,7 +46,7 @@ from ..schemas import (
     TraceEventRead,
 )
 from ..transport.sse import sse_stream
-from .auth import current_user, owner_id_for, require_owned
+from .auth import current_user, owner_id_for, require_owned, require_owned_strict
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -91,19 +92,20 @@ def _conversation_read(
 
 
 async def _owned_conversation(conversation_id: str, session: AsyncSession, user: User) -> Conversation:
-    """取一条对话并校验归属；不存在或无权一律 404。"""
+    """取一条对话并校验归属；不存在或无权一律 404。
+
+    对话内容是本人隐私：用**严格**归属检查，管理员也不能读别人的对话。
+    """
     conversation = await session.get(Conversation, conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="对话不存在")
-    require_owned(conversation, user)
+    require_owned_strict(conversation, user)
     return conversation
 
 
 def _owned_query(stmt, user: User):
-    """列表只看自己的对话；管理员看全部。"""
-    if user.role == "admin":
-        return stmt
-    return stmt.where(Conversation.owner_id == user.id)
+    """列表只看自己的对话（管理员也不看别人的：对话内容是隐私）。"""
+    return stmt.where(Conversation.owner_id == owner_id_for(user))
 
 
 @router.get("")
@@ -267,6 +269,27 @@ async def get_conversation(
     }
 
 
+@router.get("/{conversation_id}/context")
+async def get_conversation_context(
+    conversation_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: Annotated[User, Depends(current_user)] = None,
+) -> dict:
+    """输入框上方「上下文用量」按钮的数据来源。
+
+    估算口径与自动压缩决策共用 ``runtime.context``：界面只展示后端算好的数，
+    不在前端另算一套。压缩状态是进程内记录（重启后回到「尚未压缩」），
+    已折叠的摘要与条数则持久化在对话上。
+    """
+    conversation = await _owned_conversation(conversation_id, session, user)
+    profile = await session.get(AgentProfile, conversation.agent_profile_id)
+    settings = await context_service.read_settings(session, conversation.owner_id)
+    used = await context_service.conversation_usage(
+        session, conversation, profile.system_prompt if profile else None
+    )
+    return context_service.usage_view(used, settings, conversation)
+
+
 @router.get("/{conversation_id}/trace")
 async def list_trace_events(
     conversation_id: str,
@@ -389,8 +412,9 @@ async def delete_conversation(
     await session.execute(delete(Message).where(Message.conversation_id == conversation_id))
     await session.delete(conversation)
     await session.commit()
-    # 该对话的内核隔离配置目录（含分配技能的副本）一并清掉。
+    # 该对话的内核隔离配置目录（含分配技能的副本）与压缩状态一并清掉。
     skill_service.cleanup_conversation(conversation_id)
+    context_service.reset_state(conversation_id)
     return Response(status_code=204)
 
 
@@ -402,8 +426,14 @@ async def reset_session(
 ) -> dict:
     conversation = await _owned_conversation(conversation_id, session, user)
     conversation.session_id = None
+    # 「清除记忆」= 下一轮从零开始：自动压缩留下的摘要与折叠进度也一并清掉，
+    # 否则摘要会像一段幽灵记忆一样继续注进上下文。
+    conversation.context_summary = None
+    conversation.context_compacted_count = 0
+    conversation.context_compacted_at = None
     session.add(conversation)
     await session.commit()
+    context_service.reset_state(conversation.id)
     return {"ok": True, "session_id": None}
 
 

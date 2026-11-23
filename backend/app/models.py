@@ -52,7 +52,15 @@ ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     # 老行留空即可，不需要回填。
     # 「最后已读时间」是后加的；为空表示升级前的旧对话，一律当已读（否则升级后满屏未读）。
     # owner_id 是多用户系统后加的：老行留空，由 bootstrap 回填给首任管理员
-    "conversations": {"model": "VARCHAR(160)", "last_read_at": "DATETIME", "owner_id": "VARCHAR(64)"},
+    # 上下文自动压缩是后加的：老行没有摘要、折叠条数为 0（= 整段历史都还在上下文里）。
+    "conversations": {
+        "model": "VARCHAR(160)",
+        "last_read_at": "DATETIME",
+        "owner_id": "VARCHAR(64)",
+        "context_summary": "TEXT",
+        "context_compacted_count": "INTEGER NOT NULL DEFAULT 0",
+        "context_compacted_at": "DATETIME",
+    },
     # 会话令牌版本：改口令 / 管理员重置口令时 +1，让旧令牌立即失效（无状态 JWT 的吊销机制）。
     # 头像文件名是后加的：老行留空，界面回退到「显示名首字母」的渐变圆。
     # 个人访问令牌（PAT）是后加的：哈希与签发时间，老行留空表示还没生成过。
@@ -423,6 +431,15 @@ class Conversation(SQLModel, table=True):
     #: 用户最后一次看这条对话的时间；列表据此判断「AI 回复完了但还没读」。
     #: 为空表示升级前的旧对话 —— 一律当已读，避免升级后所有历史对话都亮未读。
     last_read_at: datetime | None = Field(default=None, sa_column=Column(UTCDateTime))
+    #: 上下文自动压缩：更早消息折叠成的摘要（原文仍完整保留在 messages 表里）。
+    context_summary: str | None = Field(default=None, sa_column=Column(Text))
+    #: 已折叠进摘要的消息条数（按 user / assistant 有正文的消息计数）。
+    #: 0 = 还没有压缩过；历史消息一条都不删，靠这个偏移量跳过它们。
+    context_compacted_count: int = Field(
+        default=0, sa_column=Column(Integer, nullable=False, default=0)
+    )
+    #: 最近一次压缩的时间（界面展示用）。
+    context_compacted_at: datetime | None = Field(default=None, sa_column=Column(UTCDateTime))
     #: 所属用户 id；老库由 bootstrap 回填给首任管理员。
     owner_id: str | None = Field(default=None, sa_column=Column(String(64), index=True))
 

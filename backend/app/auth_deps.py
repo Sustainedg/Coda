@@ -123,4 +123,22 @@ def require_owned(row: Any, user: User) -> None:
         raise HTTPException(status_code=404, detail="资源不存在或无权访问")
 
 
-__all__ = ["current_user", "require_admin", "require_owned", "owner_id_for", "_SYSTEM_USER"]
+def require_owned_strict(row: Any, user: User) -> None:
+    """严格归属检查：**管理员也不豁免**（用于对话内容这类只属于本人的隐私数据）。
+
+    与 :func:`require_owned` 的区别只有一点：管理员不能靠角色看到别人的行。
+    比较用 :func:`owner_id_for`：鉴权关闭时返回 ``None``，正好匹配老库里
+    ``owner_id`` 为空的对话。不满足一律 404。
+    """
+    if getattr(row, "owner_id", None) != owner_id_for(user):
+        raise HTTPException(status_code=404, detail="资源不存在或无权访问")
+
+
+__all__ = [
+    "current_user",
+    "require_admin",
+    "require_owned",
+    "require_owned_strict",
+    "owner_id_for",
+    "_SYSTEM_USER",
+]

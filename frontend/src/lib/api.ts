@@ -4,6 +4,7 @@ import type {
   AgentEvent, AgentProfile, AgentRuntime, AgentType, AttachmentRef, Availability, CollabChatMessage,
   CollabRun,
   CollabRunDetail, CollabTeam, CollabTeamUpdate, CollabTeamValidateIn, CollabValidation, CollabBudgetPatch, Conversation,
+  ContextSettings, ContextUsage,
   ConversationDetail, ConversationListSnapshot, ConversationModelOptions, Credential, Gateway, GatewayList, GatewayProbeResult, McpRescanResult, McpServer,
   McpServerDetail, McpServerPayload, Overview, ProvisionEvent, RuntimeAuth, RuntimeLatest, Skill, UpdateEvent, UpdateStatus,
   ProvisionJobInfo,
@@ -416,6 +417,21 @@ export const api = {
     ),
   resetSession: (conversationId: string) =>
     request<{ ok: boolean }>(`/api/conversations/${conversationId}/session/reset`, { method: 'POST' }),
+  /** 输入框上方「上下文用量」：已用 / 上限 / 阈值 / 最近一次压缩状态（后端统一估算）。 */
+  getConversationContext: (conversationId: string) =>
+    request<ContextUsage>(`/api/conversations/${conversationId}/context`),
+  /** 上下文窗口配置：上限与触发阈值（按用户持久化）。 */
+  getContextSettings: () => request<ContextSettings>('/api/system/context'),
+  /** 保存配置：非法输入由后端 422 拦下（前端也会先拦一道）。 */
+  setContextSettings: (body: {
+    limit_tokens: number
+    threshold_ratio: number
+    conversation_id?: string | null
+  }) =>
+    request<ContextSettings>('/api/system/context', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   /** 上传附件：内容走 base64，省掉 multipart 依赖；服务端落到对话工作目录的 attachments/ */
   uploadAttachment: (conversationId: string, body: { name: string; content_base64: string }) =>
     request<AttachmentRef>(`/api/conversations/${conversationId}/attachments`, {

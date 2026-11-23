@@ -11,8 +11,9 @@
 * **鉴权开关**：默认开启；由 :func:`current_user` 校验令牌，未登录返回 401。
   ``CODA_AUTH_ENABLED=false`` 时返回虚拟管理员，所有接口照旧可用 —— 给单用户部署
   保留开箱即用的形态。
-* **归属过滤**：资产接口拿到 ``current_user`` 后，在查询里加 ``owner_id == user.id``（管理员
-  可看全部）。过滤逻辑在各路由里写，不在这里藏魔法。
+* **归属过滤**：资产接口拿到 ``current_user`` 后，在查询里加 ``owner_id == user.id``（对话内容
+  严格只对本人可见、管理员也不豁免；其余资产管理员可看全部）。过滤逻辑在各路由里写，
+  不在这里藏魔法。
 * **首任管理员**：由 ``bootstrap.seed_initial_admin`` 在启动时按环境变量创建，不在这里做。
 """
 from __future__ import annotations
@@ -29,14 +30,27 @@ from .. import avatars
 from ..schemas import AvatarUpload
 from ..auth import hash_password, issue_token, verify_password
 from ..auth import issue_pat as auth_issue_pat
-from ..auth_deps import _SYSTEM_USER, current_user, owner_id_for, require_admin, require_owned
+from ..auth_deps import (
+    _SYSTEM_USER,
+    current_user,
+    owner_id_for,
+    require_admin,
+    require_owned,
+    require_owned_strict,
+)
 from ..db import SessionLocal
 from ..models import User
 from ..settings import get_settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-__all__ = ["router", "current_user", "require_admin", "require_owned"]
+__all__ = [
+    "router",
+    "current_user",
+    "require_admin",
+    "require_owned",
+    "require_owned_strict",
+]
 
 
 # --- 请求 / 响应模型 --------------------------------------------------------

@@ -11,13 +11,14 @@ from typing import Annotated
 from .. import VERSION_HISTORY, __version__
 from ..agents import all_agents
 from ..db import SessionLocal
-from ..models import AgentProfile, PlatformSetting, User
+from ..models import AgentProfile, Conversation, PlatformSetting, User
 from ..runtime import availability as availability_service
+from ..runtime import context as context_service
 from ..runtime import registry
 from ..runtime import titles
 from ..runtime.service import pick_default_profile
 from ..settings import get_settings
-from .auth import current_user, require_admin
+from .auth import current_user, owner_id_for, require_admin, require_owned_strict
 
 router = APIRouter(tags=["system"])
 
@@ -135,6 +136,76 @@ async def set_title_settings(
                 raise HTTPException(status_code=422, detail="指定的智能体不存在")
         await titles.write_settings(session, payload.enabled, agent_id, payload.model)
         return await _title_settings_view(session, admin)
+
+
+class ContextSettingsBody(BaseModel):
+    """上下文窗口配置：上限（tokens）与触发阈值（占上限的比例）。
+
+    ``conversation_id`` 可选：带了就顺手校验「上限不得低于该对话当前已用量」，
+    挡住那种一保存就把正在进行的对话压成负数的输入。
+    """
+
+    limit_tokens: int
+    threshold_ratio: float = context_service.DEFAULT_THRESHOLD_RATIO
+    conversation_id: str | None = None
+
+
+def _context_settings_view(settings: context_service.ContextSettings) -> dict:
+    return {
+        "limit_tokens": settings.limit_tokens,
+        "threshold_ratio": settings.threshold_ratio,
+        "threshold_tokens": settings.threshold_tokens,
+        "defaults": {
+            "limit_tokens": context_service.DEFAULT_LIMIT_TOKENS,
+            "threshold_ratio": context_service.DEFAULT_THRESHOLD_RATIO,
+        },
+        "min_limit_tokens": context_service.MIN_LIMIT_TOKENS,
+    }
+
+
+@router.get("/system/context")
+async def get_context_settings(
+    user: Annotated[User, Depends(current_user)] = None,
+) -> dict:
+    """读当前用户的上下文窗口配置（键不存在 = 默认 128k / 80%）。
+
+    配置按「对话的归属」存：鉴权关闭时归属为空（单用户部署），与
+    ``prepare_run`` 读取时用的 ``conversation.owner_id`` 是同一个键。
+    """
+    async with SessionLocal() as session:
+        settings = await context_service.read_settings(session, owner_id_for(user))
+        return _context_settings_view(settings)
+
+
+@router.put("/system/context")
+async def set_context_settings(
+    payload: ContextSettingsBody,
+    user: Annotated[User, Depends(current_user)] = None,
+) -> dict:
+    """保存上下文窗口配置：非法输入返回 422 且**不落盘**。"""
+    try:
+        settings = context_service.validate_settings(
+            payload.limit_tokens, payload.threshold_ratio
+        )
+    except context_service.ContextSettingsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    async with SessionLocal() as session:
+        if payload.conversation_id:
+            conversation = await session.get(Conversation, payload.conversation_id)
+            if conversation is None:
+                raise HTTPException(status_code=404, detail="对话不存在")
+            require_owned_strict(conversation, user)
+            profile = await session.get(AgentProfile, conversation.agent_profile_id)
+            used = await context_service.conversation_usage(
+                session, conversation, profile.system_prompt if profile else None
+            )
+            if settings.limit_tokens < used:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"上限不能低于当前上下文已用量（约 {used} tokens）",
+                )
+        saved = await context_service.write_settings(session, owner_id_for(user), settings)
+        return _context_settings_view(saved)
 
 
 @router.get("/health")

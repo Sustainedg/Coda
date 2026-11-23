@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Composer } from '../components/Composer'
+import { ContextMeter } from '../components/ContextMeter'
 import { ConversationThread, type ConversationThreadItem } from '../components/ConversationThread'
 import { AgentIcon, FolderIcon, MenuIcon, ModelIcon, PlusIcon, ShareIcon, SpeakerIcon, TraceIcon } from '../components/Icons'
 import { TraceDrawer } from '../components/TraceDrawer'
@@ -13,6 +14,7 @@ import { useAuth } from '../components/AuthGate'
 import { applyAgentEvent, emptyAgentStream, type AgentStreamState } from '../lib/agentStream'
 import { api, ApiError, conversationFileUrl, isNetworkError, streamGet, streamPost } from '../lib/api'
 import { useComposerDraft } from '../lib/composerDraft'
+import { contextRefreshKey, useContextMeter } from '../lib/contextUsage'
 import { notifyConversationsChanged, findUnusedConversation } from '../lib/conversations'
 import { formatListTime } from '../lib/datetime'
 import { MediaUrlProvider, composeWithAttachments } from '../lib/media'
@@ -555,6 +557,15 @@ export function ChatPage() {
   /** 这条对话是否正在出一轮回复（本端读流 / 另一台设备在跑 / 服务端还有 active_run）。 */
   const runActive = busy || remoteRunning || Boolean(activeRun)
 
+  // 输入框上方的上下文用量：消息增减 / 本轮结束就重新取；运行中轻量轮询（压缩状态、已用量）。
+  // 取数口径只在后端（见 lib/contextUsage），这里只负责把变化时机告诉它。
+  const contextMeter = useContextMeter(
+    active?.id ?? null,
+    // 条数 + 正文总长 + 本轮状态：另一台设备补完正文时也会触发刷新（见 lib/contextUsage）。
+    contextRefreshKey(messages, live?.status),
+    runActive,
+  )
+
   /**
    * 输入区「发送」：
    * - `/clear` 命令：清除智能体的会话记忆，不作为消息发出；
@@ -756,6 +767,8 @@ export function ChatPage() {
     try {
       await api.resetSession(active.id)
       await openConversation(active.id)
+      // 摘要与折叠进度也清了：输入框上方的用量重新取一次。
+      void contextMeter.reload()
       setNotice('已清除智能体记忆，下一轮重新开始')
     } catch (e) {
       setError(describe(e))
@@ -1140,6 +1153,16 @@ export function ChatPage() {
                   header={
                     <>
                       <div className="composer-scope">
+                        <ContextMeter
+                          usage={contextMeter.usage}
+                          settings={contextMeter.settings}
+                          loading={contextMeter.loading}
+                          error={contextMeter.error}
+                          saving={contextMeter.saving}
+                          saveError={contextMeter.saveError}
+                          notice={contextMeter.notice}
+                          onSave={contextMeter.save}
+                        />
                         <button
                           type="button"
                           className="composer-scope-btn"

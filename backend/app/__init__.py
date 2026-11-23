@@ -1,11 +1,62 @@
 from __future__ import annotations
 
-__version__ = "V0.1.5"
+__version__ = "V0.1.6"
 
 #: 版本记录（最新在前）。版本号只在公开发版时递增，日常提交不动版本号。
 #: 版本号采用「V主.次.修订」三段式：V0.1 是首个公开版本，后续修订顺延。
 #: 此前的 V0.01–V0.43 为内部迭代编号，不再逐条单列。
 VERSION_HISTORY: tuple[dict[str, object], ...] = (
+    {
+        "version": "V0.1.6",
+        "date": "2026-11-23",
+        "title": "协作路由精确归一 · 对话导出 · 桌面端瘦身",
+        "highlights": (
+            "【功能】协作路由目标精确归一：assignee / rework_to / 子工单 assignee 先做 "
+            "strip + NFKC 清洗，「显示名（key）」括号形式无条件按括号里的真 key 归一，"
+            "显示名重名也能正确路由；纯显示名仍只在全图唯一时映射，模糊正则截取刻意不做，"
+            "避免静默派错人",
+            "【功能】路由拼写错误就地修复：同一 step 内只喂上轮工单、错误原因与合法枚举，"
+            "不重发完整历史；修复轮 token 并入本步 usage；编造角色等不可修复错误仍落 BLOCKED",
+            "【功能】对话导出升级：对话页顶栏「分享」改为「导出」，支持 图片 / Markdown × "
+            "正文 / 完整数据 四种组合，桌面端与移动端共用 ConversationExportForm 与 "
+            "buildExportMessages()，下载统一走 lib/download",
+            "【功能】对话列表置顶：侧栏先按「运行表里还有运行」分组、组内再按最近活动排序；"
+            "后端 active_runs 同时按 owner_id 过滤，避免跨用户看到别人的运行",
+            "【功能】协作进度图与设定画布同源：删除 CollabFlowMap 自写的 canvasEdgePath / "
+            "inferEdgeSides 与 CANVAS_SCALE，连线统一交给 lib/collabRouting.routeEdge，端口"
+            "方向、避障、多线错开全部一致；节点尺寸改为可传参（进度图 132×88 / 画布 "
+            "190×92），rework 边画虚线",
+            "【功能】工单看板头像跟智能体设定同步：BoardFace 统一 emoji / 头像包 / 自定义图"
+            "三字段，改由共享 AgentAvatar 渲染，智能体页换头像后看板同步生效；协作组卡片、"
+            "画布交接气泡与运行时间线统一显示真头像",
+            "【功能】左侧菜单栏改为线条 SVG 图标：桌面侧栏与移动抽屉共用 NavIcon 映射表，"
+            "新增对话 / 智能体 / 协作组 / 技能 / MCP / 用量 6 枚线条图标，颜色走 --nav-icon"
+            "（深色 / 浅色各一套），hover 与选中提亮到品牌色；移动端外壳缓存升到 v129 / v128",
+            "【功能】外观默认改为「跟随系统」：含桌面窗口底色与启动页；窗口底色提成 "
+            "WINDOW_BG 常量 + windowBackgroundColor()，创建窗口与系统深浅色切换共用；"
+            "内核版本解析抽出 runtimeVersion.ts，桌面 / 移动内核管理共用",
+            "【优化】桌面端安装包瘦身（三层构建期优化，用户侧无感知）：AppImage 下载 "
+            "237.3→206.6 MB（-13%）、解压 677→499 MB（-26%）；① 目录剔除 Node 的 "
+            "include/ 与 npm 文档、Python 的 tcl/tk / idlelib / lib2to3 等 19 项开发模块；"
+            "② afterPack 用 strip --strip-debug 剥掉 22 个运行时二进制的调试段（仅 Linux，"
+            "mac/win 自动跳过）；③ Chromium 界面语言包 55 种 → 中英 4 种。ensurepip / pip / "
+            "npm 本体 / 离线 wheelhouse 保持原样，兜底链路不受影响",
+            "【修复】输入区设置齿轮：齿轮气泡 z-index 60 → 组内 2 并自成堆叠上下文，弹窗"
+            "（.modal-backdrop 的 50）打开时整组被盖住；侧栏抬到 z-index:20，账号菜单 / "
+            "导航气泡不再被齿轮图标压住；settingsRef 只挂在齿轮 + 气泡容器上，点文本框 / "
+            "加号 / 发送都能关闭气泡；禁用按钮加 pointer-events:none；新增 --composer-vscale:"
+            "0.85 整体压低 15%，长高上限 160 → 136；补回归守卫测试",
+            "【修复】内置 MCP 幽灵记录：内置服务器改名 / 下线后（如 arkswarm-admin → "
+            "coda-admin），旧 builtin_key 行播种认领不到、列表照样显示、删除接口又拒绝删——"
+            "启动时统一收尾，先断开智能体分配再软删除（deleted_at + enabled=False），"
+            "幂等且不误伤当前预设",
+            "【修复】events.tool_call 的两个位置参数改为 positional-only：工具入参含 name / "
+            "call_id 时不再撞形参报错",
+            "【修复】CodeBuddy 未登录提示改写为分步指引，用户能照着一步步完成登录",
+            "【修复】应用图标改由生成脚本产出（不再手改 icon.svg），并同步 AGENTS / 架构"
+            "文档口径；.coco-scratch/ 加入忽略列表",
+        ),
+    },
     {
         "version": "V0.1.5",
         "date": "2026-11-22",

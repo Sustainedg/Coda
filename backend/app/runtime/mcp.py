@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -393,12 +394,52 @@ async def refresh_builtin_tokens(session: AsyncSession, owner_id: str | None) ->
     return issued
 
 
+async def retire_orphan_builtins(session: AsyncSession) -> int:
+    """软删除已下线的内置 MCP 服务器（``builtin_key`` 不在当前预设里的历史行）。
+
+    内置服务器会随版本改名 / 下线（ArkSwarm 更名 Coda 时 ``arkswarm-admin`` 改成了
+    ``coda-admin``）。老库里留下的旧 key 行有三个麻烦：播种逻辑只按当前 key 精确查，
+    永远认领不到它；列表接口只按归属过滤，照样把它列出来；而 ``builtin_key`` 非空
+    又让删除接口拒绝删除。三者叠加，它就成了删不掉、也不更新的常驻幽灵。
+
+    启动时统一收尾：先断开智能体分配，再软删除。幂等，老库升级上来跑一次即干净。
+    """
+    active_keys = {preset.key for preset in BUILTIN_SERVERS}
+    rows = (
+        await session.execute(
+            select(McpServer).where(
+                McpServer.builtin_key.is_not(None),
+                McpServer.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    orphans = [row for row in rows if row.builtin_key not in active_keys]
+    if not orphans:
+        return 0
+    now = datetime.now(timezone.utc)
+    ids = [row.id for row in orphans]
+    # 外键是 RESTRICT：先解除分配，否则软删除虽不删行，但残留分配会让界面显示断链。
+    await session.execute(
+        delete(AgentMcpServer).where(AgentMcpServer.mcp_server_id.in_(ids))
+    )
+    for row in orphans:
+        row.deleted_at = now
+        row.updated_at = now
+        row.enabled = False
+        session.add(row)
+    await session.commit()
+    logger.info("已下线 %s 个失效的内置 MCP 服务器：%s", len(ids), ", ".join(ids))
+    return len(ids)
+
+
 async def ensure_builtin_servers_for_all(session: AsyncSession) -> int:
     """启动时为所有启用中的用户补齐内置服务器；返回本次新建的条数。
 
     鉴权关闭时资产归属记 ``None``（与服务端的 ``owner_id_for`` 口径一致），
     只播种一条共享的内置服务器。
     """
+    # 先清掉历史遗留的失效内置项，再按当前预设播种；两步都幂等。
+    await retire_orphan_builtins(session)
     if not get_settings().auth_enabled:
         return await ensure_builtin_servers(session, None)
     user_ids = (

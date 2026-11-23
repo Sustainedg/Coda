@@ -25,7 +25,7 @@ from app.agents.mcp import (
     to_json_config,
 )
 from app.db import SessionLocal
-from app.models import McpServer
+from app.models import AgentMcpServer, AgentProfile, McpServer
 from app.settings import get_settings
 from helpers import make_gateway, make_profile
 
@@ -575,3 +575,70 @@ async def test_builtin_mcp_accepts_params_but_platform_owns_connection(
         await client.patch(f"/api/mcp-servers/{row['id']}", json={"args": ["x.py"]})
     ).status_code == 403
     assert (await client.delete(f"/api/mcp-servers/{row['id']}")).status_code == 403
+
+
+async def test_retire_orphan_builtins_removes_renamed_legacy_rows(
+    client: httpx.AsyncClient,
+):
+    """更名后留下的旧内置记录会被启动清理收走：软删除 + 断开分配，且不误伤当前预设。"""
+    async with SessionLocal() as session:
+        await mcp_service.ensure_builtin_servers(session, None)
+
+        profile = AgentProfile(name="测试智能体", type_id="custom-cli")
+        session.add(profile)
+        orphan = McpServer(
+            id="mcp-legacy-arkswarm",
+            name="系统管理",
+            slug="arkswarm-admin",
+            description="旧版内置系统管理",
+            type_id=None,
+            source_kind="manual",
+            transport="stdio",
+            command="/app/venv/bin/python",
+            args=["/app/releases/V0.1.2/scripts/mcp/arkswarm_admin_mcp_server.py"],
+            env_encrypted={},
+            headers_encrypted={},
+            enabled=True,
+            available=True,
+            builtin_key="arkswarm-admin",
+        )
+        session.add(orphan)
+        # 先落库再建分配：没有 relationship 声明时，SQLAlchemy 不保证父表先插。
+        await session.commit()
+        session.add(
+            AgentMcpServer(agent_profile_id=profile.id, mcp_server_id=orphan.id)
+        )
+        await session.commit()
+
+        assert await mcp_service.retire_orphan_builtins(session) == 1
+
+        refreshed = await session.get(McpServer, orphan.id)
+        assert refreshed is not None
+        assert refreshed.deleted_at is not None
+        assert refreshed.enabled is False
+        # 外键是 RESTRICT：清理前必须先断开智能体分配。
+        assigned = (
+            await session.execute(
+                select(AgentMcpServer).where(
+                    AgentMcpServer.mcp_server_id == orphan.id
+                )
+            )
+        ).scalars().first()
+        assert assigned is None
+
+        # 当前预设一个都不能误伤。
+        live = {
+            row.builtin_key
+            for row in (
+                await session.execute(
+                    select(McpServer).where(
+                        McpServer.builtin_key.is_not(None),
+                        McpServer.deleted_at.is_(None),
+                    )
+                )
+            ).scalars().all()
+        }
+        assert live == {"image-gen", "coda-admin"}
+
+        # 幂等：再跑一次没有可清的了。
+        assert await mcp_service.retire_orphan_builtins(session) == 0

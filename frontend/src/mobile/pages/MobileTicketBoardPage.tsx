@@ -126,7 +126,10 @@ export function MobileTicketBoardPage() {
             <div className="m-board-picker-meta">
               <BoardStatePill ticket={active} />
               <BoardAvatar
-                avatar={active.holderAvatar}
+                avatar={active.holderFace.avatar}
+                avatarPreset={active.holderFace.avatarPreset}
+                avatarFile={active.holderFace.avatarFile}
+                agentId={active.holderFace.agentId}
                 label={active.holderLabel}
                 duty={active.holderDuty}
                 size="sm"

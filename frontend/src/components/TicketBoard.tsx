@@ -146,7 +146,10 @@ export function TicketBoard({ tickets, steps, graph, agents, nodeLabel, runTitle
                       <BoardStatePill ticket={active} />
                       <span className="board-flow-holder">
                         <BoardAvatar
-                          avatar={active.holderAvatar}
+                          avatar={active.holderFace.avatar}
+                          avatarPreset={active.holderFace.avatarPreset}
+                          avatarFile={active.holderFace.avatarFile}
+                          agentId={active.holderFace.agentId}
                           label={active.holderLabel}
                           duty={active.holderDuty}
                           size="sm"

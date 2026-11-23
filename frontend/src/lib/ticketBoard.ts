@@ -81,12 +81,23 @@ export interface BoardAuditView {
  * 视图模型
  * ------------------------------------------------------------------ */
 
-export interface BoardEntry {
+/** 岗位头像的完整三字段（与 `AgentAvatar` 一致：自定义图 > 头像包 > emoji）。 */
+export interface BoardFace {
+  /** emoji 头像（永远有值可回退） */
+  avatar: string
+  /** 内置头像包编号；有值渲染 /avatars/<它>.webp */
+  avatarPreset?: string | null
+  /** 自定义头像文件名；有值取 /api/agents/{id}/avatar */
+  avatarFile?: string | null
+  /** 智能体 id：取自定义图要用 */
+  agentId?: string | null
+}
+
+export interface BoardEntry extends BoardFace {
   id: string
   /** 发起这一轮的节点 key；用户自己的发言是 `user` */
   roleKey: string
   agentLabel: string
-  avatar: string
   duty: string
   tone: BoardEntryTone
   /** 动作徽章上的字（来自 `BOARD_TONE_LABEL`，这里摊平，方便模板直接用） */
@@ -128,7 +139,8 @@ export interface BoardTicket {
   parentTicketId: string | null
   holderKey: string
   holderLabel: string
-  holderAvatar: string
+  /** 当前处理人的完整头像（同 `BoardFace`，与智能体设定同步） */
+  holderFace: BoardFace
   holderDuty: string
   ownerLabel: string
   round: number
@@ -322,7 +334,7 @@ function snippet(text: string | null | undefined, limit: number): string {
 
 interface StepContext {
   nodeLabel: (key: string) => string
-  avatarOf: (key: string) => string
+  faceOf: (key: string) => BoardFace
   dutyOf: (key: string) => string
   scopeOf: (key: string) => CollabWorkspaceScope | null
   round: number
@@ -352,11 +364,12 @@ function entryFromStep(step: CollabStep, context: StepContext): BoardEntry {
   const detail = gist && content && !content.startsWith(gist.replace(/…$/, '')) ? content : ''
 
   const targetKey = step.target_key ?? ''
+  const face = isUser ? { avatar: '🙋' } : context.faceOf(roleKey)
   return {
     id: step.id,
     roleKey,
     agentLabel: isUser ? '你' : context.nodeLabel(roleKey) || step.profile_name || roleKey,
-    avatar: isUser ? '🙋' : context.avatarOf(roleKey),
+    ...face,
     duty: context.dutyOf(roleKey),
     tone,
     toneLabel: BOARD_TONE_LABEL[tone],
@@ -403,9 +416,17 @@ export function buildBoardModel({ tickets, steps, graph, agents, nodeLabel }: Bu
   const nodes = new Map((graph?.nodes ?? []).map((node) => [node.key, node]))
   const agentsById = new Map(agents.map((agent) => [agent.id, agent]))
 
-  const avatarOf = (key: string): string => {
-    const agentId = nodes.get(key)?.agent_profile_id
-    return (agentId ? agentsById.get(agentId)?.avatar : '') || '🧑💻'
+  // 头像跟智能体设定走：自定义上传图 > 内置头像包 > emoji（与 `AgentAvatar` 同一套优先级）。
+  // 只传 emoji 的话，用户在智能体页换了头像，工单看板这边还是老 emoji —— 就是「没同步」。
+  const faceOf = (key: string): BoardFace => {
+    const agentId = nodes.get(key)?.agent_profile_id ?? null
+    const agent = agentId ? agentsById.get(agentId) : undefined
+    return {
+      avatar: agent?.avatar || '🧑‍💻',
+      avatarPreset: agent?.avatar_preset ?? null,
+      avatarFile: agent?.avatar_file ?? null,
+      agentId,
+    }
   }
   const dutyOf = (key: string): string => nodes.get(key)?.duty ?? ''
   const scopeOf = (key: string): CollabWorkspaceScope | null =>
@@ -421,7 +442,7 @@ export function buildBoardModel({ tickets, steps, graph, agents, nodeLabel }: Bu
       .filter((step) => step.ticket_id === ticket.id)
       .sort((left, right) => left.sequence - right.sequence)
     const context: StepContext = {
-      nodeLabel, avatarOf, dutyOf, scopeOf, round: ticket.round,
+      nodeLabel, faceOf, dutyOf, scopeOf, round: ticket.round,
     }
     const entries = own.map((step) => entryFromStep(step, context))
     const state = boardStateMeta(ticket.state)
@@ -438,7 +459,7 @@ export function buildBoardModel({ tickets, steps, graph, agents, nodeLabel }: Bu
       parentTicketId: ticket.parent_ticket_id ?? null,
       holderKey: ticket.holder_key,
       holderLabel: ticket.holder_key === 'user' ? '你' : nodeLabel(ticket.holder_key) || ticket.holder_key,
-      holderAvatar: ticket.holder_key === 'user' ? '🙋' : avatarOf(ticket.holder_key),
+      holderFace: ticket.holder_key === 'user' ? { avatar: '🙋' } : faceOf(ticket.holder_key),
       holderDuty: dutyOf(ticket.holder_key),
       ownerLabel: nodeLabel(ticket.owner_key) || ticket.owner_key,
       round: ticket.round,

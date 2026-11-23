@@ -952,8 +952,10 @@ frontend/
 | **详情卡** | 点节点弹出：状态、最近动作、跑了几步、在办的工单、跳转该岗位实时对话 |
 | **画布** | 点阵底纹 + 拖动平移；桌面端支持滚轮缩放，移动端单指拖动 |
 
-布局沿用 `lib/collabProgress.ts` 的 `buildFlowRows`（一行一层：入口领导者独占第一行，
-往下每行并排）；节点坐标由组件内 `layoutFlowNodes` 派生，无需手工维护。
+布局优先还原协作组设定画布保存的坐标（`layoutFlowNodesFromCanvas`，原样照搬）；旧图没有
+坐标时才用 `lib/collabProgress.ts` 的 `buildFlowRows` 派生「一行一层」（入口领导者独占第一行，
+往下每行并排）。有画布坐标时连线复用 `lib/collabRouting.routeEdge`，与设定画布同一套路由，
+端口方向 / 避障 / 多条线错开都一致。
 
 **界面只留图本身**：桌面端进度覆盖层（`CollabProgressBoard`）与移动端运行页的流程图区
 都不再带标题、状态、完成度或使用说明 —— 「协作进度」开关挂在顶栏，状态徽标与图例

@@ -45,6 +45,17 @@ const TRAFFIC_LIGHT_SIZE = 12;
 /** Windows / macOS 使用自绘标题栏；Linux 没有 overlay 支持，保留系统边框。 */
 const customTitlebar = process.platform === 'win32' || process.platform === 'darwin';
 
+/**
+ * 窗口底色（深 / 浅）：创建窗口与「系统深浅色切换」两处共用，避免同一对色值写两遍。
+ * 真实配色以页面里的 `<html data-theme>` 为准，这里只兜住页面加载前的那一帧。
+ */
+const WINDOW_BG = { dark: '#0f1117', light: '#f4f3fa' } as const;
+
+/** 按当前系统深浅色取窗口底色。 */
+function windowBackgroundColor(): string {
+  return nativeTheme.shouldUseDarkColors ? WINDOW_BG.dark : WINDOW_BG.light;
+}
+
 /** 桌面壳的图标目录（随 files 打进 app.asar）。 */
 function iconsDir(): string {
   return path.join(__dirname, '..', 'resources', 'icons');
@@ -311,7 +322,7 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 640,
     show: false,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0f1117' : '#f4f3fa',
+    backgroundColor: windowBackgroundColor(),
     title: 'Coda',
     icon: process.platform === 'darwin' ? undefined : path.join(iconsDir(), 'icon.png'),
     autoHideMenuBar: true,
@@ -339,6 +350,13 @@ function createWindow(): void {
     },
   });
   installDesktopChrome(mainWindow);
+  // 系统切换深浅色时窗口底色跟上（页面内部由 theme.ts 的 matchMedia 监听负责换肤，
+  // 这里只管窗口加载中 / 页面外的那些边缘，避免浅色系统下露一条深色边）。
+  nativeTheme.on('updated', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setBackgroundColor(windowBackgroundColor());
+    }
+  });
   // 最大化状态同步给自绘标题栏（Windows 的还原图标）
   const syncMaximized = (): void => {
     if (mainWindow && !mainWindow.isDestroyed()) {

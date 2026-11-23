@@ -4,7 +4,7 @@
  * 坐标全部是画布内坐标。节点卡片是固定尺寸；路由只负责视觉，不参与协作运行语义。
  * 端口方向会随边保存，旧图没有端口信息时按节点相对位置自动推断。
  */
-import type { CollabEdge, CollabEdgePort, CollabNode } from './types'
+import type { CollabEdgePort } from './types'
 
 export const COLLAB_NODE_W = 190
 export const COLLAB_NODE_H = 92
@@ -12,6 +12,13 @@ export const COLLAB_CANVAS_W = 1400
 export const COLLAB_CANVAS_H = 900
 
 export interface CanvasPoint { x: number; y: number }
+/** 路由只关心节点的坐标；编排画布与协作进度图都传这个最小结构（节点尺寸单独给）。 */
+export interface RouteNode { x: number; y: number }
+/** 路由只关心边保存的端口方向；编排画布的 CollabEdge 与进度图的连线都满足这个结构。 */
+export interface RouteEdgeSpec {
+  from_side?: CollabEdgePort | null
+  to_side?: CollabEdgePort | null
+}
 type Axis = 'h' | 'v'
 type OutputSide = 'right' | 'bottom'
 type InputSide = 'left' | 'top'
@@ -27,16 +34,21 @@ const CROSS_COST = 260
 const LINE_GAP = 10
 const EPS = 0.01
 
-export function portAnchor(node: CollabNode, side: CollabEdgePort): CanvasPoint {
+export function portAnchor(
+  node: RouteNode,
+  side: CollabEdgePort,
+  nodeW: number = COLLAB_NODE_W,
+  nodeH: number = COLLAB_NODE_H,
+): CanvasPoint {
   switch (side) {
     case 'left':
-      return { x: node.x, y: node.y + COLLAB_NODE_H / 2 }
+      return { x: node.x, y: node.y + nodeH / 2 }
     case 'right':
-      return { x: node.x + COLLAB_NODE_W, y: node.y + COLLAB_NODE_H / 2 }
+      return { x: node.x + nodeW, y: node.y + nodeH / 2 }
     case 'top':
-      return { x: node.x + COLLAB_NODE_W / 2, y: node.y }
+      return { x: node.x + nodeW / 2, y: node.y }
     case 'bottom':
-      return { x: node.x + COLLAB_NODE_W / 2, y: node.y + COLLAB_NODE_H }
+      return { x: node.x + nodeW / 2, y: node.y + nodeH }
   }
 }
 
@@ -56,7 +68,7 @@ export function normalizedInputSide(side?: CollabEdgePort | null): InputSide {
 }
 
 /** 旧连线没有端口字段时：上下排列优先走「下输出 → 上输入」，左右排列走「右输出 → 左输入」。 */
-export function defaultEdgePorts(from: CollabNode, to: CollabNode): { fromSide: OutputSide; toSide: InputSide } {
+export function defaultEdgePorts(from: RouteNode, to: RouteNode): { fromSide: OutputSide; toSide: InputSide } {
   const dx = Math.abs(to.x - from.x)
   const dy = Math.abs(to.y - from.y)
   const vertical = dy > dx * 0.75
@@ -65,7 +77,7 @@ export function defaultEdgePorts(from: CollabNode, to: CollabNode): { fromSide: 
     : { fromSide: 'right', toSide: 'left' }
 }
 
-export function edgePorts(edge: CollabEdge, from: CollabNode, to: CollabNode) {
+export function edgePorts(edge: RouteEdgeSpec, from: RouteNode, to: RouteNode) {
   const fallback = defaultEdgePorts(from, to)
   return {
     fromSide: normalizedOutputSide(edge.from_side ?? fallback.fromSide),
@@ -73,12 +85,12 @@ export function edgePorts(edge: CollabEdge, from: CollabNode, to: CollabNode) {
   }
 }
 
-function rectOf(node: CollabNode): Rect {
+function rectOf(node: RouteNode, nodeW: number, nodeH: number): Rect {
   return {
     left: node.x - OBSTACLE_MARGIN,
-    right: node.x + COLLAB_NODE_W + OBSTACLE_MARGIN,
+    right: node.x + nodeW + OBSTACLE_MARGIN,
     top: node.y - OBSTACLE_MARGIN,
-    bottom: node.y + COLLAB_NODE_H + OBSTACLE_MARGIN,
+    bottom: node.y + nodeH + OBSTACLE_MARGIN,
   }
 }
 
@@ -252,18 +264,20 @@ function fallbackRoute(start: CanvasPoint, end: CanvasPoint, startOut: CanvasPoi
 }
 
 function routeOrthogonal({
-  from, to, fromSide, toSide, nodes, existingRoutes, width, height,
+  from, to, fromSide, toSide, nodes, existingRoutes, width, height, nodeW, nodeH,
 }: {
   from: CanvasPoint
   to: CanvasPoint
   fromSide: OutputSide
   toSide: InputSide
-  nodes: CollabNode[]
+  nodes: RouteNode[]
   existingRoutes: CanvasPoint[][]
   width: number
   height: number
+  nodeW: number
+  nodeH: number
 }): CanvasPoint[] {
-  const rects = nodes.map(rectOf)
+  const rects = nodes.map((node) => rectOf(node, nodeW, nodeH))
   const start = from
   const end = to
   const startOut = outwardPoint(start, fromSide, rects, width, height)
@@ -375,40 +389,49 @@ function routeOrthogonal({
 
 export function routeEdge({
   edge, from, to, nodes, existingRoutes = [], width = COLLAB_CANVAS_W, height = COLLAB_CANVAS_H,
+  nodeW = COLLAB_NODE_W, nodeH = COLLAB_NODE_H,
 }: {
-  edge: CollabEdge
-  from: CollabNode
-  to: CollabNode
-  nodes: CollabNode[]
+  edge: RouteEdgeSpec
+  from: RouteNode
+  to: RouteNode
+  nodes: RouteNode[]
   existingRoutes?: CanvasPoint[][]
   width?: number
   height?: number
+  /** 节点尺寸：编排画布用 190×92，协作进度图用自己那份（132×88），同一套路由逻辑。 */
+  nodeW?: number
+  nodeH?: number
 }): CanvasPoint[] {
   const ports = edgePorts(edge, from, to)
   return routeOrthogonal({
-    from: portAnchor(from, ports.fromSide),
-    to: portAnchor(to, ports.toSide),
+    from: portAnchor(from, ports.fromSide, nodeW, nodeH),
+    to: portAnchor(to, ports.toSide, nodeW, nodeH),
     fromSide: ports.fromSide,
     toSide: ports.toSide,
     nodes,
     existingRoutes,
     width,
     height,
+    nodeW,
+    nodeH,
   })
 }
 
 export function previewRoute({
   from, fromSide, cursor, nodes, width = COLLAB_CANVAS_W, height = COLLAB_CANVAS_H,
+  nodeW = COLLAB_NODE_W, nodeH = COLLAB_NODE_H,
 }: {
-  from: CollabNode
+  from: RouteNode
   fromSide: OutputSide
   cursor: CanvasPoint
-  nodes: CollabNode[]
+  nodes: RouteNode[]
   width?: number
   height?: number
+  nodeW?: number
+  nodeH?: number
 }): CanvasPoint[] {
-  const start = portAnchor(from, fromSide)
-  const startOut = outwardPoint(start, fromSide, nodes.map(rectOf), width, height)
+  const start = portAnchor(from, fromSide, nodeW, nodeH)
+  const startOut = outwardPoint(start, fromSide, nodes.map((node) => rectOf(node, nodeW, nodeH)), width, height)
   return simplify([
     start,
     startOut,

@@ -10,8 +10,9 @@
  * 由 `backend/tests/test_mobile_web.py` 守着。
  */
 import { useState } from 'react'
-import type { BoardEntry, BoardTicket, BoardEntryTone } from '../lib/ticketBoard'
+import type { BoardEntry, BoardTicket, BoardEntryTone, BoardFace } from '../lib/ticketBoard'
 import { BOARD_TONES, BOARD_TONE_LABEL, formatDuration, formatTokens } from '../lib/ticketBoard'
+import { AgentAvatar } from './AgentAvatar'
 
 /** 动作徽章：看板上唯一的高饱和色块。 */
 export function BoardActionTag({ tone, label }: { tone: BoardEntryTone; label?: string }) {
@@ -23,11 +24,10 @@ export function BoardStatePill({ ticket }: { ticket: BoardTicket }) {
   return <span className={`pill ${ticket.statePill}`}>{ticket.stateLabel}</span>
 }
 
-/** 岗位头像：智能体的 emoji + 岗位提示。 */
+/** 岗位头像：与智能体设定同一套渲染（自定义图 > 头像包 > emoji）+ 岗位提示。 */
 export function BoardAvatar({
-  avatar, label, duty, size = 'md',
-}: {
-  avatar: string
+  avatar, avatarPreset, avatarFile, agentId, label, duty, size = 'md',
+}: BoardFace & {
   label: string
   duty?: string
   size?: 'sm' | 'md'
@@ -38,7 +38,7 @@ export function BoardAvatar({
       title={duty ? `${label} · ${duty}` : label}
       aria-hidden
     >
-      {avatar}
+      <AgentAvatar avatar={avatar} avatarPreset={avatarPreset} avatarFile={avatarFile} agentId={agentId} />
     </span>
   )
 }
@@ -64,7 +64,15 @@ export function BoardTicketCard({
         <BoardStatePill ticket={ticket} />
       </div>
       <div className="board-ticket-foot">
-        <BoardAvatar avatar={ticket.holderAvatar} label={ticket.holderLabel} duty={ticket.holderDuty} size="sm" />
+        <BoardAvatar
+          avatar={ticket.holderFace.avatar}
+          avatarPreset={ticket.holderFace.avatarPreset}
+          avatarFile={ticket.holderFace.avatarFile}
+          agentId={ticket.holderFace.agentId}
+          label={ticket.holderLabel}
+          duty={ticket.holderDuty}
+          size="sm"
+        />
         <span className="board-ticket-holder">当前处理人：{ticket.holderLabel}</span>
         {ticket.parentTicketId && <span className="board-ticket-child">子工单</span>}
       </div>
@@ -108,7 +116,14 @@ export function BoardEntryCard({ entry }: { entry: BoardEntry }) {
 
   return (
     <li className={`board-entry${entry.violation ? ' violation' : ''}`}>
-      <BoardAvatar avatar={entry.avatar} label={entry.agentLabel} duty={entry.duty} />
+      <BoardAvatar
+        avatar={entry.avatar}
+        avatarPreset={entry.avatarPreset}
+        avatarFile={entry.avatarFile}
+        agentId={entry.agentId}
+        label={entry.agentLabel}
+        duty={entry.duty}
+      />
       <article className="board-entry-card">
         <div className="board-entry-head">
           <BoardActionTag tone={entry.tone} label={entry.toneLabel} />

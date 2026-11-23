@@ -362,6 +362,35 @@ def test_ticket_board_is_shared_between_ends():
 
 
 @needs_frontend
+def test_collab_progress_lines_reuse_the_editor_router():
+    """协作进度图的连线必须复用协作组设定画布的路由，别又各画各的。
+
+    两个页面都从 `lib/collabRouting.ts` 的 `routeEdge` 出线：端口方向、避障、多条线错开
+    才同源；进度图的节点坐标也原样照搬（不缩放），否则行距和编辑器对不上，线就画得不一样。
+    """
+    flow = (FRONTEND / "src" / "components" / "CollabFlowMap.tsx").read_text(encoding="utf-8")
+    assert "lib/collabRouting" in flow and "routeEdge" in flow, "进度图应当复用画布的连线路由"
+    assert "canvasEdgePath" not in flow, "进度图不该再自己实现一套折线"
+    assert "CANVAS_SCALE" not in flow, "画布坐标要原样照搬，缩放会让节点间距与编辑器不一致"
+
+
+@needs_frontend
+def test_ticket_board_avatars_follow_agent_settings():
+    """工单看板头像要跟智能体设定同步：自定义图 / 内置头像包都要带到看板上。
+
+    看板以前只拿 emoji（`agent.avatar`）直接当文字画，用户在智能体页换了头像，
+    看板还是老 emoji。现在统一交给共享 `AgentAvatar` 渲染，三字段都要从模型传过去。
+    """
+    kit = (FRONTEND / "src" / "components" / "TicketBoardKit.tsx").read_text(encoding="utf-8")
+    model = (FRONTEND / "src" / "lib" / "ticketBoard.ts").read_text(encoding="utf-8")
+    assert "AgentAvatar" in kit, "看板头像要用共享 AgentAvatar 渲染（与设定同一套回退）"
+    for field in ("avatarPreset", "avatarFile", "agentId"):
+        assert field in kit, f"看板头像缺少 {field}，头像包 / 自定义图就不会生效"
+    for field in ("avatar_preset", "avatar_file"):
+        assert field in model, f"看板模型要从智能体取 {field}，否则头像同步不了"
+
+
+@needs_frontend
 def test_mobile_manifest_scopes_to_the_mobile_link():
     manifest_path = FRONTEND / "public" / "m" / "manifest.webmanifest"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

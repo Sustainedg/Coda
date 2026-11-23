@@ -306,8 +306,28 @@ def test_composer_styles_are_identical_on_both_ends():
     ):
         assert selector in desktop, f"输入区共享样式段里少了 {selector}"
     # 共享段是两端共同的基础值；各自那几条微调（贴底收边、高度上限）写在它之外。
-    assert "max-height: 160px" in desktop, "共享段里应当有输入框高度的基础值"
+    assert "max-height: calc(160px * var(--composer-vscale))" in desktop, "共享段里应当有输入框高度的基础值"
     assert "safe-bottom" not in desktop, "贴底安全区的处理应当写在移动端微调段里"
+
+
+@needs_frontend
+def test_composer_settings_popover_closes_on_any_outside_click():
+    """齿轮气泡「点外面收起」的判定范围只能是齿轮 + 气泡，不能连整只输入框一起算。
+
+    `settingsRef` 曾同时挂在 `.composer-box` 与 `.composer-settings` 上；同一个 ref
+    挂两处时 React 以最后挂上的（外层输入框）为准，于是点文本框 / 加号 / 发送都被当成
+    「内部」，气泡只能靠再点一次齿轮才关得掉。这里把「只挂一处」固化下来。
+    """
+    composer = (FRONTEND / "src" / "components" / "Composer.tsx").read_text(encoding="utf-8")
+    assert composer.count("ref={settingsRef}") == 1, (
+        "settingsRef 只能挂在齿轮 + 气泡的小容器上：挂两处会让整只输入框都算「内部」，"
+        "点哪里都关不掉气泡"
+    )
+    assert 'className="composer-box" ref={settingsRef}' not in composer
+    # 点外面收起靠 mousedown；禁用的按钮在 Chrome 里不派发 mousedown，必须放行指针事件。
+    assert "pointer-events: none" in _shared_style_block(
+        FRONTEND / "src" / "index.css", COMPOSER_STYLE_BANNER, DESKTOP_COMPOSER_TUNING
+    ), "禁用的输入区按钮要让点击穿透到框上，否则点它时齿轮气泡收不起来"
 
 
 @needs_frontend

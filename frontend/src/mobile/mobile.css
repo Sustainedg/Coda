@@ -67,6 +67,9 @@
   /* 正文嵌图的预览宽度上限：聊天气泡本来就窄，预览图不必占满整行；点开可看原图。 */
   --md-image-preview: 280px;
   --shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  /* 输入区整体高矮的缩放系数：0.85 = 比原设计压低 15%（Composer 的垂直尺寸都乘它）。
+     移动端不加载 index.css，必须与桌面端 :root 各写一份、值保持一致。 */
+  --composer-vscale: 0.85;
   --font: 'Inter', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 
@@ -1064,18 +1067,19 @@ code, pre, .mono { font-family: var(--mono); }
 /* 输入框本身就是那个「框」：附件 / 语音在左，发送 / 停止在右，都长在框里面。 */
 .composer-box {
   display: flex; align-items: flex-end; gap: 2px;
-  padding: 4px 6px; border: 1px solid var(--border); border-radius: var(--radius);
+  padding: calc(4px * var(--composer-vscale)) 6px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--bg-input);
 }
 .composer-box:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
 .composer textarea {
   flex: 1; min-width: 0; background: none; border: none; border-radius: var(--radius);
-  padding: 10px 4px; color: var(--text); font-size: 16px; line-height: 1.5; resize: none; outline: none;
-  min-height: 42px; max-height: 160px;
+  padding: calc(10px * var(--composer-vscale)) 4px; color: var(--text); font-size: 16px; line-height: 1.5; resize: none; outline: none;
+  min-height: calc(42px * var(--composer-vscale)); max-height: calc(160px * var(--composer-vscale));
 }
 .composer textarea:disabled { color: var(--text-dim); }
 .composer-tool {
-  flex: none; width: 34px; height: 34px; border-radius: 11px; border: 1px solid transparent;
+  flex: none; width: calc(34px * var(--composer-vscale)); height: calc(34px * var(--composer-vscale));
+  border-radius: calc(11px * var(--composer-vscale)); border: 1px solid transparent;
   background: transparent; color: var(--text-muted); font-size: 15px; line-height: 1; cursor: pointer;
   display: grid; place-items: center;
 }
@@ -1084,7 +1088,9 @@ code, pre, .mono { font-family: var(--mono); }
 .composer-tool-spin { display: inline-block; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .composer-tool:active:not(:disabled) { background: var(--bg-hover); }
-.composer-tool:disabled { opacity: 0.4; }
+/* 禁用的按钮在 Chrome 里连 mousedown 都不派发：点它时齿轮气泡收不起来。
+   让它不接指针事件，点击落到下面的框上即可照常收起。 */
+.composer-tool:disabled { opacity: 0.4; pointer-events: none; }
 .composer-tool.on {
   color: #fff; background: rgba(248, 113, 113, 0.22); border-color: rgba(248, 113, 113, 0.5);
   animation: composer-recording 1.6s ease-in-out infinite;
@@ -1136,12 +1142,14 @@ code, pre, .mono { font-family: var(--mono); }
 /* 设置齿轮与它的勾选气泡：macOS 式的极简提示气泡 —— 白卡片、无边框、
    柔阴影，底部伸出一个朝下的尖角正对按钮。齿轮按钮本体走 .composer-tool
    （与语音 / 发送同尺寸同观感），这里只管气泡。 */
-.composer-settings { position: relative; flex: none; }
+/* 齿轮与气泡自成一个低层级的堆叠上下文：任何弹窗（`.modal-backdrop` 的 z-index: 50）
+   打开时都能把它整组盖住，不会出现「气泡浮在弹窗上面」的置顶观感。 */
+.composer-settings { position: relative; z-index: 1; flex: none; }
 /* 勾选气泡：纯白卡片 + 圆角 12px + 轻阴影，无边框；悬在按钮正上方。
    内边距收紧到 10/12：气泡里只有一行勾选项，原来的 16/20 撑得太宽。 */
 .composer-settings-menu {
   position: absolute; bottom: calc(100% + 12px); left: 50%; transform: translateX(-50%);
-  z-index: 60; padding: 10px 12px; border: none; border-radius: 12px;
+  z-index: 2; padding: 10px 12px; border: none; border-radius: 12px;
   background: var(--bg-elevated);
   box-shadow: var(--popover-shadow, 0 8px 24px rgba(0, 0, 0, 0.08));
   white-space: nowrap;
@@ -1179,11 +1187,11 @@ code, pre, .mono { font-family: var(--mono); }
    用 padding-bottom 长写而不是改 padding 简写，避免被其他 .composer 规则的简写覆盖。 */
 .composer {
   flex: none; border-top: 1px solid var(--border); background: rgba(18, 17, 28, 0.96);
-  padding: 8px 10px 6px;
-  padding-bottom: calc(6px + var(--safe-bottom));
+  padding: calc(8px * var(--composer-vscale)) 10px calc(6px * var(--composer-vscale));
+  padding-bottom: calc(6px * var(--composer-vscale) + var(--safe-bottom));
 }
 /* 输入框高度上限按可视视口算：小屏上别让输入区把整屏吃掉 */
-.composer textarea { max-height: 34vh; max-height: 34dvh; }
+.composer textarea { max-height: calc(34vh * var(--composer-vscale)); max-height: calc(34dvh * var(--composer-vscale)); }
 
 /* 对话页的输入框：文字单独占上面一行；下一行加号 + 齿轮贴左，语音 + 发送（停止）贴右 ——
    语音紧贴发送（说完就发）。推右的是「右侧一组」的起点：语音按钮（.composer-tool.voice）；
@@ -1191,11 +1199,11 @@ code, pre, .mono { font-family: var(--mono); }
    协作运行页的输入框不加 .m-chat-composer，不受这里影响。 */
 .m-chat-composer .composer-box {
   flex-wrap: wrap; align-items: center;
-  padding: 4px 8px 5px; row-gap: 2px;
+  padding: calc(4px * var(--composer-vscale)) 8px calc(5px * var(--composer-vscale)); row-gap: 2px;
 }
 /* 类名和 .composer 落在同一个元素上：选择器别写成 `.m-chat-composer .composer textarea`，
    那样要求嵌套的 .composer，永远匹配不到（textarea 会继续和图标挤一行）。 */
-.m-chat-composer.composer textarea { order: -1; flex: 0 0 100%; min-height: 51px; }
+.m-chat-composer.composer textarea { order: -1; flex: 0 0 100%; min-height: calc(51px * var(--composer-vscale)); }
 .m-chat-composer .composer-tool.voice { margin-left: auto; }
 .m-chat-composer .composer-tool.send,
 .m-chat-composer .composer-tool.stop { margin-left: 0; }

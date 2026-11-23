@@ -37,8 +37,11 @@ import { ZoomableImage } from './ZoomableImage'
 /** 单个附件的上限，与服务端 `MAX_ATTACHMENT_BYTES` 保持一致（前端先拦一道，省一次往返）。 */
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 
-/** 输入框长高的上限（px）。与样式表里 `.composer textarea` 的 `max-height` 是同一个数。 */
-const MAX_INPUT_HEIGHT = 160
+/**
+ * 输入框长高的上限（px）：样式表基础 `max-height`（160px）乘 `--composer-vscale`
+ * （0.85 = 整体压低 15%）。改样式表里的系数时这个数要一起改。
+ */
+const MAX_INPUT_HEIGHT = 136
 
 interface Props {
   /** 草稿文字 */
@@ -168,8 +171,10 @@ export function Composer({
   useEffect(() => () => voiceRef.current?.abort(), [])
 
   // 齿轮菜单：点外面或按 Esc 收起（与侧栏账号菜单同一套收法）。
-  // settingsRef 挂在「按钮 + 浮层」的容器上：浮层在容器内，点浮层里的勾选框
-  // 不会被当成「点外面」；点输入框其它地方、点页面别处都会收起。
+  // settingsRef **只**挂在「齿轮按钮 + 气泡」那个小容器上（`.composer-settings`）：
+  // 气泡在容器内，点气泡里的勾选框不会被当成「点外面」；点输入框、加号、发送、
+  // 页面别处都会收起。注意别再把这个 ref 挂到 `.composer-box` 上 —— 同一个 ref
+  // 挂两处时 React 以最后挂上的为准，整只输入框都会变成「内部」，点哪都关不掉。
   useEffect(() => {
     if (!settingsOpen) return
     const onPointerDown = (event: MouseEvent) => {
@@ -379,7 +384,7 @@ export function Composer({
         </div>
       )}
 
-      <div className="composer-box" ref={settingsRef}>
+      <div className="composer-box">
         <input
           ref={fileRef}
           type="file"

@@ -137,4 +137,47 @@ fs.rmSync(extractDir, { recursive: true, force: true });
 // runtimeEnv.ts 用这个文件展示「内置 Node 版本」，也作为完整性标记
 fs.writeFileSync(path.join(outDir, 'VERSION'), `${VERSION}\n`);
 
+// ---- 瘦身：不带用不到的部分（构建期处理一次，三平台通用）----
+// Node 发行包里有一批「装在用户机器上给开发者用」的东西，桌面端只把 node 当
+// 智能体内核的运行时，一律用不到：
+//   - include/：C/C++ 头文件（~60MB），只有编译原生扩展才需要 —— 桌面端经 npm 装
+//     的内核（Claude Code / Codex / Gemini CLI）都是纯 JS 或预编译二进制分发；
+//   - npm 的 docs/、man/、CHANGELOG、README：npm 在线文档，运行时无用；
+//   - share/：man 页与 HTML 文档，同上。
+// 注意：**不能删 npm 本体** —— 内核 provision 走 `npm i -g`（fetch-node.mjs 顶部
+// 注释说明过这是既定通道），npm 必须随包可用。
+trimNodeRuntime(outDir);
+
 console.log(`✓ Node ${VERSION}（${target} → ${spec.arch}）就绪 → build/node-runtime/${spec.arch}`);
+
+/** 删掉运行时用不到的目录 / 文件；漏删不报错（发行包结构变化时最多多占点空间）。 */
+function trimNodeRuntime(dir) {
+  const removed = [];
+  for (const rel of ['include', 'share']) {
+    const full = path.join(dir, rel);
+    if (fs.existsSync(full)) {
+      fs.rmSync(full, { recursive: true, force: true });
+      removed.push(rel);
+    }
+  }
+  const npmDir = path.join(dir, 'lib', 'node_modules', 'npm');
+  for (const rel of [
+    path.join(npmDir, 'docs'),
+    path.join(npmDir, 'man'),
+    path.join(npmDir, 'CHANGELOG.md'),
+    path.join(npmDir, 'README.md'),
+  ]) {
+    if (fs.existsSync(rel)) {
+      fs.rmSync(rel, { recursive: true, force: true });
+    }
+  }
+  const corepackDir = path.join(dir, 'lib', 'node_modules', 'corepack');
+  for (const rel of [path.join(corepackDir, 'CHANGELOG.md'), path.join(corepackDir, 'README.md')]) {
+    if (fs.existsSync(rel)) {
+      fs.rmSync(rel, { recursive: true, force: true });
+    }
+  }
+  if (removed.length) {
+    console.log(`→ 已剔除 ${removed.join('、')} 等运行时用不到的内容（详见脚本注释）`);
+  }
+}

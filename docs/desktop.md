@@ -243,6 +243,29 @@ xcrun stapler validate "Coda.app"                    # 确认已装订
 
 签名生效后，macOS 自动更新随之可用（`updater.ts` 会自动识别签名状态）。
 
+### 4.5 安装包瘦身（构建期，三平台通用）
+
+桌面端业务代码只占安装包 ~1%，大头是随身携带的三个运行时（Electron / 内嵌 Python /
+内嵌 Node）。瘦身分三层，全部发生在构建期，用户侧无感知、无运行时开销：
+
+| 层 | 时机 | 内容 | 收益（解压态） |
+| --- | --- | --- | --- |
+| 目录剔除 | fetch 脚本（`fetch-node.mjs` / `fetch-python.mjs`） | Node 的 `include/`（C/C++ 头文件，桌面端不编译原生扩展）、npm 文档；Python 的 tcl/tk、terminfo、idlelib/turtledemo/lib2to3/distutils 等开发工具模块 | ~80 MB |
+| 符号剥离 | `trim-runtimes.cjs`（afterPack 钩子，仅 Linux） | 官方 Node 二进制与 libpython 携带的 `.symtab` / DWARF 调试段（运行时不加载；崩溃符号化用构建机上的原始发行包） | ~35 MB |
+| 语言包裁剪 | `electron-builder.yml` 顶层 `electronLanguages` | Chromium 界面语言包 55 种 → 中英两种。注意 mac 目录名是下划线（`zh_CN.lproj`）而 Linux/Windows 是连字符（`zh-CN.pak`），两种写法都要配 | ~38 MB |
+
+**不能删的东西**（删了会破坏既定链路）：
+
+- `ensurepip` / `pip` / `setuptools`：兜底路径（`pythonRuntime.ts` 方案 C）靠
+  `python -m venv` 建环境，venv 默认经 ensurepip 装 pip；
+- npm 本体：内核 provision 走 `npm i -g`（§5 的既定通道）；
+- `wheelhouse/`：方案 C 的离线兜底依赖（mac 启用公证后如有未签名 Mach-O 报错，
+  见 §6 的处理口径）。
+
+**接线顺序**（`electron-builder.yml` 的 `afterPack` 只接受单个函数，多钩子由
+`pack-after-hooks.cjs` 串联）：先 `trim-runtimes`（改文件内容）→ 再
+`sign-runtimes`（macOS 逐个签 Mach-O）。先签后改会让签名失效，顺序是硬约束。
+
 ---
 
 ## 5. 内核安装通道（M4 调研结论）
@@ -306,6 +329,8 @@ xcrun stapler validate "Coda.app"                    # 确认已装订
 - **内嵌运行时签名**：有证书时逐个签（公证要求）；无证书时整包 ad-hoc 签，二者不会同时发生；
 - **安装包体积**：为换取首启零联网，Python 依赖与离线 wheelhouse 随包分发（压缩后约
   +20–30MB）；后续整包升级走 `.blockmap` 差分，只传变化块，不会每次都全量下发；
+  另有构建期瘦身（详见 §4.5）：剔除 Node 头文件 / tcl·tk / terminfo 等运行时用不到的
+  内容、剥离 Linux 二进制调试段、Chromium 语言包只留中英，解压态约省 150MB；
 - **wheelhouse 与公证**：wheel 里含 Mach-O（`.so`），当前构建未签名；将来启用 Developer ID
   公证时，如果 notarytool 报「whl 内有未签名二进制」，把 Mac 包的 wheelhouse 去掉即可
   （方案 A 已覆盖正常路径，C 只是兜底）；

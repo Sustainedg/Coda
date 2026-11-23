@@ -50,6 +50,12 @@ extraResources:
 asarUnpack:
   # 无需解包的资源（保持默认）
   - "**/*.{node,dll}"
+# Chromium 的界面语言包（locales/*.pak / *.lproj）：默认全量 55 种（~40MB）。
+# 桌面端界面文案在应用层（后端 + 前端），Chromium 层只影响 DevTools / 右键菜单等
+# 系统级 UI，中英两种足够。注意 mac 的目录名是下划线（zh_CN.lproj）而
+# Linux / Windows 是连字符（zh-CN.pak），两种写法都带上才能全平台命中；
+# 多余的名字匹配不到任何文件，无害。
+electronLanguages: [en, en-US, en-GB, en_US, en_GB, zh-CN, zh_CN, zh-TW, zh_TW]
 win:
   # 与网页图标同源（desktop/scripts/gen-icons.py 生成）
   icon: build/icon.ico
@@ -127,7 +133,9 @@ linux:
 publish:
   provider: generic
   url: https://github.com/Sustainedg/Coda/releases/download/desktop-latest
-# 打包后先给内嵌 Python / Node 里的 Mach-O 逐个签名（electron-builder 不扫 extraResources），
-# 再走正常签名流程，最后由 afterSign 提交公证。两个钩子在无证书环境下都会跳过。
-afterPack: scripts/sign-runtimes.cjs
+# 打包后先瘦身（Linux：strip 内嵌运行时二进制的调试段），再给内嵌 Python / Node 里的
+# Mach-O 逐个签名（electron-builder 不扫 extraResources），再走正常签名流程，最后由
+# afterSign 提交公证。两个钩子在无证书环境下都会跳过。
+# 注意：electron-builder 的 afterPack 只接受单个函数，多个钩子由 pack-after-hooks.cjs 串联。
+afterPack: scripts/pack-after-hooks.cjs
 afterSign: scripts/notarize.cjs

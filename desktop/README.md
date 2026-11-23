@@ -65,6 +65,8 @@ npx electron-builder --publish never # 产物在 release/
 - **macOS**：DMG + zip（arm64 + x64）；未签名构建会自动做 **ad-hoc 签名**，
   首次打开需在「系统设置 → 隐私与安全性」点「仍要打开」（不会再报「已损坏」）
 - 签名与公证的接线已就绪（配好证书 / Apple 凭据即自动生效），步骤见 `docs/desktop.md` §4
+- fetch 脚本与 afterPack 钩子会自动剔除运行时用不到的内容（Node 头文件、tcl/tk、
+  调试符号、多余语言包等，约省 150MB 解压态），详见 `docs/desktop.md` §4.5
 
 ## CI/CD
 

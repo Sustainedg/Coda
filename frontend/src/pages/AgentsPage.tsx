@@ -11,6 +11,7 @@ import {
 import { DynamicForm } from '../components/DynamicForm'
 import { AgentAvatarPicker } from '../components/AgentAvatarPicker'
 import { AgentAvatar } from '../components/AgentAvatar'
+import { TeamAvatarStack } from '../components/TeamAvatarStack'
 import { Modal } from '../components/Modal'
 import { StarIcon } from '../components/Icons'
 import { McpPicker } from '../components/McpPicker'
@@ -316,9 +317,7 @@ export function AgentsPage() {
       title={`进入「${team.name}」的协作组设置`}
     >
       <div className="card-head">
-        <div className="avatar" style={{ width: 40, height: 40, fontSize: 19 }}>
-          🤝
-        </div>
+        <TeamAvatarStack team={team} agents={agents} size={40} />
         <div style={{ minWidth: 0 }}>
           <div className="card-title">{team.name}</div>
           <div className="card-sub">{team.description?.trim() || '未填写说明'}</div>

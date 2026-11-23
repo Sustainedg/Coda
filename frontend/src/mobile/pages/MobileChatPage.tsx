@@ -6,10 +6,18 @@ import { api, ApiError, conversationFileUrl, isNetworkError, streamGet, streamPo
 import { useComposerDraft } from '../../lib/composerDraft'
 import { findUnusedConversation } from '../../lib/conversations'
 import { formatListTime } from '../../lib/datetime'
-import { MediaUrlProvider, composeWithAttachments, splitAttachmentBlock } from '../../lib/media'
+import { MediaUrlProvider, composeWithAttachments } from '../../lib/media'
 import { shortPath } from '../../lib/paths'
 import { useMarkConversationRead } from '../../lib/readReceipts'
-import { shareConversationImage } from '../../lib/shareImage'
+import { downloadConversationImage } from '../../lib/shareImage'
+import { downloadText } from '../../lib/download'
+import {
+  buildConversationMarkdown,
+  buildExportMessages,
+  buildShareContent,
+  markdownFileName,
+  type ExportChoice,
+} from '../../lib/conversationExport'
 import { useThemeMode } from '../../lib/theme'
 import { useSpeechOutput } from '../../lib/tts'
 import { useShowTools } from '../../lib/finalOnly'
@@ -32,6 +40,7 @@ import { MascotStage } from '../../components/MascotStage'
 import { Composer } from '../../components/Composer'
 import { MobileMenuButton, useMobileMenu } from '../components/MobileMenuButton'
 import { MobileSheet } from '../components/MobileSheet'
+import { ConversationExportForm } from '../../components/ConversationExportForm'
 import { MobileTopBar } from '../components/MobileTopBar'
 import { describeError, short } from '../util'
 
@@ -63,7 +72,8 @@ interface QueuedMessage {
  * - `/chat/:conversationId` 打开指定对话。
  * 流式输出与桌面端共用一套事件归约（`lib/agentStream`）。
  *
- * 顶栏右上角只有「分享 + 朗读」两个按钮（朗读默认关闭，开着时每条新回复念出来）；会话级的操作
+ * 顶栏右上角只有「导出 + 朗读」两个按钮（导出可选图片 / Markdown、对话正文 / 含工具调用的
+ * 完整数据；朗读默认关闭，开着时每条新回复念出来）；会话级的操作
  * （重新生成 / 重置记忆 / 复制工作目录 / 删除）挪到抽屉里每个对话行的「⋯」上 ——
  * 那几件事要用本页的消息与会话状态，所以点进去还是落到同一个面板。
  */
@@ -104,8 +114,12 @@ export function MobileChatPage() {
 
   /** AI 回复期间按下的消息：本轮结束后自动发出（只针对当前这条对话） */
   const [queue, setQueue] = useState<QueuedMessage[]>([])
-  /** 正在生成长图（生成要几百毫秒，期间按钮置灰，避免连点出两张） */
-  const [sharing, setSharing] = useState(false)
+  /** 导出弹层开没开：顶栏按钮只负责打开它，格式 / 范围在弹层里选 */
+  const [exportOpen, setExportOpen] = useState(false)
+  /** 正在生成导出文件（长图要几百毫秒，期间按钮置灰避免连点出两份） */
+  const [exporting, setExporting] = useState(false)
+  /** 导出失败时留在弹层里的提示（成功会直接关掉） */
+  const [exportError, setExportError] = useState<string | null>(null)
   /** 顶栏「新建对话」正在创建（期间按钮置灰，避免连点开出两条） */
   const [creating, setCreating] = useState(false)
   /** 输入框上方那几个小图标打开的面板：工作目录 / 智能体 / 模型 */
@@ -122,7 +136,7 @@ export function MobileChatPage() {
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   /** 本轮召唤的智能体 id：随下一条消息发出，发送即清空（一次性语义） */
   const [summonId, setSummonId] = useState<string | null>(null)
-  /** 一次性的提示（分享图已下载之类），与错误分开显示 */
+  /** 一次性的提示（导出文件已下载之类），与错误分开显示 */
   const [notice, setNotice] = useState<string | null>(null)
 
   /**
@@ -301,7 +315,7 @@ export function MobileChatPage() {
     if (fresh.length > 0) speech.speakIfEnabled(fresh[fresh.length - 1].content)
   }, [messages, active?.id, speech.speakIfEnabled])
 
-  // 一次性提示（分享图已下载 / 朗读已开启）看完就撤，不长期占着输入框上方。
+  // 一次性提示（导出文件已下载 / 朗读已开启）看完就撤，不长期占着输入框上方。
   useEffect(() => {
     if (!notice) return
     const timer = window.setTimeout(() => setNotice(null), 4000)
@@ -671,28 +685,63 @@ export function MobileChatPage() {
     }
   }
 
-  const shareChat = async () => {
-    if (!active || messages.length === 0) return
-    setSharing(true)
+  /**
+   * 导出当前对话：图片 / Markdown × 正文 / 完整数据，四种组合共用这一条出口。
+   * 完整数据直接读消息里已落库的 `parts`（思考、工具调用入参、工具结果）。
+   */
+  const exportChat = async (choice: ExportChoice) => {
+    if (!active || (messages.length === 0 && !liveMessage)) return
+    setExporting(true)
+    setExportError(null)
     setError(null)
     setNotice(null)
     try {
-      const outcome = await shareConversationImage({
-        title: active.title,
-        subtitle: [active.agent_name, active.agent_type_id].filter(Boolean).join(' · '),
-        theme,
-        messages: messages.map((message) => ({
-          role: message.role,
-          // 分享图也只画用户说的话：附件清单是提示词里给智能体读的，不该出现在分享图上。
-          content: splitAttachmentBlock(message.content).text,
-          createdAt: formatListTime(message.created_at),
-        })),
+      const exportMessages = buildExportMessages({
+        messages: chatMessages,
+        agentLabelOf: (message) => {
+          const summoner = message.agent_profile_id
+            ? scopeAgents.find((agent) => agent.id === message.agent_profile_id)
+            : undefined
+          return message.agent_profile_id
+            ? (summoner?.name ?? '被召唤智能体')
+            : active.agent_name
+        },
+        live,
+        liveAgentLabel: live?.summonName ?? active.agent_name,
+        liveMessage,
       })
-      if (outcome === 'downloaded') setNotice('分享图已生成，已开始下载（当前环境不支持系统分享面板）')
+
+      if (choice.format === 'markdown') {
+        const text = buildConversationMarkdown({
+          meta: {
+            title: active.title,
+            agentName: active.agent_name,
+            agentType: active.agent_type_id,
+            conversationId: active.id,
+          },
+          messages: exportMessages,
+          scope: choice.scope,
+        })
+        downloadText(text, markdownFileName(active.title))
+      } else {
+        await downloadConversationImage({
+          title: active.title,
+          subtitle: [active.agent_name, active.agent_type_id].filter(Boolean).join(' · '),
+          theme,
+          messages: exportMessages.map((message) => ({
+            role: message.role,
+            content: buildShareContent(message, choice.scope),
+            createdAt: formatListTime(message.createdAt),
+          })),
+        })
+      }
+
+      setExportOpen(false)
+      setNotice(choice.scope === 'full' ? '已导出完整数据（含思考与工具调用）' : '已导出对话内容')
     } catch (e) {
-      reportError(e)
+      setExportError(describeError(e))
     } finally {
-      setSharing(false)
+      setExporting(false)
     }
   }
 
@@ -855,6 +904,7 @@ export function MobileChatPage() {
       status: message.status,
       error: message.error,
       usage: message.usage,
+      created_at: message.created_at,
       // 不能在这里丢掉：@ 召唤轮的回复靠它区分作答者，头像 / 名字都从这里查
       agent_profile_id: message.agent_profile_id,
     }))
@@ -909,10 +959,13 @@ export function MobileChatPage() {
           <>
             <button
               className="m-icon-btn"
-              onClick={() => void shareChat()}
-              disabled={!active || messages.length === 0 || sharing}
-              aria-label="分享对话"
-              title="把这段对话生成长图分享出去"
+              onClick={() => {
+                setExportError(null)
+                setExportOpen(true)
+              }}
+              disabled={!active || (messages.length === 0 && !liveMessage)}
+              aria-label="导出对话"
+              title="导出这段对话（图片或 Markdown，可选是否包含工具调用）"
             >
               <ShareIcon />
             </button>
@@ -1180,6 +1233,20 @@ export function MobileChatPage() {
           ) : null
         }
       />
+
+      {exportOpen && active && (
+        <MobileSheet
+          title="导出对话"
+          onClose={() => !exporting && setExportOpen(false)}
+        >
+          <ConversationExportForm
+            busy={exporting}
+            error={exportError}
+            onClose={() => setExportOpen(false)}
+            onExport={(choice) => void exportChat(choice)}
+          />
+        </MobileSheet>
+      )}
 
       {menuOpen && active && (
         <MobileSheet title="对话操作" onClose={() => setMenuOpen(false)}>

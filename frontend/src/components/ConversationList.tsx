@@ -4,6 +4,7 @@ import { api, ApiError } from '../lib/api'
 import {
   findUnusedConversation,
   notifyConversationsChanged,
+  runningConversationIds,
   sortConversationsByRecent,
   useConversationsChanged,
 } from '../lib/conversations'
@@ -64,10 +65,11 @@ export function ConversationList() {
   const load = useCallback(async () => {
     try {
       const snapshot = await api.listConversations()
-      // 消息一到就置顶：后端已按最近活动排序，这里再排一次作为兜底（见 lib/conversations）。
-      const items = sortConversationsByRecent(snapshot.items)
+      // 「正在回复」的对话整组置顶，组内再按最近活动倒序；后端已按同一口径排过，
+      // 这里再排一次作为兜底（见 lib/conversations）。
+      const running = runningConversationIds(snapshot.active_runs)
+      const items = sortConversationsByRecent(snapshot.items, running)
       setConversations((prev) => (sameConversationList(prev, items) ? prev : items))
-      const running = new Set(snapshot.active_runs.map((run) => run.conversation_id))
       setRunningIds((prev) => (sameIdSet(prev, running) ? prev : running))
       setError(null)
       return items

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../../lib/api'
-import type { CollabRun, CollabTeam } from '../../lib/types'
+import type { AgentProfile, CollabRun, CollabTeam } from '../../lib/types'
 import { useAutoRefresh } from '../../lib/useAutoRefresh'
 import { MobileSheet } from '../components/MobileSheet'
 import { MobileTopBar } from '../components/MobileTopBar'
+import { TeamAvatarStack } from '../../components/TeamAvatarStack'
 import { describeError, relativeTime } from '../util'
 
 const RUN_STATUS_LABEL: Record<string, { label: string; pill: string }> = {
@@ -25,6 +26,8 @@ const RUN_STATUS_LABEL: Record<string, { label: string; pill: string }> = {
 export function MobileCollabPage() {
   const navigate = useNavigate()
   const [teams, setTeams] = useState<CollabTeam[]>([])
+  /** 协作组卡片上的成员头像：协作组只存智能体 id，头像要从智能体列表里对（与协作组一起拉） */
+  const [agents, setAgents] = useState<AgentProfile[]>([])
   const [runs, setRuns] = useState<CollabRun[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -38,9 +41,14 @@ export function MobileCollabPage() {
 
   const reload = useCallback(async () => {
     try {
-      const [teamList, runList] = await Promise.all([api.listCollabTeams(), api.listCollabRuns()])
+      const [teamList, runList, agentList] = await Promise.all([
+        api.listCollabTeams(),
+        api.listCollabRuns(),
+        api.listAgents(),
+      ])
       setTeams(teamList)
       setRuns(runList)
+      setAgents(agentList)
       setError(null)
     } catch (e) {
       setError(describeError(e))
@@ -135,6 +143,7 @@ export function MobileCollabPage() {
                         className="m-item"
                         onClick={() => navigate(`/collab/teams/${team.id}`)}
                       >
+                        <TeamAvatarStack team={team} agents={agents} size={34} max={3} />
                         <span className="m-item-main">
                           <span className="m-item-title">{team.name}</span>
                           <span className="m-item-sub">

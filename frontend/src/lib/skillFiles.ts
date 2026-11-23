@@ -1,9 +1,11 @@
 /**
- * 技能压缩包的本地校验 / 读取与浏览器下载（两端共用）。
+ * 技能压缩包的本地校验 / 读取（两端共用）。
  *
  * 上传走 base64（与附件、头像同一套做法），因此这里只负责把 `File` 读成
  * 不带 `data:` 前缀的字符串；后端仍然会自己校验体积与压缩包结构。
+ * 下载统一走 `lib/download.ts`，这里不再各写一份 Blob → `<a>` 逻辑。
  */
+
 
 /** 单个技能压缩包上限，与后端 `app/skillhub.py:MAX_ARCHIVE_BYTES` 对齐。 */
 export const MAX_SKILL_ARCHIVE_BYTES = 20 * 1024 * 1024
@@ -34,18 +36,4 @@ export function readFileAsBase64(file: File): Promise<string> {
     reader.onerror = () => reject(new Error('读取压缩包失败'))
     reader.readAsDataURL(file)
   })
-}
-
-/** 触发一次浏览器下载：Blob → 临时 object URL → `<a download>`。 */
-export function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  anchor.style.display = 'none'
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  // 立刻 revoke 在部分浏览器上会打断下载，延后回收。
-  window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }

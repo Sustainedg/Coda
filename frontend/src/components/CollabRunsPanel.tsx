@@ -500,10 +500,17 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
     void stream(`/api/collab/runs/${detail.id}/messages`, { content: text }, text)
   }
 
-  const agentAvatar = (agentId?: string | null, nodeKey?: string) => {
+  // 头像三字段一起查：气泡画真头像（自定义图 > 头像包 > emoji 回退）要用，
+  // 换了头像时间线同步显示。
+  const agentFace = (agentId?: string | null, nodeKey?: string) => {
     const node = team?.graph.nodes.find((item) => item.key === nodeKey)
     const agent = agents.find((item) => item.id === (agentId ?? node?.agent_profile_id))
-    return agent?.avatar ?? '🤖'
+    return {
+      avatar: agent?.avatar ?? '🤖',
+      avatarPreset: agent?.avatar_preset ?? null,
+      avatarFile: agent?.avatar_file ?? null,
+      agentId: agent?.id ?? null,
+    }
   }
   const labelOf = (nodeKey: string, fallback?: string | null) =>
     team?.graph.nodes.find((item) => item.key === nodeKey)?.label || fallback || nodeKey
@@ -630,7 +637,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
     ...timeline.map((message) => ({
       id: message.id,
       message,
-      avatar: message.role === 'user' ? undefined : agentAvatar(undefined, leaderKey),
+      ...(message.role === 'user' ? {} : agentFace(undefined, leaderKey)),
       label: message.role === 'user' ? undefined : labelOf(leaderKey, detail?.entry_key),
       // CEO 消息带过「需求同步进工单」时，消息上方挂一张工单更新小卡片：
       // 摘要一行（同步了几张、哪些字段），点开看渲染好的完整工单内容。
@@ -640,7 +647,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
       ? [{
           id: liveMessage.id,
           message: liveMessage,
-          avatar: agentAvatar(undefined, leaderLive.nodeKey),
+          ...agentFace(undefined, leaderLive.nodeKey),
           label: labelOf(leaderLive.nodeKey, leaderLive.agentName),
         }]
       : []),
@@ -648,7 +655,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
       ? [{
           id: chatLiveMessage.id,
           message: chatLiveMessage,
-          avatar: agentAvatar(undefined, chatTurn.live.roleKey || leaderKey),
+          ...agentFace(undefined, chatTurn.live.roleKey || leaderKey),
           label: labelOf(chatTurn.live.roleKey || leaderKey, chatTurn.live.agentName),
         }]
       : []),

@@ -81,17 +81,18 @@ def _write_png(path: Path, size: int, body: bytes) -> None:
 
 
 def build_svg(size: int = 512) -> str:
-    """生成内嵌母版位图的 SVG（外壳矢量、图形位图，与 PNG 图标同源）。"""
+    """生成内嵌母版位图的 SVG（外壳矢量、图形位图，与 PNG 图标同源）。
+
+    不再在下面垫一块深色矩形：母版本身已经是「圆角外透明」的完整品牌图，
+    透明区域应当保持透明；垫底色会让浏览器标签页 / PWA 外框变成深色方块。
+    """
     embed = load_master().resize((SVG_EMBED_SIZE, SVG_EMBED_SIZE), Image.LANCZOS)
     buffer = io.BytesIO()
     embed.save(buffer, format="PNG")
     data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-    radius = size * 0.225
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" '
         f'width="{size}" height="{size}">\n'
-        f'  <rect width="{size}" height="{size}" rx="{radius:.1f}" ry="{radius:.1f}" '
-        f'fill="#11101b"/>\n'
         f'  <image href="{data_url}" x="0" y="0" width="{size}" height="{size}"/>\n'
         f'</svg>\n'
     )

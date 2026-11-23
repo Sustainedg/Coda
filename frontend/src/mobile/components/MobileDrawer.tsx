@@ -2,7 +2,11 @@ import { useCallback, useEffect, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { api } from '../../lib/api'
 import { useAuth } from '../../components/AuthGate'
-import { findUnusedConversation, sortConversationsByRecent } from '../../lib/conversations'
+import {
+  findUnusedConversation,
+  runningConversationIds,
+  sortConversationsByRecent,
+} from '../../lib/conversations'
 import { formatListTime } from '../../lib/datetime'
 import type { Conversation, AgentProfile } from '../../lib/types'
 import { sameConversationList, useAutoRefresh } from '../../lib/useAutoRefresh'
@@ -72,10 +76,10 @@ export function MobileDrawer({ open, onClose, version }: Props) {
   const load = useCallback(async () => {
     try {
       const [snapshot, agentList] = await Promise.all([api.listConversations(), api.listAgents()])
-      // 最近有消息的对话排最前（后端已排过，这里兜底；见 lib/conversations）。
-      const items = sortConversationsByRecent(snapshot.items)
+      // 「正在回复」的对话整组置顶，组内再按最近活动倒序（后端已按同一口径排过，这里兜底）。
+      const running = runningConversationIds(snapshot.active_runs)
+      const items = sortConversationsByRecent(snapshot.items, running)
       setConversations((prev) => (sameConversationList(prev, items) ? prev : items))
-      const running = new Set(snapshot.active_runs.map((run) => run.conversation_id))
       setRunningIds((prev) => (sameIdSet(prev, running) ? prev : running))
       setAgents(agentList)
       setError(null)

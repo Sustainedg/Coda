@@ -10,6 +10,7 @@ import type { FinishedStep, LiveStep } from '../lib/collabStream'
 import { stepHasOutput, stepStatusHint, type CollabAgentProgress } from '../lib/collabProgress'
 import { buildAgentThread, ticketBriefSummary } from '../lib/collabThread'
 import type { AuthUser, CollabStep, CollabTicket } from '../lib/types'
+import { AgentAvatar } from './AgentAvatar'
 import { ConversationThread, type ConversationThreadItem } from './ConversationThread'
 import type { RenderMessage } from './MessageView'
 
@@ -152,11 +153,21 @@ export function CollabAgentThread({
     }
 
     if (entry.kind === 'handoff') {
+      // 交接人是协作组里的另一个岗位：头像取 roster 的三字段（自定义图 > 头像包 > emoji），
+      // 与气泡其他位置同一套渲染，换了头像同步显示（原来只认 emoji 会一直是旧头像）。
+      const fromNode = entry.fromKey ? roster.find((item) => item.key === entry.fromKey) : undefined
       threadItems.push({
         id: entry.id,
         custom: (
           <div className="bubble-row user collab-agent-handoff-row">
-            <div className="avatar user">{entry.fromAvatar}</div>
+            <div className="avatar user">
+              <AgentAvatar
+                avatar={fromNode?.avatar ?? entry.fromAvatar}
+                avatarPreset={fromNode?.avatarPreset ?? null}
+                avatarFile={fromNode?.avatarFile ?? null}
+                agentId={fromNode?.agentId ?? null}
+              />
+            </div>
             <div className="bubble">
               <div className="bubble-head">
                 <span>{entry.fromLabel}</span>

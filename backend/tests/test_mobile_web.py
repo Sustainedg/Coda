@@ -593,7 +593,7 @@ async def test_spa_shell_is_revalidated_instead_of_cached(client):
 def test_mobile_chat_keeps_a_bare_composer_and_speaks_replies():
     """输入区只留一个「框」：线条图标长在框里、没有背景提示文字、贴着屏幕底边。
 
-    顶栏右上角是「分享对话」+ 朗读开关（**默认关闭**）；会话级操作挪到抽屉里每个对话行的
+    顶栏右上角是「导出对话」+ 朗读开关（**默认关闭**）；会话级操作挪到抽屉里每个对话行的
     「⋯」上 —— 那几件事要用到聊天页的消息与会话状态，所以信号经路由 state 传回。
     """
     page = (MOBILE_SRC / "pages" / "MobileChatPage.tsx").read_text(encoding="utf-8")
@@ -617,12 +617,14 @@ def test_mobile_chat_keeps_a_bare_composer_and_speaks_replies():
     for emoji in ("📎", "🎤", "🔊", "🔈", "➤", "■"):
         assert emoji not in page, f"图标不该再用 emoji / 文字符号：{emoji}"
 
-    # 分享：把对话渲染成长图，走 lib/shareImage（只此一份实现）。
-    assert "shareConversationImage" in page, "顶栏的分享按钮要接 lib/shareImage"
+    # 导出：弹窗里选图片 / Markdown、正文 / 完整数据（组件两端共用，见
+    # components/ConversationExportForm.tsx）；图片走 lib/shareImage 直接下载，
+    # 文本整理走 lib/conversationExport，页面不自己拼导出内容。
+    assert "ConversationExportForm" in page, "顶栏的导出按钮要打开两端共享的导出表单"
+    assert "downloadConversationImage" in page, "导出图片要接 lib/shareImage"
+    assert "buildConversationMarkdown" in page, "导出 Markdown 要接 lib/conversationExport"
     share = (FRONTEND / "src" / "lib" / "shareImage.ts").read_text(encoding="utf-8")
-    for symbol in (
-        "renderConversationImage", "shareConversationImage", "navigator.share", "toBlob",
-    ):
+    for symbol in ("renderConversationImage", "downloadConversationImage", "toBlob"):
         assert symbol in share, f"lib/shareImage.ts 缺少 {symbol}"
 
     drawer = (MOBILE_SRC / "components" / "MobileDrawer.tsx").read_text(encoding="utf-8")

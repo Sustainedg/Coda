@@ -175,15 +175,20 @@ function addAlongCoordinate(values: number[], candidates: number[]) {
 function outwardPoint(anchor: CanvasPoint, side: CollabEdgePort, rects: Rect[], width: number, height: number) {
   const direction = normal(side)
   const distances = [PORT_STUB, PORT_STUB + 12, PORT_STUB + 28, PORT_STUB + 48]
-  let point = {
-    x: Math.max(-40, Math.min(width + 40, anchor.x + direction.x * PORT_STUB)),
-    y: Math.max(-40, Math.min(height + 40, anchor.y + direction.y * PORT_STUB)),
-  }
+  // 画布边界只约束「沿端口方向」的分量；正交分量（垂直口的 x / 水平口的 y）保持锚点值。
+  // 否则紧凑画布（如协作进度图）上贴边的节点，垂直口的外向点会被钳到节点另一侧，
+  // 连线整体被拽歪、被迫绕行。
+  const step = (distance: number) => ({
+    x: direction.x === 0
+      ? anchor.x
+      : Math.max(-40, Math.min(width + 40, anchor.x + direction.x * distance)),
+    y: direction.y === 0
+      ? anchor.y
+      : Math.max(-40, Math.min(height + 40, anchor.y + direction.y * distance)),
+  })
+  let point = step(PORT_STUB)
   for (const distance of distances) {
-    const next = {
-      x: Math.max(-40, Math.min(width + 40, anchor.x + direction.x * distance)),
-      y: Math.max(-40, Math.min(height + 40, anchor.y + direction.y * distance)),
-    }
+    const next = step(distance)
     point = next
     if (!rects.some((rect) => insideRect(next, rect))) return next
   }

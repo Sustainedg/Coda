@@ -383,7 +383,8 @@ class AcmeHarness(OpenAIHarnessBase):
   样式表与移动端**互不引用**（守卫见 `backend/tests/test_mobile_web.py`）；两端只共享 `lib/*` 与
   `DynamicForm` / `MessageView` / `MarkdownView` / `ConversationThread` / `CollabAgentThread` /
   `TicketBoardKit` / `Composer` / `Icons` / `McpPicker` / `McpServerForm` / `McpAssignPanel` /
-  `AuthGate` / `LoginScreen` / `AccountPanel` / `UserAdminPanel`
+  `AuthGate` / `LoginScreen` / `AccountPanel` / `UserAdminPanel` / `TeamAvatarStack` /
+  `ConversationExportForm`
   等纯展示组件，以及 `lib/agentStream` 里的事件归约。共享组件的样式必须两端样式表各写一份
   （`account-*` / `auth-*` 就是例子）。
 - 移动端原语沿用既有类名（`btn` / `pill` / `banner` / `field` / `input` / `card` / `grid` /
@@ -393,7 +394,7 @@ class AcmeHarness(OpenAIHarnessBase):
   `/m/`，`/api/`（含 SSE 长连接）**永不进入缓存**。新增页面要保证断网时应用外壳仍能打开（离线只保证
   「界面能打开」，对话仍需联网）。
 - **朗读（`src/lib/tts.ts`）只有一份实现**：开关默认关闭、存在 localStorage，开启后念的是
-  Markdown 转出来的纯文本；对话页顶栏右上角只有「分享 + 朗读」两个按钮。
+  Markdown 转出来的纯文本；对话页顶栏右上角只有「导出 + 朗读」两个按钮。
 - **「操作图标」用线条 SVG**（`src/components/Icons.tsx`，两端共用）：输入区、顶栏这类
   需要与文字同色的小图标，emoji 的尺寸与颜色随系统而变、同一排对不齐；这类图标一律
   `stroke="currentColor"`，尺寸走 `size` 参数。

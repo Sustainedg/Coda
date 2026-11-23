@@ -8,16 +8,25 @@ import { AgentAvatar } from '../components/AgentAvatar'
 import { MascotStage } from '../components/MascotStage'
 import type { RenderMessage } from '../components/MessageView'
 import { Modal } from '../components/Modal'
+import { ConversationExportForm } from '../components/ConversationExportForm'
 import { useAuth } from '../components/AuthGate'
 import { applyAgentEvent, emptyAgentStream, type AgentStreamState } from '../lib/agentStream'
 import { api, ApiError, conversationFileUrl, isNetworkError, streamGet, streamPost } from '../lib/api'
 import { useComposerDraft } from '../lib/composerDraft'
 import { notifyConversationsChanged, findUnusedConversation } from '../lib/conversations'
 import { formatListTime } from '../lib/datetime'
-import { MediaUrlProvider, composeWithAttachments, splitAttachmentBlock } from '../lib/media'
+import { MediaUrlProvider, composeWithAttachments } from '../lib/media'
 import { shortPath } from '../lib/paths'
 import { useMarkConversationRead } from '../lib/readReceipts'
-import { shareConversationImage } from '../lib/shareImage'
+import { downloadConversationImage } from '../lib/shareImage'
+import { downloadText } from '../lib/download'
+import {
+  buildConversationMarkdown,
+  buildExportMessages,
+  buildShareContent,
+  markdownFileName,
+  type ExportChoice,
+} from '../lib/conversationExport'
 import {
   isSidebarForcedCollapsed,
   readSidebarCollapsed,
@@ -68,7 +77,8 @@ interface QueuedMessage {
  * 对话页（桌面端）：左侧栏（导航 + 对话列表，见 `App.tsx`）选中一条对话，这里显示它。
  *
  * 与移动端同一套设计与分工：
- * - 顶栏右上角只有「分享 + 朗读」两个图标按钮（朗读默认关闭，开着时每条新回复念出来）；
+ * - 顶栏右上角只有「导出 + 朗读」两个图标按钮（导出可选图片 / Markdown、
+ *   对话正文 / 含工具调用的完整数据；朗读默认关闭，开着时每条新回复念出来）；
  * - 输入区是两端共享的 `components/Composer`（附件 / 语音 / 图标发送都在框里）；
  * - 清除智能体记忆用输入框里的 `/clear` 命令（在提交时拦下，不作为消息发出）；
  *   重命名与删除收在左侧栏对话行的悬停图标里，会话级弹窗不再保留。
@@ -109,7 +119,7 @@ export function ChatPage() {
   const [error, setError] = useState<string | null>(null)
   /** 后台同步（轮询）产生的提示：下一次同步成功就撤掉，不长期占着界面 */
   const [syncError, setSyncError] = useState<string | null>(null)
-  /** 一次性的提示（分享图已下载之类），与错误分开显示 */
+  /** 一次性的提示（导出文件已下载之类），与错误分开显示 */
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [remoteRunning, setRemoteRunning] = useState(false)
@@ -117,8 +127,12 @@ export function ChatPage() {
   const [activeRun, setActiveRun] = useState<ActiveRunInfo | null>(null)
   /** 强制重新订阅的计数器：同一轮运行被 openConversation 清掉实时卡片后要能重连 */
   const [attachNonce, setAttachNonce] = useState(0)
-  /** 正在生成长图（要几百毫秒，期间按钮置灰避免连点出两张） */
-  const [sharing, setSharing] = useState(false)
+  /** 导出弹窗开没开：右上角按钮只负责打开它，真正的格式 / 范围在弹窗里选 */
+  const [exportOpen, setExportOpen] = useState(false)
+  /** 正在生成导出文件（长图要几百毫秒，期间按钮置灰避免连点出两份） */
+  const [exporting, setExporting] = useState(false)
+  /** 导出失败时留在弹窗里的提示（成功会直接关窗，不占这条状态） */
+  const [exportError, setExportError] = useState<string | null>(null)
   /** 输入框上方那几个小图标打开的面板：工作目录 / 智能体 / 模型 */
   const [scopePanel, setScopePanel] = useState<'workspace' | 'agent' | 'model' | null>(null)
   const [scopeAgents, setScopeAgents] = useState<AgentProfile[]>([])
@@ -676,28 +690,59 @@ export function ChatPage() {
     return api.uploadAttachment(active.id, { name, content_base64: contentBase64 })
   }
 
-  const shareChat = async () => {
-    if (!active || messages.length === 0) return
-    setSharing(true)
+  /**
+   * 把当前对话导出成文件。
+   *
+   * 弹窗里选的两维组合最终落到这里：`format` 决定 PNG 长图还是 `.md`，
+   * `scope` 决定只带正文还是连思考 / 工具调用一起带（后者直接读消息里
+   * 已经落库的 `parts`，与界面上展开「过程」看到的是同一份数据）。
+   */
+  const exportChat = async (choice: ExportChoice) => {
+    if (!active || (messages.length === 0 && !liveMessage)) return
+    setExporting(true)
+    setExportError(null)
     setError(null)
     setNotice(null)
     try {
-      const outcome = await shareConversationImage({
-        title: active.title,
-        subtitle: [active.agent_name, active.agent_type_id].filter(Boolean).join(' · '),
-        theme,
-        messages: messages.map((message) => ({
-          role: message.role,
-          // 分享图也只画用户说的话：附件清单是提示词里给智能体读的，不该出现在分享图上。
-          content: splitAttachmentBlock(message.content).text,
-          createdAt: formatListTime(message.created_at),
-        })),
+      const exportMessages = buildExportMessages({
+        messages: chatMessages,
+        agentLabelOf: (message) => assistantIdentity(message).label,
+        live,
+        liveAgentLabel: live?.agentName ?? active.agent_name,
+        liveMessage,
       })
-      if (outcome === 'downloaded') setNotice('分享图已生成，已开始下载（当前环境不支持系统分享面板）')
+
+      if (choice.format === 'markdown') {
+        const text = buildConversationMarkdown({
+          meta: {
+            title: active.title,
+            agentName: active.agent_name,
+            agentType: active.agent_type_id,
+            conversationId: active.id,
+          },
+          messages: exportMessages,
+          scope: choice.scope,
+        })
+        downloadText(text, markdownFileName(active.title))
+      } else {
+        await downloadConversationImage({
+          title: active.title,
+          subtitle: [active.agent_name, active.agent_type_id].filter(Boolean).join(' · '),
+          theme,
+          messages: exportMessages.map((message) => ({
+            role: message.role,
+            content: buildShareContent(message, choice.scope),
+            createdAt: formatListTime(message.createdAt),
+          })),
+        })
+      }
+
+      setExportOpen(false)
+      setNotice(choice.scope === 'full' ? '已导出完整数据（含思考与工具调用）' : '已导出对话内容')
     } catch (e) {
-      setError(describe(e))
+      setExportError(describe(e))
     } finally {
-      setSharing(false)
+      setExporting(false)
     }
   }
 
@@ -837,6 +882,7 @@ export function ChatPage() {
       status: message.status,
       error: message.error,
       usage: message.usage,
+      created_at: message.created_at,
       // 不能在这里丢掉：@ 召唤轮的回复靠它区分作答者，头像 / 名字都从这里查
       agent_profile_id: message.agent_profile_id,
     }))
@@ -862,7 +908,7 @@ export function ChatPage() {
    * 被召唤者已经从名单里删掉（软删除后不再出现在 /api/agents）时，宁可显示占位，
    * 也不要冒用主场智能体的身份。
    */
-  const assistantIdentity = (message: RenderMessage) => {
+  const assistantIdentity = (message: { role: string; agent_profile_id?: string | null }) => {
     if (message.role !== 'assistant' || !message.agent_profile_id) {
       return {
         avatar: active?.agent_avatar ?? undefined,
@@ -953,7 +999,7 @@ export function ChatPage() {
         {active ? (
           <>
             {/* 顶栏左侧：折叠侧栏 + 新建对话（与移动端顶栏同一套布局）；中间不放标题 ——
-                对话名左侧栏一直看得见，顶栏不重复它。右侧仍是分享 / 朗读。 */}
+                对话名左侧栏一直看得见，顶栏不重复它。右侧是导出 / 朗读。 */}
             <div className="chat-topbar">
               <div className="chat-topbar-lead">
                 {!sidebarNarrow && (
@@ -992,10 +1038,13 @@ export function ChatPage() {
               <div className="chat-topbar-actions">
                 <button
                   className="icon-btn"
-                  onClick={() => void shareChat()}
-                  disabled={messages.length === 0 || sharing}
-                  aria-label="分享对话"
-                  title="把这段对话生成长图分享出去"
+                  onClick={() => {
+                    setExportError(null)
+                    setExportOpen(true)
+                  }}
+                  disabled={messages.length === 0 && !liveMessage}
+                  aria-label="导出对话"
+                  title="导出这段对话（图片或 Markdown，可选是否包含工具调用）"
                 >
                   <ShareIcon size={18} />
                 </button>
@@ -1237,6 +1286,17 @@ export function ChatPage() {
           </div>
         )}
       </section>
+
+      {exportOpen && active && (
+        <Modal title="导出对话" onClose={() => !exporting && setExportOpen(false)}>
+          <ConversationExportForm
+            busy={exporting}
+            error={exportError}
+            onClose={() => setExportOpen(false)}
+            onExport={(choice) => void exportChat(choice)}
+          />
+        </Modal>
+      )}
 
       {/* 轨迹抽屉是覆盖层的只读旁路：不卸载 ChatPage，正在跑的 SSE 与滚动位置都不丢。 */}
       {traceOpen && active && user?.trace_debug === true && (

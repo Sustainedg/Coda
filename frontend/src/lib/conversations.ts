@@ -14,14 +14,33 @@ const EVENT = 'coda:conversations-changed'
 export const NEW_CONVERSATION_TITLE = '新对话'
 
 /**
- * 侧栏排序兜底：按「最近活动」倒序。
+ * 侧栏排序：先「AI 还在回复」，再「已经回复完」，两组内部都按「最近活动」倒序。
  *
- * 后端已经按同样的口径排过（`updated_at` 与最后一条消息时间取较晚者），这里再排一次是
- * 为了两件事：① 本地乐观插入（新建对话 / 刚发完消息）后不必等下一轮接口就能立刻到顶；
- * ② 万一某个部署的后端还在返回旧顺序，界面也不会跟着错。
+ * 为什么不是单纯按时间：一轮长回复期间用户可能又开了好几条新对话，只按时间排会把
+ * 还在出字的那条挤到下面去。所以「在跑」整组置顶，组内才比时间。
+ *
+ * 后端已经按同样的口径排过（见 `runtime/conversations.py:order_by_recent_activity`），
+ * 这里再排一次是为了两件事：① 本地乐观插入（新建对话 / 刚发完消息）后不必等下一轮
+ * 接口就能立刻到顶；② 万一某个部署的后端还在返回旧顺序，界面也不会跟着错。
+ *
+ * `runningIds` 用列表接口的 `active_runs` 拼出来（`conversation_id` 去重）；
+ * 不传 = 没有正在跑的对话，退化成纯按时间排。
  */
-export function sortConversationsByRecent(items: Conversation[]): Conversation[] {
-  return [...items].sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
+export function sortConversationsByRecent(
+  items: Conversation[],
+  runningIds: ReadonlySet<string> = new Set(),
+): Conversation[] {
+  return [...items].sort((left, right) => {
+    const leftRunning = runningIds.has(left.id)
+    const rightRunning = runningIds.has(right.id)
+    if (leftRunning !== rightRunning) return leftRunning ? -1 : 1
+    return Date.parse(right.updated_at) - Date.parse(left.updated_at)
+  })
+}
+
+/** 从列表快照的 `active_runs` 里取出「正在回复」的对话 id（同一条对话可能有多轮运行）。 */
+export function runningConversationIds(activeRuns: { conversation_id: string }[]): Set<string> {
+  return new Set(activeRuns.map((run) => run.conversation_id))
 }
 
 /** 广播一次「对话列表变了」。 */

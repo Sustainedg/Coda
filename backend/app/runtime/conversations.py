@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import datetime, timezone
 
 from sqlalchemy import func
@@ -94,13 +94,23 @@ def ordered_participants(
 def order_by_recent_activity(
     conversations: list[Conversation],
     latest: Mapping[str, Message],
+    running_ids: Collection[str] = (),
 ) -> list[Conversation]:
-    """按「最近活动」倒序：对话自身时间戳与最后一条消息时间取较晚者。
+    """先「AI 还在回复」，再「已经回复完」；两组内部都按最近活动倒序。
 
-    正常发消息两条都会推进；取 max 是为了兜住历史数据 —— 某条对话的消息很新、
-    但 ``updated_at`` 因为早期版本的写入路径没跟着走时，仍按真正的最近一条排上去。
+    为什么要把「正在回复」整组提到最前面：一轮长回复期间用户可能又开了好几条新对话，
+    只按时间排会把还在出字的那条挤到列表下面去，等它真的回复完用户早就找不到了。
+    只要这次运行还没结束（``runtime.manager.registry`` 里还有它），它就压在所有已完成
+    的对话上面 —— 判定「在跑」用的是运行表，而不是最后一条消息的 ``streaming`` 状态：
+    进程重启后残留的 ``streaming`` 占位不该让一条对话永远钉在顶上。
+
+    组内排序是「对话自身时间戳与最后一条消息时间取较晚者」倒序。正在回复的那条，
+    这个时刻就是用户最后一次发消息的时间。取 max 是为了兜住历史数据 —— 某条对话的
+    消息很新、但 ``updated_at`` 因为早期版本的写入路径没跟着走时，仍按真正的最近一条排。
     同一时刻的并列项按创建时间兜底，保证每次请求的顺序稳定（不会来回跳）。
     """
+
+    running = set(running_ids)
 
     def activity(conversation: Conversation) -> datetime:
         moments = [as_utc(conversation.updated_at)]
@@ -111,6 +121,10 @@ def order_by_recent_activity(
 
     return sorted(
         conversations,
-        key=lambda conversation: (activity(conversation), as_utc(conversation.created_at)),
+        key=lambda conversation: (
+            conversation.id in running,
+            activity(conversation),
+            as_utc(conversation.created_at),
+        ),
         reverse=True,
     )

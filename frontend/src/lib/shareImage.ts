@@ -1,11 +1,12 @@
 /**
- * 把一段对话渲染成一张「长图」用于分享。
+ * 把一段对话渲染成一张「长图」用于导出或分享。
  *
  * 手写 Canvas 绘制（不引第三方依赖、也不把整页 DOM 塞进 html2canvas）：只画对话本身 ——
  * 标题栏、气泡、代码块、页脚，够分享用。文字按字符折行（中文没有空格），拉丁文尽量按空格断。
  *
  * 画布有尺寸上限（iOS 尤其紧），所以过长时整体降采样（`scale`）而不是掐掉内容。
  */
+import { downloadBlob } from './download'
 
 /** 分享一张图需要的对话内容（与界面无关的纯数据）。 */
 export interface ShareMessage {
@@ -263,13 +264,32 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: n
 
 export type ShareOutcome = 'shared' | 'downloaded' | 'cancelled'
 
+/** 分享图文件名：标题清洗成安全片段（与 Markdown 导出的命名规则保持一致）。 */
+export function shareImageFileName(title: string): string {
+  const slug = title.trim().replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40) || 'conversation'
+  return `coda-${slug}.png`
+}
+
+/**
+ * 直接下载分享图（「导出图片」入口用）。
+ *
+ * 与 `shareConversationImage` 分开：导出是明确的「存到本地」，不该弹系统分享面板；
+ * `shareConversationImage` 保留系统分享能力，供需要“发给别人”的入口复用。
+ */
+export async function downloadConversationImage(input: ShareImageInput): Promise<string> {
+  const blob = await renderConversationImage(input)
+  const filename = shareImageFileName(input.title)
+  downloadBlob(blob, filename)
+  return filename
+}
+
 /**
  * 分享（或下载）这张长图：优先走系统分享面板（`navigator.share` + 文件），
  * 不支持就退回浏览器下载 —— 两者都不行时抛错，交给调用方提示。
  */
 export async function shareConversationImage(input: ShareImageInput): Promise<ShareOutcome> {
   const blob = await renderConversationImage(input)
-  const filename = `coda-${input.title.replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40)}.png`
+  const filename = shareImageFileName(input.title)
   const file = new File([blob], filename, { type: 'image/png' })
 
   if (navigator.canShare?.({ files: [file] }) && navigator.share) {
@@ -283,12 +303,6 @@ export async function shareConversationImage(input: ShareImageInput): Promise<Sh
     }
   }
 
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  link.click()
-  // 立刻 revoke 在部分浏览器上会让下载拿不到内容，挪到下一轮事件循环。
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  downloadBlob(blob, filename)
   return 'downloaded'
 }

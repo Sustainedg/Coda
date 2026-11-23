@@ -18,7 +18,10 @@
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { buildFlowLinks, buildFlowRows, type CollabFlowEdge, type CollabAgentProgress } from '../lib/collabProgress'
-import { routeEdge, routePath, type CanvasPoint } from '../lib/collabRouting'
+import {
+  COLLAB_CANVAS_H, COLLAB_CANVAS_W, COLLAB_NODE_H, COLLAB_NODE_W,
+  routeEdge, routePath, type CanvasPoint,
+} from '../lib/collabRouting'
 import { AgentAvatar } from './AgentAvatar'
 
 /** 一个节点占的宽高（画布像素）。节点很小（头像 + 名字），细节都收进详情卡。 */
@@ -56,9 +59,62 @@ export function layoutFlowNodes<T extends { key: string }>(rows: { nodes: T[] }[
 }
 
 /**
- * 按编排画布保存的坐标还原版式：坐标原样照搬（不缩放），再整体平移让内容居中。
- * 不缩放是为了让连线能直接交给编排画布同一个路由器 —— 坐标一致、端口一致，
- * 两处画出来的线才是同一条；画布本身仍可平移 / 缩放，节点多了拖动看。
+ * 编辑器画布 → 进度画布的**等比投影**：节点位置与连线折点共用同一投影。
+ *
+ * 投影对两轴分别缩放（x × FLOW/COLLAB 宽比、y × 高比）：编辑器节点是 190×92，
+ * 进度节点是 132×88，于是编辑器节点的**端口锚点**投影后恰好落在进度小节点的
+ * 端口锚点上（如 bottom 口 (x+95, y+92) → (x'+66, y'+88)，66=95×132/190）——
+ * 连线必须用同一个投影，端口才能对准卡片。节点间距随之缩窄（×0.69），整体
+ * 版式与编辑器所见即所得。
+ */
+interface FlowProjection {
+  positions: Map<string, { x: number; y: number }>
+  width: number
+  height: number
+  /** 编辑器画布坐标 → 进度画布坐标（连线折点用同一投影，端口才对得准节点）。 */
+  project: (point: { x: number; y: number }) => { x: number; y: number }
+}
+
+function flowCanvasProjection<T extends { key: string; x?: number | null; y?: number | null }>(
+  nodes: T[],
+): FlowProjection | null {
+  const placed = nodes.filter((node) => typeof node.x === 'number' && typeof node.y === 'number')
+  if (placed.length === 0) return null
+  // 退化版式（所有节点挤在同一坐标，比如旧图没拖过、全是默认的 0,0）不算有效布局，
+  // 让调用方回退自动分层，免得节点全叠成一摞。
+  if (new Set(placed.map((node) => `${node.x},${node.y}`)).size <= 1) return null
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const node of placed) {
+    minX = Math.min(minX, node.x!)
+    minY = Math.min(minY, node.y!)
+    maxX = Math.max(maxX, node.x! + COLLAB_NODE_W)
+    maxY = Math.max(maxY, node.y! + COLLAB_NODE_H)
+  }
+  const scaleX = FLOW_NODE_W / COLLAB_NODE_W
+  const scaleY = FLOW_NODE_H / COLLAB_NODE_H
+  const project = (point: { x: number; y: number }) => ({
+    x: CANVAS_PAD + (point.x - minX) * scaleX,
+    y: CANVAS_PAD + (point.y - minY) * scaleY,
+  })
+  const positions = new Map(
+    placed.map((node) => [node.key, project({ x: node.x!, y: node.y! })] as const),
+  )
+  // 包围盒右下角：编辑器右下角投影后 = 末节点 x' + 132（190×scaleX=132），与进度节点实际占位一致。
+  const bottomRight = project({ x: maxX, y: maxY })
+  return {
+    positions,
+    width: bottomRight.x + CANVAS_PAD,
+    height: Math.max(bottomRight.y + CANVAS_PAD, 220),
+    project,
+  }
+}
+
+/**
+ * 按编排画布保存的坐标还原版式：坐标经 `flowCanvasProjection` 等比投影
+ * （节点间距缩窄、端口与连线共用同一投影，见该函数注释）。
  */
 export function layoutFlowNodesFromCanvas<T extends { key: string; x?: number | null; y?: number | null }>(
   nodes: T[],
@@ -67,39 +123,9 @@ export function layoutFlowNodesFromCanvas<T extends { key: string; x?: number | 
   width: number
   height: number
 } {
-  const positions = new Map<string, { x: number; y: number }>()
-  const placed = nodes.filter((node) => typeof node.x === 'number' && typeof node.y === 'number')
-  if (placed.length === 0) return { positions, width: 0, height: 0 }
-  // 退化版式（所有节点挤在同一坐标，比如旧图没拖过、全是默认的 0,0）不算有效布局，
-  // 让调用方回退自动分层，免得节点全叠成一摞。
-  if (new Set(placed.map((node) => `${node.x},${node.y}`)).size <= 1) {
-    return { positions: new Map(), width: 0, height: 0 }
-  }
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  for (const node of placed) {
-    const x = node.x!
-    const y = node.y!
-    positions.set(node.key, { x, y })
-    minX = Math.min(minX, x)
-    minY = Math.min(minY, y)
-    maxX = Math.max(maxX, x + FLOW_NODE_W)
-    maxY = Math.max(maxY, y + FLOW_NODE_H)
-  }
-  // 平移到从画布边距开始：编辑器坐标可能从任意位置开始，进度图统一归零再留边。
-  const offsetX = minX - CANVAS_PAD
-  const offsetY = minY - CANVAS_PAD
-  for (const at of positions.values()) {
-    at.x -= offsetX
-    at.y -= offsetY
-  }
-  return {
-    positions,
-    width: maxX - minX + CANVAS_PAD * 2,
-    height: Math.max(maxY - minY + CANVAS_PAD * 2, 220),
-  }
+  const projection = flowCanvasProjection(nodes)
+  if (!projection) return { positions: new Map(), width: 0, height: 0 }
+  return { positions: projection.positions, width: projection.width, height: projection.height }
 }
 
 /**
@@ -141,7 +167,15 @@ export function CollabFlowMap({ nodes, edges, onOpenNode }: Props) {
   const links = useMemo(() => buildFlowLinks(nodes, edges), [nodes, edges])
   // 优先还原编排画布保存的版式（主人拖成什么样就显示什么样）；
   // 旧图没存坐标时回退「一行一层」的自动分层。
-  const fromCanvas = useMemo(() => layoutFlowNodesFromCanvas(nodes), [nodes])
+  // 投影（project）保留下来给连线用：节点位置与折线走**同一个**编辑器→进度投影，
+  // 端口锚点才能精确对准小卡片。
+  const projection = useMemo(() => flowCanvasProjection(nodes), [nodes])
+  const fromCanvas = useMemo(
+    () => (projection
+      ? { positions: projection.positions, width: projection.width, height: projection.height }
+      : { positions: new Map(), width: 0, height: 0 }),
+    [projection],
+  )
   const useCanvasLayout = fromCanvas.positions.size === nodes.length && nodes.length > 0
   const { positions, width, height } = useMemo(
     () => (useCanvasLayout ? fromCanvas : layoutFlowNodes(rows)),
@@ -152,10 +186,23 @@ export function CollabFlowMap({ nodes, edges, onOpenNode }: Props) {
   // 画布版式下的连线：与编排画布（`CollabCanvas`）走**同一个路由器**（`lib/collabRouting.routeEdge`），
   // 端口方向、避障与多条线错开全部同源 —— 主人在协作组设定里把线画成什么样，这里就是什么样。
   // 逐条按边的顺序喂给路由器（与画布一致的 existingRoutes 累积），保证错开方式也一致。
+  //
+  // 路由用**编辑器的几何**（原始画布坐标 + 190×92 节点 + 1400×900 画布），算出折线后
+  // 经 `flowCanvasProjection.project` 等比映射回进度画布 —— 与节点位置同一个投影，
+  // 端口锚点精确对准小卡片。不能直接用 132×88 的小节点几何去路由：障碍矩形和
+  // 网格候选坐标会变，A* 在两套几何里挑中的最短路不同，编辑器里工整的线到进度
+  // 图里就「绕到节点上方」去了。
   const canvasRoutes = useMemo(() => {
-    if (!useCanvasLayout) return null
-    const byKey = new Map(nodes.map((node) => [node.key, positions.get(node.key) ?? { x: 0, y: 0 }]))
-    const placed = nodes.map((node) => ({ key: node.key, x: byKey.get(node.key)!.x, y: byKey.get(node.key)!.y }))
+    if (!useCanvasLayout || !projection) return null
+    const editorNodes = nodes
+      .map((node) => {
+        const at = projection.positions.get(node.key)
+        return at && typeof node.x === 'number' && typeof node.y === 'number'
+          ? { key: node.key, x: node.x, y: node.y }
+          : null
+      })
+      .filter((item): item is { key: string; x: number; y: number } => item !== null)
+    const byKey = new Map(editorNodes.map((node) => [node.key, node]))
     const previousRoutes: CanvasPoint[][] = []
     const paths = new Map<string, string>()
     links.forEach((link) => {
@@ -166,18 +213,16 @@ export function CollabFlowMap({ nodes, edges, onOpenNode }: Props) {
         edge: { from_side: link.fromSide ?? null, to_side: link.toSide ?? null },
         from,
         to,
-        nodes: placed,
+        nodes: editorNodes,
         existingRoutes: previousRoutes,
-        width,
-        height,
-        nodeW: FLOW_NODE_W,
-        nodeH: FLOW_NODE_H,
+        width: COLLAB_CANVAS_W,
+        height: COLLAB_CANVAS_H,
       })
       previousRoutes.push(points)
-      paths.set(link.id, routePath(points))
+      paths.set(link.id, routePath(points.map(projection.project)))
     })
     return paths
-  }, [useCanvasLayout, nodes, positions, links, width, height])
+  }, [useCanvasLayout, projection, nodes, links])
 
   // 详情卡定位收进视口：预估尺寸，画布小（比如手机）时也不飘出去。
   const POPOVER_W = 300

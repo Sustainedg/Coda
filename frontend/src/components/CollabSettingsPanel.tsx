@@ -26,6 +26,7 @@ import type {
   CollabEdge, CollabIssue, CollabNode, CollabTeam, AgentProfile, AgentType, Skill, McpServer,
 } from '../lib/types'
 import { AgentAvatar } from './AgentAvatar'
+import { TeamAvatarStack } from './TeamAvatarStack'
 
 interface Props {
   teamId?: string
@@ -187,6 +188,7 @@ export function CollabSettingsPanel({
           >
             <div className="chat-item-title">{item.name}</div>
             <div className="chat-item-meta">
+              <TeamAvatarStack team={item} agents={agents} size={20} max={3} />
               <span className={`pill ${item.validation.ok ? 'ok' : 'err'}`}>
                 {item.validation.ok ? '可运行' : `${item.validation.errors.length} 个问题`}
               </span>

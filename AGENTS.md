@@ -346,7 +346,7 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
   `src/index.css`（有守卫测试 `tests/test_mobile_web.py`），但可以复用 `src/lib/*` 与
   `DynamicForm` / `MessageView` / `MarkdownView` / `ConversationThread` / `CollabAgentThread` /
   `KernelLogo` / `TicketBoardKit` / `Composer` / `Icons` / `McpPicker` / `McpServerForm` /
-  `McpAssignPanel`
+  `McpAssignPanel` / `TeamAvatarStack` / `ConversationExportForm`
   这些纯展示组件（对话气泡只有 `MessageView` 一份，线程装配只有 `ConversationThread` 一份）。
 - **两端功能对齐、交互各表**：桌面端有的能力（例如协作组编排）移动端也要能用，但按触屏重做交互 ——
   移动端**不引用**桌面端的编排画布（`components/CollabCanvas` 等），协作组改用表单式编辑
@@ -409,13 +409,17 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
 - **朗读（语音合成）只有一份实现**：`src/lib/tts.ts`（开关存在 localStorage 的 `coda.tts`，
   **默认关闭**；开启后新回复会被念出来，Markdown 先转成纯文本）。两个 iOS 坑必须一起处理：
   ① 首次发声要在**用户手势里**解锁（点开关时 `unlockSpeech()`）；② 打断上一条时 `cancel()` 与
-  `speak()` 不能在同一轮里（iOS 会吞掉），要丢到下一个任务。对话页顶栏右上角只有「分享 + 朗读」
+  `speak()` 不能在同一轮里（iOS 会吞掉），要丢到下一个任务。对话页顶栏右上角只有「导出 + 朗读」
   两个按钮 —— **不要再往顶栏塞「⋯」**。桌面端左侧栏对话行只放「✎ 重命名 / 🗑 删除」两枚悬停图标，
   不再有「⋯」与会话操作弹窗（手机抽屉的「⋯」仍保留其余会话操作）。
   **清除智能体记忆用输入框里的 `/clear` 命令**：两端在提交时拦下它，调 `resetSession` 后给一条提示，
   不把它当正文发给智能体。
-- **分享成长图**：`src/lib/shareImage.ts`（Canvas 手绘，不引依赖）：对话页顶栏的分享按钮把当前
-  对话渲染成 PNG，优先走 `navigator.share({ files })`，不支持就退回下载。
+- **导出对话**：对话页顶栏的导出按钮打开 `components/ConversationExportForm.tsx`（两端共用），
+  可选「图片 / Markdown」×「对话内容 / 完整数据（含思考与工具调用）」。图片由
+  `src/lib/shareImage.ts`（Canvas 手绘，不引依赖）渲染成长图；Markdown 由
+  `src/lib/conversationExport.ts` 的 `buildConversationMarkdown()` 生成；两者都经
+  `src/lib/download.ts` 落盘（导出与技能下载共用这一份）。消息组装统一走
+  `buildExportMessages()`，页面不要另写一套导出格式。
 - **安装归「内核管理」，配置归「智能体」**：一个内核 = 一份安装 + N 个智能体，所以内核的
   安装 / 更新 / 卸载留在**设置 → 内核管理**（原「运行时」，只是界面这一栏改名；代码里的
   `runtime/` / `provisioner` / `/api/runtimes` 等标识符不变），智能体（网关 · 模型 · 人格 · 技能 ·

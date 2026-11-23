@@ -107,7 +107,7 @@ export function SpeakerIcon({ on = false, ...props }: IconProps & { on?: boolean
   )
 }
 
-/** 分享：一个方框 + 向上的箭头（把对话导出成长图）。 */
+/** 导出：一个方框 + 向上的箭头（打开导出弹窗，可选图片 / Markdown）。 */
 export function ShareIcon(props: IconProps) {
   return (
     <Icon {...props}>

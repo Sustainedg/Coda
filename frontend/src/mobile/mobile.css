@@ -234,7 +234,7 @@ code, pre, .mono { font-family: var(--mono); }
 .m-topbar-title { font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 6px; min-width: 0; }
 .m-topbar-sub { font-size: 11px; color: var(--text-dim); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 标题居中（对话页用）：脱离文档流，按内容区垂直居中、水平居中；左右各留出按钮的位置，
-   长标题从中间向两边省略，永远不会压到菜单按钮或分享 / 朗读上。 */
+   长标题从中间向两边省略，永远不会压到菜单按钮或导出 / 朗读上。 */
 .m-topbar.centered { position: relative; }
 .m-topbar-centered {
   position: absolute; left: 0; right: 0;
@@ -436,6 +436,9 @@ code, pre, .mono { font-family: var(--mono); }
 .btn.danger { color: var(--danger); border-color: rgba(248, 113, 113, 0.35); background: rgba(248, 113, 113, 0.08); }
 .btn.sm { min-height: 32px; padding: 5px 11px; font-size: 12.5px; }
 .btn.block { width: 100%; }
+/* 导出弹层底部的「取消 / 导出」：手机上跟 m-sheet-foot 一样等分排开 */
+.export-actions { display: flex; gap: 9px; }
+.export-actions .btn { flex: 1; }
 
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field-label { font-size: 12.5px; font-weight: 550; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
@@ -1425,6 +1428,32 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .zoomable img { display: block; max-width: 100%; }
 .zoomable:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+/* ================= 协作组头像：成员头像堆叠（像微信群聊那样，两端共用这一份）================= */
+/* 组件 components/TeamAvatarStack.tsx：把协作组里的智能体头像从左到右叠成一摞，
+   超出的收进「+N」圆片。协作组不存头像，永远跟着智能体的头像走。
+   尺寸由组件内联给出；这里只管叠压顺序与描边 —— 外圈描边用卡片底色，
+   后一张盖住前一张的右半边时才分得开。两端样式各一份，改一边记得同步另一边。 */
+.team-avatar-stack { display: flex; align-items: center; flex: none; }
+.team-avatar-stack .team-avatar-stack-item {
+  margin-left: calc(var(--team-avatar-offset, 0px) - var(--team-avatar-size, 0px));
+  border: 2px solid var(--bg-panel);
+  box-sizing: border-box;
+  background: var(--bg-elevated);
+}
+/* 第一张不吃负边距，整摞从左缘开始 */
+.team-avatar-stack .team-avatar-stack-item:first-child { margin-left: 0; }
+/* 溢出圆片：「+N」比头像略深一点，一眼看出是「还有几个」而不是某个人 */
+.team-avatar-stack .team-avatar-stack-more {
+  display: grid; place-items: center; border-radius: 50%;
+  color: var(--text-muted); font-weight: 600; line-height: 1;
+  background: var(--bg-hover);
+}
+/* 没有成员时的兜底图标（新组 / 智能体列表还没到）：同样大小的圆片 */
+.team-avatar-stack.empty {
+  display: grid; place-items: center; border-radius: 50%;
+  background: var(--bg-panel); border: 1px solid var(--border);
+}
 
 /* 全屏看原图：蒙层铺满，图片居中且不超出视口；点蒙层或按 Esc 关闭 */
 .img-lightbox {

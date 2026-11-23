@@ -154,7 +154,11 @@ async def list_conversations(
     }
 
     # 排序口径与参与者组装是业务口径，放在 runtime/conversations.py；这里只负责序列化。
-    ordered = order_by_recent_activity(rows, latest)
+    # 「正在回复」的对话整组置顶：一轮长回复期间新开的对话不能把它挤下去，所以排序要
+    # 先按运行表分组，组内才比最近活动时间。
+    active_runs = registry.list(owner_id=None if user.role == "admin" else user.id)
+    running_ids = {run["conversation_id"] for run in active_runs}
+    ordered = order_by_recent_activity(rows, latest, running_ids)
 
     items = []
     for conversation in ordered:
@@ -171,7 +175,7 @@ async def list_conversations(
                 participants,
             ).model_dump()
         )
-    return {"items": items, "active_runs": registry.list()}
+    return {"items": items, "active_runs": active_runs}
 
 
 @router.post("/{conversation_id}/read", status_code=204)

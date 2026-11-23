@@ -11,6 +11,7 @@ import {
   previewRoute, routeEdge, routeLabelPoint, routePath, type CanvasPoint,
 } from '../lib/collabRouting'
 import type { CollabEdge, CollabEdgeKind, CollabIssue, CollabNode, AgentProfile } from '../lib/types'
+import { AgentAvatar } from './AgentAvatar'
 
 export interface CollabSelection {
   kind: 'node' | 'edge'
@@ -308,7 +309,16 @@ export function CollabCanvas({ nodes, edges, agents, entryKey, selected, issues,
                 }}
               >
                 <div className="collab-node-head">
-                  <span className="collab-node-avatar">{agent?.avatar ?? '🤖'}</span>
+                  {/* 与左栏列表 / 节点详情卡同一个头像组件：自定义图 > 头像包 > emoji 三层回退，
+                      换了头像这里同步显示（原来只认 emoji 字段，会一直显示旧头像）。 */}
+                  <AgentAvatar
+                    avatar={agent?.avatar}
+                    avatarPreset={agent?.avatar_preset}
+                    avatarFile={agent?.avatar_file}
+                    agentId={agent?.id}
+                    size={18}
+                    className="collab-node-avatar"
+                  />
                   <span className="collab-node-label">{node.label || agent?.name || node.key}</span>
                   {entryKey === node.key && <span className="collab-node-entry" title="入口节点（唯一能与用户对话）">★</span>}
                 </div>

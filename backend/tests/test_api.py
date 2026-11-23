@@ -292,6 +292,53 @@ async def test_conversation_list_is_recent_first_and_shows_participants(client: 
     assert [p["id"] for p in detail["conversation"]["participants"]] == [home["id"], guest["id"]]
 
 
+async def test_conversation_list_puts_running_conversations_first(client: httpx.AsyncClient):
+    """AI 还在回复的对话整组置顶，组内与已完成组内都按最近活动倒序。
+
+    一轮长回复期间用户可能又开了新对话；只按时间排会把还在出字的那条挤下去。
+    判定「在跑」看运行表（``registry``），不看最后一条消息的 ``streaming`` 状态。
+    """
+    agent = await make_agent(client)
+    running = (await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})).json()
+    newer = (await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})).json()
+    oldest = (await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})).json()
+    t_oldest = datetime(2021, 1, 1, tzinfo=timezone.utc)
+    t_running = datetime(2021, 1, 2, tzinfo=timezone.utc)
+    t_newer = datetime(2021, 1, 3, tzinfo=timezone.utc)
+
+    async with SessionLocal() as session:
+        for conversation_id, moment in (
+            (oldest["id"], t_oldest),
+            (running["id"], t_running),
+            (newer["id"], t_newer),
+        ):
+            row = await session.get(Conversation, conversation_id)
+            row.updated_at = moment
+            session.add(row)
+            session.add(
+                Message(conversation_id=conversation_id, role="user", content="hi", created_at=moment)
+            )
+        await session.commit()
+
+    # 没有运行：纯按最近活动倒序。
+    items = (await client.get("/api/conversations")).json()["items"]
+    assert [item["id"] for item in items] == [newer["id"], running["id"], oldest["id"]]
+
+    # running 虽然时间最早，但还在回复 —— 整组置顶；两个已完成组内仍按时间倒序。
+    run = registry.register(running["id"], agent["name"])
+    try:
+        snapshot = (await client.get("/api/conversations")).json()
+        assert [item["id"] for item in snapshot["items"]] == [running["id"], newer["id"], oldest["id"]]
+        # 置顶只靠运行表，`active_runs` 照旧返回（前端画旋转小环 + 排兜底都用它）。
+        assert [item["conversation_id"] for item in snapshot["active_runs"]] == [running["id"]]
+    finally:
+        registry.finish(run)
+
+    # 回复结束：回到纯时间序，不会因为曾经跑过就赖在顶上。
+    after = (await client.get("/api/conversations")).json()["items"]
+    assert [item["id"] for item in after] == [newer["id"], running["id"], oldest["id"]]
+
+
 async def test_run_continues_after_the_client_disconnects(client: httpx.AsyncClient):
     """断开 SSE 订阅只是「不看了」，后台那一轮运行必须继续跑完并落库。"""
     agent = await make_agent(client, options={**cli_options("sess-42", "0.12")})

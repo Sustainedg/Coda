@@ -507,7 +507,14 @@ async def test_skills_api_lists_rescans_and_shows_detail(client: httpx.AsyncClie
     assert (await client.get("/api/skills")).json()["items"] == []
 
     result = (await client.post("/api/skills/rescan")).json()
-    assert result == {"added": 2, "updated": 0, "missing": 0, "total": 2}
+    assert result == {
+        "added": 2,
+        "updated": 0,
+        "missing": 0,
+        "removed": 0,
+        "unassigned": 0,
+        "total": 2,
+    }
 
     items = (await client.get("/api/skills")).json()["items"]
     assert [item["slug"] for item in items] == ["alpha", "beta"]
@@ -528,11 +535,123 @@ async def test_skills_api_lists_rescans_and_shows_detail(client: httpx.AsyncClie
 
     assert (await client.get("/api/skills/nope")).status_code == 404
 
-    # 目录消失后只标记失效，不删记录（智能体分配不会断链）。
+    # 目录消失后：没有任何分配的技能直接从编目清理（无分配可断链，
+    # 不在列表里堆「未扫描到」的死条目）；目录恢复时重扫会重新登记。
     skill_service.shutil.rmtree(catalog / "alpha")
-    assert (await client.post("/api/skills/rescan")).json()["missing"] == 1
+    result = (await client.post("/api/skills/rescan")).json()
+    assert result["removed"] == 1
+    assert result["missing"] == 0
     items = (await client.get("/api/skills")).json()["items"]
-    assert next(item for item in items if item["slug"] == "alpha")["available"] is False
+    assert [item["slug"] for item in items] == ["beta"]
+    assert (await client.get("/api/skills/custom-cli:alpha")).status_code == 404
+
+
+async def test_gone_skill_assignment_is_removed_with_it(
+    client: httpx.AsyncClient, catalog: Path
+):
+    """技能目录消失时，指向它的智能体分配也随之解除（不留幽灵引用）。"""
+    await client.post("/api/skills/rescan")
+    agent = await make_agent(client)
+    await client.put(f"/api/agents/{agent['id']}/skills", json={"skill_ids": ["custom-cli:alpha"]})
+
+    skill_service.shutil.rmtree(catalog / "alpha")
+    result = (await client.post("/api/skills/rescan")).json()
+    assert result["removed"] == 1
+    assert result["unassigned"] == 1
+    assert result["missing"] == 0
+
+    # 编目行没了，智能体的技能列表里也不再出现它。
+    assert (await client.get("/api/skills/custom-cli:alpha")).status_code == 404
+    listed = (await client.get(f"/api/agents/{agent['id']}")).json()
+    assert "custom-cli:alpha" not in listed["skill_ids"]
+
+
+async def test_scan_miss_keeps_assignments(
+    client: httpx.AsyncClient, catalog: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """适配器这一轮没扫到（目录还在）时只标失效，不能把分配清掉。"""
+    await client.post("/api/skills/rescan")
+    agent = await make_agent(client)
+    await client.put(f"/api/agents/{agent['id']}/skills", json={"skill_ids": ["custom-cli:alpha"]})
+
+    # 模拟扫描落空：目录仍然存在，但没有 discover 出任何技能。
+    monkeypatch.setattr(skill_service, "discover_catalog", lambda: {})
+    result = (await client.post("/api/skills/rescan")).json()
+    assert result["missing"] == 2
+    assert result["removed"] == 0
+    assert result["unassigned"] == 0
+
+    items = (await client.get("/api/skills")).json()["items"]
+    assert all(item["available"] is False for item in items)
+    listed = (await client.get(f"/api/agents/{agent['id']}")).json()
+    assert "custom-cli:alpha" in listed["skill_ids"]
+
+
+async def test_missing_skill_root_keeps_assignments(
+    client: httpx.AsyncClient, catalog: Path
+):
+    """技能根整个不在（数据卷没挂上）时，这一轮无法判断，不能清掉分配。"""
+    await client.post("/api/skills/rescan")
+    agent = await make_agent(client)
+    await client.put(f"/api/agents/{agent['id']}/skills", json={"skill_ids": ["custom-cli:alpha"]})
+
+    # 连同技能根一起消失：不能把「根不可用」当成「技能被删」。
+    skill_service.shutil.rmtree(catalog)
+    result = (await client.post("/api/skills/rescan")).json()
+    assert result["removed"] == 0
+    assert result["unassigned"] == 0
+    assert result["missing"] == 2
+
+    listed = (await client.get(f"/api/agents/{agent['id']}")).json()
+    assert "custom-cli:alpha" in listed["skill_ids"]
+
+
+async def test_corrupt_library_owner_does_not_break_rescan(client: httpx.AsyncClient):
+    """库里的归属被改坏时，重扫要跳过引用登记清理，不能让整个编目 500。"""
+    from app.models import Skill
+
+    async with SessionLocal() as session:
+        session.add(
+            Skill(
+                id="custom-cli:lib:bad/id:alpha",
+                type_id="custom-cli",
+                slug="alpha",
+                name="归属损坏的技能",
+                source_kind="user",
+                owner_id="bad/id",
+                path="/nonexistent",
+                available=False,
+            )
+        )
+        await session.commit()
+
+    response = await client.post("/api/skills/rescan")
+    assert response.status_code == 200
+    assert response.json()["removed"] >= 1
+
+
+async def test_gone_library_skill_is_pruned_with_its_mounts(
+    client: httpx.AsyncClient, transfer_home: Path
+):
+    """用户技能库实体目录消失：编目行、智能体分配与 `.mounts.json` 引用一起清掉。"""
+    library = skill_service.get_settings().skill_libraries_root / "local"
+    write_skill(library, "alpha")
+    skill_service.write_library_mounts(library, {"alpha": ["custom-cli"]})
+    await client.post("/api/skills/rescan")
+
+    agent = await make_agent(client)
+    await client.put(
+        f"/api/agents/{agent['id']}/skills",
+        json={"skill_ids": ["custom-cli:lib:local:alpha"]},
+    )
+    skill_service.shutil.rmtree(library / "alpha")
+    result = (await client.post("/api/skills/rescan")).json()
+    assert result["removed"] == 1
+    assert result["unassigned"] == 1
+    assert skill_service.read_library_mounts(library) == {}
+    assert (await client.get("/api/skills/custom-cli:lib:local:alpha")).status_code == 404
+    listed = (await client.get(f"/api/agents/{agent['id']}")).json()
+    assert "custom-cli:lib:local:alpha" not in listed["skill_ids"]
 
 
 async def test_removed_market_skills_are_hidden_from_list(client: httpx.AsyncClient):
@@ -561,6 +680,9 @@ async def test_removed_market_skills_are_hidden_from_list(client: httpx.AsyncCli
         item["slug"]
         for item in (await client.get("/api/skills", params={"available": False})).json()["items"]
     ] == ["gone-market"]
+    # 重扫时没有任何分配的失效行会被直接清理，不再永远躺在表里。
+    assert (await client.post("/api/skills/rescan")).json()["removed"] >= 1
+    assert (await client.get("/api/skills", params={"available": False})).json()["items"] == []
 
 
 async def test_delete_non_system_skill_removes_dir_and_assignment(
@@ -970,8 +1092,8 @@ async def test_export_skill_returns_zip(client: httpx.AsyncClient, transfer_home
 
 async def test_export_missing_directory_is_reported(client: httpx.AsyncClient, catalog: Path):
     await client.post("/api/skills/rescan")
+    # 目录在两次重扫之间被外部删掉：编目行还在，导出时按「目录已不存在」报错。
     skill_service.shutil.rmtree(catalog / "alpha")
-    await client.post("/api/skills/rescan")
 
     response = await client.get("/api/skills/custom-cli:alpha/export")
     assert response.status_code == 422

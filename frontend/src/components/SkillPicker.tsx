@@ -82,7 +82,7 @@ export function SkillPicker({ skills, selected, onChange }: Props) {
               <span className="skill-option-body">
                 <span className="skill-option-name">
                   {skill.name}
-                  {!skill.available && <span className="pill err">目录已消失</span>}
+                  {!skill.available && <span className="pill err">未扫描到</span>}
                 </span>
                 <span className="dim small">{skill.description || '（无描述）'}</span>
               </span>

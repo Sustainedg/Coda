@@ -743,8 +743,11 @@ def _resolve_skill(name_or_id: Any, config: dict[str, Any]) -> dict[str, Any]:
 )
 def skill_rescan(arguments: dict[str, Any], config: dict[str, Any]) -> str:
     data = call_api(config, "POST", "/skills/rescan", body={})
-    return f"扫描完成：新增 {data.get('created', 0)}、更新 {data.get('updated', 0)}、"
-    f"移除 {data.get('removed', 0)}。"
+    return (
+        f"扫描完成：新增 {data.get('added', 0)}、更新 {data.get('updated', 0)}、"
+        f"清理已消失 {data.get('removed', 0)}、解除分配 {data.get('unassigned', 0)}、"
+        f"未扫描到 {data.get('missing', 0)}。"
+    )
 
 
 @tool(

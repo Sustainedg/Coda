@@ -235,7 +235,9 @@ class Skill(SQLModel, table=True):
 
     ``id`` 是稳定标识：共享技能为 ``<type_id>:<slug>``，用户技能为
     ``<type_id>:lib:<owner_id 或 local>:<slug>``（同一 slug 在不同用户下互不冲突）。
-    技能目录暂时消失时只把 ``available`` 置为 False，不删行，这样历史分配关系不会断。
+    技能目录**确实消失**时重扫会解除 ``agent_skills`` 分配并删掉这一行；只有「目录还在、
+    这一轮没扫到」才把 ``available`` 置为 False（保住分配），等下一轮恢复。技能根
+    （父目录）本身也不在时按「这一轮无法判断」处理，同样只标失效、不动分配。
     """
 
     __tablename__ = "skills"

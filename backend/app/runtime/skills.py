@@ -377,7 +377,12 @@ async def rescan(session: AsyncSession) -> dict[str, int]:
 
     先做一次（幂等的）旧布局迁移：``<owner>/<type>/<slug>`` → ``<owner>/<slug>``
     并补齐引用登记，否则升级上来的技能库会扫不到。
-    目录消失的技能只标记 ``available=False``，不删除记录，避免智能体分配断链。
+    技能目录**真的从磁盘上消失**时，连同 ``agent_skills`` 里的分配一起清掉 ——
+    技能都没了，分配就是幽灵引用（运行时本来也会跳过），留着只会让智能体的
+    技能列表和磁盘对不上。只有「目录还在、只是这次没扫到」（适配器扫失败等）
+    才保留编目行并标记 ``available=False``，免得一次扫描落空就把分配全清了；
+    连技能根（父目录）都不在时同样按「这一轮无法判断」处理，不动分配
+    （见 :func:`_skill_dir_gone`）。
     """
     owners = await _library_owners(session)
     try:
@@ -408,15 +413,116 @@ async def rescan(session: AsyncSession) -> dict[str, int]:
             row.updated_at = now
             updated += 1
 
-    missing = 0
+    gone: list[Skill] = []  # 目录真的从磁盘上没了、技能根还在：连分配一起清
+    missing = 0  # 这一轮没扫到（目录还在或技能根暂不可用）：只标失效，不动分配
     for skill_id, row in rows.items():
-        if skill_id not in discovered and row.available:
+        if skill_id in discovered:
+            continue
+        if _skill_dir_gone(row):
+            gone.append(row)
+        elif row.available:
             row.available = False
             row.updated_at = now
             missing += 1
 
+    removed, unassigned, prunable = await _purge_gone_skills(session, gone)
+
     await session.commit()
-    return {"added": added, "updated": updated, "missing": missing, "total": len(discovered)}
+    # 磁盘登记在事务提交之后再摘：提交失败时不能留下「库里有行、登记已删」的错位。
+    _prune_stale_library_mounts(prunable)
+    return {
+        "added": added,
+        "updated": updated,
+        "missing": missing,
+        "removed": removed,
+        "unassigned": unassigned,
+        "total": len(discovered),
+    }
+
+
+def _skill_dir_gone(row: Skill) -> bool:
+    """技能目录是否**真的**从磁盘上没了（区别于「这次扫描没扫到」）。
+
+    以磁盘为准，但要区分两种「不存在」：
+
+    * 技能目录没了、它所在的技能根还在 —— 技能确实被删了，可以清编目与分配；
+    * 连技能根（父目录）都不在了 —— 可能是数据卷 / 内核配置目录暂时没挂上，
+      这一轮无法判断，按「没扫到」处理，只标失效、**不动分配**，免得一次
+      扫描落空就把用户的分配全清掉。
+
+    路径为空串（异常数据）同样不当作「已消失」，避免误删分配。
+    """
+    path = Path(row.path)
+    if not path.name:
+        return False
+    return not path.is_dir() and path.parent.is_dir()
+
+
+async def _purge_gone_skills(
+    session: AsyncSession, gone: list[Skill]
+) -> tuple[int, int, list[tuple[str | None, str]]]:
+    """目录已从磁盘消失的技能：解除智能体分配并删除编目行。
+
+    返回 ``(删除的行数, 解除的分配数, 待清理引用登记的用户技能)``。技能本体都没了，
+    指向它的分配就是幽灵引用（运行时本来也会跳过），留着只会让智能体的技能列表和
+    磁盘对不上。技能重新出现后重扫会重新登记，但分配要重新勾选 —— 这是技能消失后
+    必然的结果。
+
+    引用登记（``.mounts.json``）由调用方在事务提交后再摘：提交失败时不能留下
+    「库里有行、登记已删」的错位；而且提交后的 ORM 行已被删除，不能再读属性。
+    """
+    if not gone:
+        return 0, 0, []
+    prunable = [(row.owner_id, row.slug) for row in gone if is_library_row(row)]
+    ids = [row.id for row in gone]
+    result = await session.execute(delete(AgentSkill).where(AgentSkill.skill_id.in_(ids)))
+    unassigned = result.rowcount or 0
+    for row in gone:
+        await session.delete(row)
+    return len(gone), unassigned, prunable
+
+
+def _prune_stale_library_mounts(entries: list[tuple[str | None, str]]) -> None:
+    """实体目录已消失的用户技能：把 ``.mounts.json`` 里的失效引用登记摘掉。
+
+    留着就是「幽灵引用」——以后导入同名技能会被错误地挂到这些内核上。
+    只处理调用方确认过「技能目录不存在、但技能根还在」的条目；技能库根目录本身
+    不见了（数据卷没挂上）或归属被改坏时一律不动登记，免得把用户的引用清单清空。
+    """
+    prunable: dict[str | None, set[str]] = {}
+    for owner_id, slug in entries:
+        prunable.setdefault(owner_id, set()).add(slug)
+
+    for owner_id, slugs in prunable.items():
+        try:
+            owner_dir = library_root(owner_id)
+        except SkillError:
+            # 库里的归属被改坏时跳过这一行，不能让整个编目失败（与 _library_owners 一致）。
+            logger.warning("技能库归属不合法，跳过引用登记清理：%r", owner_id)
+            continue
+        if not owner_dir.is_dir():
+            # 根目录都不在：可能是数据卷暂时不可用，不能据此清空引用登记。
+            continue
+        mounts = read_library_mounts(owner_dir)
+        gone: list[str] = []
+        for slug in sorted(slugs):
+            try:
+                if library_skill_dir(owner_id, slug).is_dir():
+                    continue  # 目录还在：登记不能动
+            except SkillError:
+                continue
+            if slug in mounts:
+                gone.append(slug)
+        if not gone:
+            continue
+        for slug in gone:
+            mounts.pop(slug, None)
+        try:
+            write_library_mounts(owner_dir, mounts)
+        except OSError as exc:
+            logger.warning("清理技能库引用登记 %s 失败：%s", owner_dir, exc)
+            continue
+        logger.info("技能库 %s 已清理失效引用登记：%s", owner_dir, "、".join(gone))
 
 
 async def list_rows(
@@ -446,8 +552,8 @@ async def list_rows(
         statement = statement.where(Skill.available == available)  # noqa: E712
     else:
         # 市场技能被卸载、插件技能随插件卸载后目录就没了，它们不该再出现在技能列表里
-        # （用户看到的「已卸载」）。内核自带技能目录消失时仍保留一行并显示「目录已消失」，
-        # 提示分配关系需要清理。
+        # （用户看到的「已卸载」）。``available=False`` 现在只表示「目录还在、这一轮
+        # 没扫到」（技能根暂时不可用 / 扫描失败），列表里显示为「未扫描到」，分配不受影响。
         statement = statement.where(
             or_(
                 Skill.source_kind.not_in(HIDDEN_WHEN_MISSING),  # type: ignore[attr-defined]
@@ -477,7 +583,7 @@ async def get_row(session: AsyncSession, skill_id: str) -> Skill | None:
 READONLY_SOURCES = frozenset({"system", "plugin"})
 
 #: 目录消失后就不该再出现在列表里的来源：它们跟着「卸载」动作整体消失，
-#: 留一行「目录已消失」只会误导（也删不掉）。内核自带技能仍保留，提示要清理分配。
+#: 留一行「未扫描到」只会误导（也删不掉）。内核自带技能仍保留一行，方便排查。
 HIDDEN_WHEN_MISSING = frozenset({MARKET_SOURCE, "plugin"})
 
 

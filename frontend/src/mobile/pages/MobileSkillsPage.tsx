@@ -92,7 +92,11 @@ function MobileSkillsLocal() {
     setNotice(null)
     try {
       const result = await api.rescanSkills()
-      setNotice(`扫描完成：新增 ${result.added}、更新 ${result.updated}、目录已消失 ${result.missing}，共 ${result.total}`)
+      setNotice(
+        `扫描完成：新增 ${result.added}、更新 ${result.updated}、` +
+          `清理已消失 ${result.removed}（解除分配 ${result.unassigned}）、` +
+          `未扫描到 ${result.missing}，共 ${result.total}`,
+      )
       await reload({ source_kind: sourceKind || undefined, q: query || undefined })
     } catch (e) {
       setError(describeError(e))
@@ -258,7 +262,7 @@ function MobileSkillsLocal() {
                       <span className="m-item-title">{skill.name}</span>
                       <span className="m-item-sub">{skill.description || '（无描述）'}</span>
                     </span>
-                    <span className="pill">{skill.available ? skill.source_label : '目录已消失'}</span>
+                    <span className="pill">{skill.available ? skill.source_label : '未扫描到'}</span>
                     {skill.owner_name && !skill.is_own && (
                       <span className="pill">用户 {skill.owner_name}</span>
                     )}
@@ -293,7 +297,7 @@ function MobileSkillsLocal() {
               <div className="m-skill-kicker">
                 <span className="pill brand">{selected.source_label}</span>
                 <span className="m-skill-kernel">{selected.type_name ?? selected.type_id}</span>
-                {!selected.available && <span className="pill err">目录已消失</span>}
+                {!selected.available && <span className="pill err">未扫描到</span>}
               </div>
               <h2 className="m-skill-title">{selected.name}</h2>
               {selected.description && <p className="m-skill-desc">{selected.description}</p>}

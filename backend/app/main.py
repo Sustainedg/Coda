@@ -71,7 +71,8 @@ async def _scan_skills(session) -> None:
         result = await skill_service.rescan(session)
         summary = (
             f"技能编目完成：新增 {result['added']}、更新 {result['updated']}、"
-            f"目录已消失 {result['missing']}、共 {result['total']}"
+            f"清理已消失 {result['removed']}、解除分配 {result['unassigned']}、"
+            f"保留失效 {result['missing']}、共 {result['total']}"
         )
         logger.info("%s", summary)
     except Exception:  # noqa: BLE001 - 界面里还有「重新扫描」按钮可以重试

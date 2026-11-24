@@ -78,7 +78,8 @@ export function SkillsPage() {
       const result = await api.rescanSkills()
       const summary =
         `扫描完成：新增 ${result.added} · 更新 ${result.updated} · ` +
-        `目录已消失 ${result.missing} · 共 ${result.total}`
+        `清理已消失 ${result.removed}（解除分配 ${result.unassigned}） · ` +
+        `未扫描到 ${result.missing} · 共 ${result.total}`
       setNotice(summary)
       await reload({ source_kind: sourceKind || undefined, q: query || undefined })
     } catch (e) {
@@ -265,7 +266,7 @@ export function SkillsPage() {
                   <div className="chat-item-title">{skill.name}</div>
                   <div className="chat-item-meta">
                     <span className={`pill${skill.available ? '' : ' err'}`}>
-                      {skill.available ? skill.source_label : '目录已消失'}
+                      {skill.available ? skill.source_label : '未扫描到'}
                     </span>
                     {skill.owner_name && !skill.is_own && (
                       <span className="pill">用户 {skill.owner_name}</span>
@@ -371,7 +372,7 @@ function SkillDetailPane({
           <div className="skill-detail-eyebrow">
             <span className="pill brand">{skill.source_label}</span>
             <span className="skill-detail-kernel">{kernel}</span>
-            {!skill.available && <span className="pill err">目录已消失</span>}
+            {!skill.available && <span className="pill err">未扫描到</span>}
           </div>
           <div className="skill-detail-buttons">
             <button

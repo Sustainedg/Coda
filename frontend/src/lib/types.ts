@@ -400,7 +400,12 @@ export interface SkillDetail extends Skill {
 export interface SkillRescanResult {
   added: number
   updated: number
+  /** 这一轮没扫到（目录还在，或技能根暂时不可用），被标记为失效的条目数（保留分配） */
   missing: number
+  /** 目录已从磁盘消失、被重扫自动清掉的条目数 */
+  removed: number
+  /** 因技能消失而一并解除的智能体分配数 */
+  unassigned: number
   total: number
 }
 

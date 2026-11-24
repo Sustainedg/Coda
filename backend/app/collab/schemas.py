@@ -421,6 +421,9 @@ class RunRead(BaseModel):
 
 
 class RunDetail(RunRead):
+    #: 这次运行实际使用的那张图（第一次推进时冻结的快照；还没开跑的老运行是协作组现图）。
+    #: 界面上的进度图与岗位名都按它渲染，改协作组不会让老运行的图张冠李戴。
+    graph: GraphSpec = Field(default_factory=GraphSpec)
     tickets: list[TicketRead] = Field(default_factory=list)
     steps: list[StepRead] = Field(default_factory=list)
     #: 入口智能体与用户的一对一对话；与工单步骤分开保存、在界面上按时间合并展示

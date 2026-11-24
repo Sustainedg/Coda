@@ -57,9 +57,18 @@ node scripts/fetch-python.mjs        # 下载 python-build-standalone → build/
 node scripts/prepare-python-deps.mjs # 后端依赖预装进该解释器 + 离线 wheelhouse（需联网）
 node scripts/fetch-node.mjs          # 下载官方 Node 24 LTS（校验 sha256）→ build/node-runtime/<arch>/
 node scripts/prepare-backend.mjs     # 确保 frontend/dist 存在
-npm run compile
-npx electron-builder --publish never # 产物在 release/
+npm run build                        # = check:runtimes → compile → electron-builder（产物在 release/）
 ```
+
+`npm run build` 先核对内嵌运行时：缺 `build/*-runtime/<arch>/` 会当场失败并给出补跑命令
+（electron-builder 自己只打警告，缺了会出「装内核必报未找到命令」的坏包）。
+mac 默认同时核对 arm64 + x64，与 `electron-builder.yml` 的双架构配置一致。
+
+> **macOS 本地打包**要两个架构的运行时都在：上面的 `fetch-python.mjs` / `fetch-node.mjs`
+> 不带参数时只抓**当前机器**那一个架构，直接跑 `npm run build` 会在 `check:runtimes` 处失败。
+> Apple Silicon / Intel 机器请各跑两次：
+> `node scripts/fetch-python.mjs mac-arm64 && node scripts/fetch-python.mjs mac-x64`
+> （Node 同理），或照报错提示补跑缺失的那个。
 
 - **Windows**：NSIS 安装器（x64）；未签名时 SmartScreen 会拦，文档引导「仍要运行」
 - **macOS**：DMG + zip（arm64 + x64）；未签名构建会自动做 **ad-hoc 签名**，

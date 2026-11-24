@@ -16,6 +16,7 @@ import { spawnBackend, watchBackendRestart, type BackendHandle } from './backend
 import { ensurePythonRuntime } from './pythonRuntime';
 import { bootstrapBundledBackend } from './bootstrap';
 import { ensureLayout, dataDir, installLogPath, pythonRuntimeDir } from './paths';
+import { bundledNodeBinDir, bundledNodeVersion } from './runtimeEnv';
 import {
   checkForUpdatesManually,
   disposeAutoUpdate,
@@ -249,6 +250,14 @@ async function main(): Promise<void> {
     // 目录布局：数据目录 / Python 运行时 / 版本目录都要在起后端之前建好。
     // 放进 try 里：创建失败要弹「启动失败」并带上具体路径与原因，不能静默卡在启动页。
     ensureLayout();
+    // 启动自检：内核安装（npm）与内核本身都靠内置 Node，缺了要在日志里一眼看到，
+    // 否则用户只会拿到「未找到命令 node」这种没有指向的报错。
+    // 注意打印的是**可执行文件目录**，与 PATH 里实际前置的目录保持一致。
+    const nodeVersion = bundledNodeVersion();
+    process.stdout.write(
+      `[desktop] 内置 Node：${bundledNodeBinDir() ?? '未找到（回退到系统 PATH）'}` +
+        `${nodeVersion ? ` / ${nodeVersion}` : ''}\n`,
+    );
     // ⓪ 首启物化：安装包内置代码 → releases/<版本>/（托管模式布局，自更新的地基）
     const { ranDir } = bootstrapBundledBackend();
     // ① 端口：首选 8010（和其他宿主一致），被占则退到随机空闲端口

@@ -19,9 +19,14 @@
    `<base>/v2/chat/completions`，不是标准 OpenAI 端点），第三方模型只能通过
    `models.json` 注入（仅支持 OpenAI 兼容格式）。所以自定义网关要写 `models.json`，
    而不是走 `base_url_env` 环境变量。
-2. **官方登录的形态**：没有 `codebuddy login` 子命令，交互登录只在 TUI 的 `/login` 里，
-   token 存**系统密钥环**（容器里通常没有）。无头部署要用 `CODEBUDDY_API_KEY`
-   （并选对 `CODEBUDDY_INTERNET_ENVIRONMENT`）或 `CODEBUDDY_AUTH_TOKEN`。
+2. **官方登录的形态**：没有 `codebuddy login` 子命令，交互登录只在 TUI 的 `/login` 里。
+   但 `codebuddy --serve` 的本地 HTTP API 把同一条链路暴露了出来
+   （`POST /api/v1/auth/account/login` → `authUrl`，`GET /api/v1/auth/account/status`
+   → `authenticated`），平台据此实现「登录按钮 + 扫码」的可视化登录：
+   助手脚本 `codebuddy_login.py` 拉起一次临时的 `--serve`，把授权链接渲染成二维码。
+   登录 session 落盘在 `Data/Public/auth/*.info`（跟随真实 HOME，**不是**系统密钥环，
+   也与 `CODEBUDDY_CONFIG_DIR` 无关）。无头部署仍可选用
+   `CODEBUDDY_API_KEY`（并选对 `CODEBUDDY_INTERNET_ENVIRONMENT`）或 `CODEBUDDY_AUTH_TOKEN`。
 
 ---
 
@@ -102,7 +107,7 @@ codebuddy -p "提示词" \
 
 | 路径 | 机制 | 平台对接方式 |
 | --- | --- | --- |
-| 官方（账号登录） | **没有 `codebuddy login` 子命令**（2.185.0 的 Commands 列表里没有）；交互式 TUI 里用斜杠命令 `/login`，选 Chinese / International / Enterprise / iOA 站点后浏览器授权。token 由内核交给**系统密钥环**（macOS Keychain、Linux 上 GNOME Keyring / KWallet、Windows 凭据管理器），不是 `~/.codebuddy/.credentials.json` | `gateway_id=null`：不注入任何 env，CLI 自己读本机登录态 |
+| 官方（账号登录） | **没有 `codebuddy login` 子命令**（2.185.0 的 Commands 列表里没有）；交互式 TUI 里用斜杠命令 `/login`，选 Chinese / International / Enterprise / iOA 站点后浏览器授权。**无头等价物是 `--serve` 的本地 HTTP API**：`POST /api/v1/auth/account/login` 返回浏览器授权地址，`GET /api/v1/auth/account/status` 报告 `authenticated` / `loginPending`。session 落盘在 `<共享数据根>/Data/Public/auth/<hash>.info`（Linux `~/.local/share/CodeBuddyExtension/...`、macOS `~/Library/Application Support/...`、Windows `%LOCALAPPDATA%\\...`），**不是** `~/.codebuddy/.credentials.json`，也不在系统密钥环里 | `gateway_id=null`：不注入任何 env，CLI 自己读本机登录态；「登录」按钮由 `login_argv` 指向 `codebuddy_login.py` 助手（见 §3.6） |
 | 官方（环境变量） | `CODEBUDDY_API_KEY` / `CODEBUDDY_AUTH_TOKEN` / `apiKeyHelper`（优先级 AUTH_TOKEN > apiKeyHelper > API_KEY）。**用 API Key 必须同时选对站点**：中国版 `CODEBUDDY_INTERNET_ENVIRONMENT=internal`、iOA=`ioa`、专享版=`cloudhosted`、私有化=`selfhosted`；不设则打国际站 `www.codebuddy.ai` | 走智能体的「环境变量」或适配器的「官方网络环境」字段；**不能**用 `CODEBUDDY_BASE_URL` 当平台网关（会被拼成 `<base>/v2/chat/completions`，自家协议） |
 | 第三方模型 | `models.json`：`{models:[{id,url,apiKey,...}], availableModels}`；`url` 必须是**完整** `/chat/completions` 路径；`apiKey` 支持 `${ENV}` 引用；鉴权固定 `Authorization: Bearer` | `gateway_url + "/chat/completions"` 写成 `url`，密钥写 `${CODEBUDDY_API_KEY}`；`--model` 选注入的 id |
 
@@ -288,10 +293,67 @@ def mcp_mount(self, ctx):         # McpMount(home_name="codebuddy-home",
 - `auth_status()`：只做「配置层」判断，**不联网、不消耗积分**——
   1. 进程 env 或 `settings*.json` 的 `env` 里有 `CODEBUDDY_AUTH_TOKEN` / `CODEBUDDY_API_KEY`，
      或配置了 `apiKeyHelper` → `logged_in=None`（已配置，平台不校验有效性）；
-  2. 配置目录里存在**非空**的凭据缓存（`.credentials.json` / `credentials.json`）→ `True`；
-  3. 都没有 → `False`，detail 里给出「TUI `/login` / API Key + 站点 / AUTH_TOKEN」三条修法。
-- 内核**没有** `login` 子命令，所以不声明 `login_argv`：平台不提供「登录」按钮，
-  只展示登录状态（`supports_auth()` 让内核管理卡片显示这一行）。
+  2. `Data/Public/auth/*.info` 存在**非空** session 文件 → `True`
+     （这是内核真实的账号登录落盘位置；`.credentials.json` 只是插件 / MCP 的 OAuth 缓存，
+     不能当成账号登录态）；
+  3. 开了 `CODEBUDDY_CREDENTIALS_IN_MEMORY=1` → `None`（凭据只在进程内存，磁盘上看不到）；
+  4. 都没有 → `False`，detail 里给出「点登录按钮扫码 / API Key + 站点 / AUTH_TOKEN」三条修法。
+- `login_argv`：内核没有 `login` 子命令，但 `--serve` 暴露了登录 API，所以声明
+  `[sys.executable, codebuddy_login.py]`。助手的工作流（见 §3.7）：
+  起临时 `--serve`（回环 + `--auth none`）→ `POST /api/v1/auth/account/login` 拿 `authUrl`
+  → `segno` 渲染二维码并打印 `QR_IMAGE=<png>`（平台通用登录协议）→ 轮询
+  `/api/v1/auth/account/status` 直到 `authenticated`。站点选择：`CODEBUDDY_LOGIN_METHOD`
+  > `CODEBUDDY_INTERNET_ENVIRONMENT` > `settings*.json` 的 `env` > 默认 `internal`。
+
+### 3.7 可视化登录（`codebuddy_login.py`）
+
+| 步骤 | 实现 |
+| --- | --- |
+| 起服务 | `codebuddy --serve --host 127.0.0.1 --port <空闲端口> --auth none`；只监听回环，登录结束即杀进程组 |
+| 取链接 | `POST /api/v1/auth/account/login {"method": <站点>}` → `{"data": {"authUrl": ...}}` |
+| 换账号 | 已有登录态时把 `/login` 改写成 `/login/switch-account`（国内站），让用户先登出浏览器里的旧登录；登录前后 uid 相同会明确告警 |
+| 出二维码 | `segno.make(authUrl).save(png)`，打印 `QR_IMAGE=<绝对路径>`；`segno` 缺失时只打印链接，不中断登录 |
+| 等授权 | 每 1.5s `GET /api/v1/auth/account/status`，`authenticated=true` 退出 0；`loginError` / 超时退出 1 |
+| 收尾 | 杀 `--serve`、删二维码（短期凭据）与临时日志 |
+
+> 为什么不用 TUI 的 `/login`：headless 没有 TTY，也驱动不了斜杠命令；`--serve` 的 HTTP API
+> 是官方提供的公开入口（`docs/http-api.md`），比 PTY 注入稳定得多。
+
+### 3.8 多账号：登录几个账号、随时切换（`codebuddy_accounts.py`）
+
+内核是**单账号**模型：`FileAuthenticationStorage` 只保留一份 session
+（`Data/Public/auth/*.info`），再登录另一个账号会直接覆盖。`/v2/plugin/accounts` 返回的
+「多个账号」是同一登录下的个人 / 企业上下文，不是多个登录。平台侧用「账号槽位」补齐：
+
+| 时机 | 动作 |
+| --- | --- |
+| 登录成功后 | 把内核写出的 session 文件**原样复制**到 `~/.codebuddy/platform-accounts/<槽位>.info`，元数据（uid / 昵称 / 企业 / 校验和）写 `index.json`；同一账号重复登录覆盖同一槽位 |
+| 登录新账号前 | 先把当前账号归档，否则它的 session 会被这次登录覆盖 |
+| 切换账号 | 把目标槽位的字节**原样写回**内核的 session 路径（0600、原子替换），并清掉 `*.logged-out` 登出标记 |
+| 当前账号判定 | 比对 live session 文件与各槽位的 sha256 |
+| 删除槽位 | 只删平台存档，不动当前登录态 |
+
+session 文件是**本机密钥加密**的，平台不解析内容，只做字节复制 —— 同一台机器上切换没问题，
+换机器 / 换 `HOME` 则不可移植。切换只影响**之后启动**的对话；正在跑的那一轮仍用原账号。
+
+**「登录其他账号」为什么还可能登回原账号？** 浏览器 / 手机里已经有腾讯登录 cookie 时，
+授权页会直接拿旧账号再授权一遍，CLI 收到的自然还是同一个账号。所以助手在「已有登录态」
+时会把授权链接从 `/login` 改写成 `/login/switch-account`（国内站支持）：这个落地页上的
+「登录其他账号」会先登出浏览器里的旧登录，再用同一个 `state` 回到登录页。同时助手会比对
+登录前后的 uid：还是同一个账号时明确输出「这次授权的仍是当前账号，没有新增账号」，不再
+假装新增成功。国际站是另一套登录前端，不做路径改写，只保留 uid 比对与提示。
+
+**没扫码就显示登录成功？** `GET /api/v1/auth/account/status` 在**已有登录态**时会直接返回
+`authenticated=true`（那是旧 session），它不会告诉调用方「新登录还没完成」。所以助手不以
+状态接口为准，而是以 **session 文件内容是否变化** 作为「新登录已落盘」的判据：没扫完码
+文件不变，就一直轮询到 5 分钟超时，并明确输出「没有检测到新的登录授权，当前账号保持不变」。
+只有文件换成新 session、且状态接口也确认后，才算成功；这样也不会把后台 token 刷新误判成
+一次新登录（发起后至少等 1.5 秒）。
+
+框架侧是通用的：`AuthStatus.accounts`（`RuntimeAccount` 列表）由 `auth_status()` 返回，
+适配器覆盖 `activate_account()` / `remove_account()` 即自动获得
+`POST /runtimes/{id}/accounts/{账号}/activate` 与 `DELETE /runtimes/{id}/accounts/{账号}`，
+内核详情里渲染成账号列表（桌面 + 移动端）。
 
 ---
 
@@ -300,14 +362,26 @@ def mcp_mount(self, ctx):         # McpMount(home_name="codebuddy-home",
 | 文件 | 改动 |
 | --- | --- |
 | `backend/app/agents/builtin/codebuddy_cli.py` | **新增**适配器（唯一的功能代码） |
-| `backend/tests/test_adapters.py` | 注册表断言 + invocation/parse/权限/env/models.json 用例（样本用包内文档里的真实输出形状） |
+| `backend/app/agents/builtin/codebuddy_login.py` | **新增**可视化登录助手（`login_argv` 指向它，按 `QR_IMAGE=` 协议输出二维码） |
+| `backend/app/agents/builtin/codebuddy_accounts.py` | **新增**账号槽位：存档 / 切换 / 删除（多账号） |
+| `backend/app/agents/base.py` | `RuntimeAccount`、`AuthStatus.accounts`、`activate_account()` / `remove_account()` / `supports_accounts()` |
+| `backend/app/api/runtimes.py` | 账号切换 / 删除接口 |
+| `backend/tests/test_adapters.py` | 注册表断言 + invocation/parse/权限/env/models.json/登录态用例 |
+| `backend/tests/test_codebuddy_login.py` | 登录助手：站点选择、二维码、假服务主链路 |
+| `backend/tests/test_codebuddy_accounts.py` | 账号槽位：存档、切换、登出标记、损坏索引 |
+| `backend/tests/test_runtimes.py` | 账号切换接口（成功 / 未知账号 / 不支持的内核） |
+| `frontend/src/lib/types.ts`、`lib/api.ts` | `RuntimeAccount` + 切换 / 删除接口 |
+| `frontend/src/components/KernelManager.tsx`、`mobile/pages/MobileRuntimesPage.tsx` | 账号列表与切换按钮 |
 | `backend/tests/test_architecture.py` | `BUILTIN_IDS` 加 `"codebuddy-cli"` |
+| `backend/requirements.txt` | 加 `segno`（纯 Python 二维码，不依赖 Pillow） |
 | `frontend/public/icons/kernels/codebuddy.webp` | **新增**真彩色 Logo（`logo_style = "image"`，原色显示） |
 | `README.md` 「都能接什么」表 | 加一行 `codebuddy-cli` |
 | `docs/codebuddy-cli.md` | 本方案（调研依据） |
 
-不需要改的：`frontend` 表单/内核列表（全部由后端 descriptor 驱动）、事件协议、
+不需要改的：智能体表单 / 内核列表的数据来源（仍由后端 descriptor 驱动）、事件协议、
 runner / skills / mcp 物化层、Docker 镜像（npm 内核走 provisioner；镜像自带 Node 24 满足要求）。
+前端只多了一小块账号列表（`KernelManager.tsx` / `MobileRuntimesPage.tsx`），数据仍来自
+`GET /runtimes/{id}/auth` 的 `accounts` 字段。
 
 ---
 
@@ -321,16 +395,21 @@ runner / skills / mcp 物化层、Docker 镜像（npm 内核走 provisioner；�
    root 环境自动补 `CODEBUDDY_IS_SANDBOX=1`（与 claude 适配器的 root 逃生口同构）。
 4. **安装体积大**：tgz 69MB / 解压 226MB，npm 安装比其他内核慢，内核管理页的
    超时与回显沿用现有 provisioner 机制即可，但要预期「安装」这一步明显更久。
-5. **登录态不可移植**：官方链路依赖服务所在机器上的一次交互式 `/login`，
-   而 token 由内核交给**系统密钥环**——容器 / 无桌面环境里通常没有密钥环，
-   交互登录自然也无法长期保存。这类部署应引导用户改用环境变量凭据
-   （`CODEBUDDY_API_KEY` + 正确的 `CODEBUDDY_INTERNET_ENVIRONMENT`，或 `CODEBUDDY_AUTH_TOKEN`），
-   而不是绑一个 OpenAI 网关（那是另一条链路，计费与模型清单都不同）。
-   隔离家目录会尽力携带 `settings*.json` 与凭据缓存；密钥环不随 `CODEBUDDY_CONFIG_DIR` 隔离。
-6. **`--strict-mcp-config` 的语义以实测为准**：旗标在 CLI 参数解析里确认存在，
+5. **登录态跟着 HOME 走，不跟 `CODEBUDDY_CONFIG_DIR` 走**：session 写在
+   `<共享数据根>/Data/Public/auth/*.info`，所以一次扫码对这台机器上的所有对话生效；
+   但换机器 / 换 HOME 就要重新登录。容器重建时只要 `$HOME`（`/app/data/home`）在卷上，
+   登录态就保得住。需要无交互部署时仍可用 `CODEBUDDY_API_KEY` + 正确的
+   `CODEBUDDY_INTERNET_ENVIRONMENT`（或 `CODEBUDDY_AUTH_TOKEN`），而不是绑 OpenAI 网关
+   （那是另一条链路，计费与模型清单都不同）。
+6. **登录二维码依赖 `segno`**：它是纯 Python 包（不拉 Pillow）；缺失时助手会退化成
+   「只打印授权链接」，登录流程不中断，但界面上没有二维码。
+7. **多账号是平台侧快照，不是内核原生能力**：切换需要在同一台机器、同一个 `HOME` 下
+   （session 文件用本机密钥加密）。切换只影响之后启动的对话，正在跑的任务不会中途换号；
+   长时间运行的服务建议在切换后确认当前账号（详情里会显示「当前」标记）。
+8. **`--strict-mcp-config` 的语义以实测为准**：旗标在 CLI 参数解析里确认存在，
    但「是否真的忽略 user/project 配置」要在 P1 验收时实测一次（拿一个本机配置的
    MCP 服务器验证它没被加载）。
-7. **没有「仅工作目录」档**：CodeBuddy 没有 Claude Code 的
+9. **没有「仅工作目录」档**：CodeBuddy 没有 Claude Code 的
    `blockReadsOutsideWorkingDirectories` 一类设置，硬造一个只会给出虚假的安全承诺，
    因此本适配器不声明 `file_access_scope` 字段。需要强隔离请在容器级做。
 
@@ -341,8 +420,9 @@ runner / skills / mcp 物化层、Docker 镜像（npm 内核走 provisioner；�
 **P0 — 跑通官方链路（1 个文件 + 测试）**
 适配器骨架（invocation / parse_line / 权限 / root 逃生口 / env）、Logo、README 表格、
 `test_adapters.py` 用真实 stream-json 样本的解析用例 + `test_architecture.py` 注册表用例。
-验收：本机（或容器内）完成官方授权后，平台里新建 CodeBuddy 智能体 → 对话、流式、
-工具调用、多轮续接全部可用；`内核管理` 页能安装 / 更新 / 卸载，并显示登录状态。
+可视化登录（`codebuddy_login.py`）：`--serve` 取授权链接 → 二维码 → 轮询完成。
+验收：**不碰终端**，在 `内核管理` 点「登录」扫码完成授权后，平台里新建 CodeBuddy 智能体
+→ 对话、流式、工具调用、多轮续接全部可用；`内核管理` 页能安装 / 更新 / 卸载，并显示登录状态。
 
 **P1 — 技能与 MCP（与 claude 同构）**
 `skill_roots / discover_skills / skill_mount / skill_invocation` 与

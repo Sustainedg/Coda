@@ -166,8 +166,13 @@ node scripts/fetch-python.mjs        # 按当前平台下载（产物进 build/p
 node scripts/prepare-python-deps.mjs # 依赖预装进该解释器 + 下载离线 wheelhouse（需联网）
 node scripts/fetch-node.mjs          # 同上（build/node-runtime/<arch>/）
 node scripts/prepare-backend.mjs
-npm run compile && npx electron-builder --publish never
+npm run build                        # = check:runtimes → compile → electron-builder
 ```
+
+`npm run build` 会先跑 `check:runtimes`：内置 Python / Node 缺失时直接失败并给出补跑命令。
+这一步不能省 —— electron-builder 遇到 `extraResources` 源目录不存在只打警告、照样出包，
+得到的安装包「能装能开、一装内核就报未找到命令」。mac 默认核对 arm64 + x64 两份
+（与 `electron-builder.yml` 的 `arch: [arm64, x64]` 对齐）。
 
 发版只在 CI 做（覆盖上传滚动 Release），不要本地 `--publish always`。
 
@@ -302,9 +307,10 @@ xcrun stapler validate "Coda.app"                    # 确认已装订
 
 - `scripts/fetch-node.mjs`：下载官方 Node 24 LTS（与 `docker/Dockerfile` 同版本）、
   校验 `SHASUMS256.txt`、按架构落到 `build/node-runtime/<arch>/`；
-- `src/main/runtimeEnv.ts`：把「内置 Node 目录 + 托管 npm 全局 bin」前置进 PATH，
-  并把 `npm_config_prefix` / `npm_config_cache` 钉到 userData；后端进程继承这份环境，
-  provisioning 与内核执行自动生效；
+- `src/main/runtimeEnv.ts`：把「内置 Node 的**可执行文件目录** + 托管 npm 全局 bin」前置进 PATH
+  （Windows 是运行时根目录，POSIX 是 `<root>/bin` —— 两种发行包布局不同，混用会得到
+  「未找到命令 node」），并把 `npm_config_prefix` / `npm_config_cache` 钉到 userData；
+  后端进程继承这份环境，provisioning 与内核执行自动生效；
 - `backend/app/agents/builtin/util.py`：npm 包装脚本改用 **Node 内联脚本**（三平台同一套
   逻辑）；`npm_cli()` 负责卸载 / 查询版本（Windows 经 `cmd.exe /c npm`）；
 - `backend/app/runtime/runner.py`：Windows 上把 `.cmd` / `.bat` 垫片交给 `cmd.exe /d /s /c`
@@ -349,6 +355,7 @@ xcrun stapler validate "Coda.app"                    # 确认已装订
 | 首启仍停在「安装后端依赖」（正常应秒开）/ 报 `ProxyError ... Cannot connect to proxy`（10053/10060） | 先看启动日志里的 `Python 运行时：bundled` 还是 `venv`：`venv` 说明内置依赖指纹没对上（开发模式 / resources 被改），走了兜底。若在在线安装阶段失败：Windows 系统代理残留（代理软件退出后注册表设置还在），关闭「设置 → 网络和 Internet → 代理」或启动代理软件；应用会自动绕过连不上的系统代理重试一次。仍失败看 `%APPDATA%\Coda\install.log`，按上面两个环境变量配镜像 / 代理。`userData/python/venv` 可整目录删掉重建（对话数据不受影响） |
 | 启动日志出现 `无法创建 current 目录链接` | 文件系统不支持重解析点（FAT/exFAT、部分网络盘）或被安全软件拦截：应用会降级为直接从版本目录运行（后端一键更新不可用，桌面端本来走整包更新），不影响使用 |
 | 内核装了但启动报「未安装或不在 PATH」 | 是否用的是打包版（`resources/node-runtime` 是否存在）；`userData/node/global/bin` 是否在 PATH |
+| 装内核报「未找到命令 `node`」 | 壳没有把内置 Node 接进 PATH。启动日志里的 `[desktop] 内置 Node：…` 会直接写出实际目录：<br>· 显示「未找到（回退到系统 PATH）」→ 安装包里没有运行时（本地打包漏跑 `fetch:node`；`npm run build` 会先自检拦下）；<br>· 显示 `…/Resources/node-runtime` 而不是 `…/node-runtime/bin` → 是旧版壳的 PATH 布局 bug，升级壳即可。临时应急：`brew install node` |
 | 壳更新提示 404 / 找不到 latest.yml | 滚动 Release `desktop-latest` 是否还在、是否被误设成非 prerelease；`CODA_DESKTOP_UPDATE_URL` 是否被覆盖 |
 | macOS 公证失败 | 日志里搜 `sign-runtimes`；确认内嵌运行时里没有漏签的 Mach-O；检查 entitlements |
 | macOS 打开报「已损坏」 | 先看构建日志有没有 `[sign-runtimes] ad-hoc 签名完成`。旧包自救：<br>`sudo xattr -rd com.apple.quarantine /Applications/Coda.app`<br>仍报损坏再 `sudo codesign --force --deep --sign - /Applications/Coda.app` |

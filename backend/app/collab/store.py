@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Sequence
 
 from pydantic import ValidationError
@@ -43,15 +44,6 @@ class RunNotFound(Exception):
 
 class TeamInUse(Exception):
     """协作组下还有运行记录，不能删除（沿用既有 409 语义）。"""
-
-
-class TeamKeyInUse(Exception):
-    """要删改的节点 key 还被历史运行引用，改名会让这些运行找不到岗位（沿用既有 409 语义）。
-
-    运行、工单与步骤里存的是**当时的 key**（``entry_key`` / ``holder_key`` / ``target_key``…），
-    改名不会自动迁移：引擎下一步按 key 找节点，找不到就直接报「持有者/派发目标不在图里」。
-    改名的意图与「删掉旧节点、新建一个」在图里长得一模一样，无从推断，所以只能在保存时拦下来。
-    """
 
 
 def to_read(team: CollabTeam, known_agent_profile_ids: set[str] | None = None) -> TeamRead:
@@ -136,99 +128,45 @@ async def _copy_team(source: CollabTeam, name: str, owner_id: str | None = None)
     )
 
 
-#: 每个 key 最多列几条引用（够用户定位是哪次运行/哪张工单即可，不必把看板全抄进错误里）
-_MAX_KEY_REFERENCES = 3
+async def _pin_unpinned_runs(session: AsyncSession, team_id: str, graph: Any) -> int:
+    """把「已经下过工单、但还没有图快照」的老运行钉到 ``graph`` 上（不提交）。
 
-
-def _removed_node_keys(old_graph: Any, new_graph: dict[str, Any]) -> set[str]:
-    """这次保存「删掉/改掉」了哪些节点 key。
-
-    改名与删除在图里是同一种变化（旧 key 消失），这里不做也无法做区分。
-    旧图本身解析不了时不拦（让用户先把图存成能看的样子，别把两件事叠在一起报错）。
+    保存协作图前调用：先把老运行正在用的那张图拍下来，再写新图。
+    这样改名 / 删节点不会打断任何已有运行 —— 它们继续按自己的快照跑完。
+    还没下过工单的运行不钉：它们本来就该跟着协作组的最新图走。
     """
-    try:
-        old = graph_service.from_storable(old_graph)
-    except (ValueError, ValidationError):
-        return set()
-    old_keys = {node.key for node in old.nodes if node.key}
-    new_keys = {str(node.get("key") or "") for node in (new_graph.get("nodes") or [])}
-    return {key for key in old_keys - new_keys if key}
-
-
-async def _stale_key_references(
-    session: AsyncSession, team_id: str, removed: set[str]
-) -> dict[str, list[str]]:
-    """这些 key 还被这次协作组下的运行/工单/步骤/对话引用着多少处。"""
-    run_ids = list(
-        (await session.execute(select(CollabRun.id).where(CollabRun.team_id == team_id))).scalars()
-    )
-    if not run_ids:
-        return {}
-    refs: dict[str, list[str]] = {}
-
-    def note(key: str | None, text: str) -> None:
-        if key and key in removed and len(refs.get(key, [])) < _MAX_KEY_REFERENCES:
-            refs.setdefault(key, []).append(text)
-
-    for run_id, entry_key, title in (
-        await session.execute(
-            select(CollabRun.id, CollabRun.entry_key, CollabRun.title).where(
-                CollabRun.team_id == team_id
+    if not graph_service.has_graph_snapshot(graph):
+        return 0
+    runs = (
+        await session.execute(select(CollabRun).where(CollabRun.team_id == team_id))
+    ).scalars().all()
+    if not runs:
+        return 0
+    # 用子查询而不是把 run.id 列表塞进 IN：SQLite 的绑定参数有 999 个上限。
+    team_run_ids = select(CollabRun.id).where(CollabRun.team_id == team_id)
+    started = set(
+        (
+            await session.execute(
+                select(CollabTicket.run_id).where(CollabTicket.run_id.in_(team_run_ids))
             )
-        )
-    ).all():
-        note(entry_key, f"运行「{title}」（{run_id[:8]}）的入口节点")
-    for ticket_id, title, owner_key, holder_key, submitter_key, escalation in (
-        await session.execute(
-            select(
-                CollabTicket.id,
-                CollabTicket.title,
-                CollabTicket.owner_key,
-                CollabTicket.holder_key,
-                CollabTicket.submitter_key,
-                CollabTicket.escalation,
-            ).where(CollabTicket.run_id.in_(run_ids))
-        )
-    ).all():
-        note(owner_key, f"工单 {ticket_id[:8]}「{title}」的发起人")
-        note(holder_key, f"工单 {ticket_id[:8]}「{title}」的承担者")
-        note(submitter_key, f"工单 {ticket_id[:8]}「{title}」的提交人")
-        escalation = escalation or {}
-        note(str(escalation.get("from") or ""), f"工单 {ticket_id[:8]} 的上报人")
-        for hop in escalation.get("hops") or []:
-            note(str(hop), f"工单 {ticket_id[:8]} 的上报路径")
-    for role_key, target_key in (
-        await session.execute(
-            select(CollabStep.role_key, CollabStep.target_key).where(
-                CollabStep.run_id.in_(run_ids)
-            )
-        )
-    ).all():
-        note(role_key, "某一步骤的岗位")
-        note(target_key, "某一步骤的派发目标")
-    for role_key in (
-        await session.execute(
-            select(CollabMessage.role_key).where(CollabMessage.run_id.in_(run_ids))
-        )
-    ).all():
-        note(role_key, "入口智能体对话的岗位")
-    return refs
-
-
-def _stale_key_message(team_name: str, refs: dict[str, list[str]]) -> str:
-    """把「哪些 key 被谁引用着」写成一句能做决定的错误。"""
-    detail = "；".join(
-        f"「{key}」还被{'、'.join(items)}引用" for key, items in sorted(refs.items())
+        ).scalars()
     )
-    return (
-        f"协作组「{team_name}」的节点 key 不能这样改：{detail}。"
-        "运行与工单里记的是当时的 key，改掉之后它们会找不到对应岗位（直接报「持有者不在图里」）。"
-        "请先删除这些运行记录，或把协作组复制一份在副本里改名。"
-    )
+    pinned = 0
+    for run in runs:
+        if run.id not in started or graph_service.has_graph_snapshot(run.graph):
+            continue
+        run.graph = deepcopy(graph)
+        session.add(run)
+        pinned += 1
+    return pinned
 
 
 async def save_team(session: AsyncSession, team_id: str, payload: TeamUpdate) -> CollabTeam:
-    """整图保存。语义错误不拦截（允许存草稿），但结构性错误已被 Pydantic 挡在路由层。"""
+    """整图保存。语义错误不拦截（允许存草稿），但结构性错误已被 Pydantic 挡在路由层。
+
+    改动协作组**不再**被「有运行记录」拦住：已经下过工单的运行冻结了自己的图，
+    之后改 key / 删节点 / 换边只影响还没开跑 / 新发起的运行（老运行按自己的快照跑完）。
+    """
     team = await get_team(session, team_id)
     data = payload.model_dump(exclude_unset=True)
     if data.get("name"):
@@ -241,12 +179,8 @@ async def save_team(session: AsyncSession, team_id: str, payload: TeamUpdate) ->
         team.workspace_dir = data["workspace_dir"]
     if payload.graph is not None:
         new_graph = graph_service.to_storable(payload.graph)
-        # 「存的草稿」不拦语义问题，但**删改已在运行的 key** 不是语义问题：它会打断运行，
-        # 且事后无从修复（改名与删除不可区分），所以必须在保存这一层拦住。
-        removed = _removed_node_keys(team.graph, new_graph)
-        stale = await _stale_key_references(session, team_id, removed) if removed else {}
-        if stale:
-            raise TeamKeyInUse(_stale_key_message(team.name, stale))
+        # 升级前创建的老运行还没有快照：先拍下「改之前」的图，再覆盖协作组。
+        await _pin_unpinned_runs(session, team_id, team.graph)
         team.graph = new_graph
     if payload.budget is not None:
         team.budget = graph_service.budget_to_storable(payload.budget)
@@ -315,6 +249,37 @@ async def recover_interrupted(session: AsyncSession) -> int:
     return len(rows)
 
 
+async def backfill_run_graphs(session: AsyncSession) -> int:
+    """给升级前创建、还没有图快照的运行补一份快照（幂等）。
+
+    老运行此前一直读协作组现图；升级后第一次启动时协作组还没有被改过，
+    把现图拍下来就等于冻结了它们正在用的那张图。之后用户改协作组再也影响不到它们。
+    """
+    teams = {
+        team.id: team for team in (await session.execute(select(CollabTeam))).scalars().all()
+    }
+    # 不用 SQL 的 ``IS NULL`` 过滤：SQLAlchemy 的 JSON 列默认把 Python ``None``
+    # 存成 JSON 的 ``null`` 文本，``IS NULL`` 匹配不到；在 Python 侧判空更可靠。
+    runs = (await session.execute(select(CollabRun))).scalars().all()
+    # 只冻结已经下过工单的老运行；还没开跑的运行继续跟着协作组的最新图。
+    started = set((await session.execute(select(CollabTicket.run_id).distinct())).scalars())
+    pinned = 0
+    for run in runs:
+        if run.id not in started or graph_service.has_graph_snapshot(run.graph):
+            continue
+        team = teams.get(run.team_id)
+        if team is None or not graph_service.has_graph_snapshot(team.graph):
+            continue
+        run.graph = deepcopy(team.graph)
+        if not run.entry_key:
+            run.entry_key = team.entry_key
+        session.add(run)
+        pinned += 1
+    if pinned:
+        await session.commit()
+    return pinned
+
+
 # --- 运行 -------------------------------------------------------------------
 
 
@@ -349,6 +314,8 @@ async def create_run(
         or team.workspace_dir
         or str(get_settings().workspaces_root / f"collab-{run_id}")
     )
+    # 图快照不在这里拍：运行第一次真正推进（下第一张工单）时才冻结。
+    # 这样「先建任务、再回去修图」仍然能救回来，只有已经下过工单的运行才受保护。
     run = CollabRun(
         id=run_id,
         team_id=team.id,
@@ -459,6 +426,11 @@ async def run_read(session: AsyncSession, run: CollabRun) -> RunRead:
             await session.execute(select(CollabTicket.state).where(CollabTicket.run_id == run.id))
         ).all()
     ]
+    # 有快照的运行按自己记的入口；还没开跑（没快照）的运行跟着协作组走。
+    if graph_service.has_graph_snapshot(run.graph):
+        entry_key = run.entry_key or (team.entry_key if team else None)
+    else:
+        entry_key = (team.entry_key if team else None) or run.entry_key
     return RunRead(
         id=run.id,
         team_id=run.team_id,
@@ -467,7 +439,7 @@ async def run_read(session: AsyncSession, run: CollabRun) -> RunRead:
         goal=run.goal,
         budget=graph_service.budget_from_storable(run.budget),
         status=run.status,
-        entry_key=run.entry_key,
+        entry_key=entry_key,
         workspace_dir=run.workspace_dir,
         steps_used=run.steps_used,
         tickets_used=run.tickets_used,
@@ -482,6 +454,15 @@ async def run_read(session: AsyncSession, run: CollabRun) -> RunRead:
             if state in ("open", "working", "review", "rework", "waiting_children", "blocked")
         ),
     )
+
+
+def _run_graph_spec(run: CollabRun, team: CollabTeam | None) -> GraphSpec:
+    """运行详情里展示的图：就是这次运行实际在用的那张（快照优先）。"""
+    raw = graph_service.run_graph_source(run.graph, team.graph if team else {})
+    try:
+        return graph_service.from_storable(raw)
+    except (ValueError, ValidationError):
+        return GraphSpec()
 
 
 async def run_detail(session: AsyncSession, run: CollabRun) -> RunDetail:
@@ -548,6 +529,7 @@ async def run_detail(session: AsyncSession, run: CollabRun) -> RunDetail:
     read = await run_read(session, run)
     return RunDetail(
         **read.model_dump(),
+        graph=_run_graph_spec(run, team),
         tickets=[_ticket_read(t) for t in tickets],
         steps=[
             StepRead(

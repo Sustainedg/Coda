@@ -489,7 +489,7 @@ export function MobileCollabTeamPage() {
                   </button>
                 </div>
                 <span className="field-help">
-                  有运行记录的协作组不能删除；改动没保存时请先点右上角「保存」。
+                  有运行记录的协作组不能删除；改动只影响还没开跑 / 之后新建的任务（已下工单的运行按当时编排继续）。
                 </span>
               </div>
             </>

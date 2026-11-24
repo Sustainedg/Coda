@@ -129,6 +129,18 @@ jobs:
         working-directory: desktop
         run: npm run typecheck
 
+      # 内置 Python / Node 缺失时 electron-builder 只告警、照样出包，
+      # 于是「能装能开、一装内核就报未找到命令 node」。这里按矩阵目标逐个核对。
+      - name: 核对内嵌运行时
+        working-directory: desktop
+        shell: bash
+        run: |
+          if [ "${{ matrix.node }}" = "both" ]; then
+            node scripts/check-runtimes.mjs mac-arm64 mac-x64
+          else
+            node scripts/check-runtimes.mjs ${{ matrix.node }}
+          fi
+
       # electron-builder 直接读 dist-main/dist-preload；typecheck 是 --noEmit，
       # 漏掉这一步就会报「Application entry file dist-main/index.js does not exist」
       - name: 编译主进程

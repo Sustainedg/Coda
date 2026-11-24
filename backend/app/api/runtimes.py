@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -17,7 +18,7 @@ from sqlmodel import select
 from ..agents import AgentDefinition, all_agents, get_agent
 from ..agents.base import Availability
 from ..db import get_session
-from ..models import AgentProfile
+from ..models import AgentProfile, User
 from ..runtime import availability as availability_service
 from ..runtime import provisioning
 from ..schemas import RuntimeAction
@@ -122,13 +123,8 @@ async def uninstall_runtime(type_id: str, payload: RuntimeAction) -> StreamingRe
     return await _provision_stream(type_id, "uninstall")
 
 
-@router.get("/{type_id}/auth")
-async def runtime_auth(type_id: str) -> dict:
-    """账号型内核的登录状态（二维码登录 / OAuth）。
-
-    这是用户主动打开详情弹层时才调的接口，探测在后台线程里跑，最多等一个内部超时，
-    不影响内核列表的缓存探测策略。
-    """
+async def _auth_payload(type_id: str, *, include_accounts: bool) -> dict:
+    """登录状态响应体；``include_accounts`` 控制是否带出已保存的账号清单。"""
     try:
         definition = get_agent(type_id)
     except KeyError as exc:
@@ -136,13 +132,69 @@ async def runtime_auth(type_id: str) -> dict:
     status = await asyncio.to_thread(definition.auth_status)
     if status is None:
         return {"supported": False, "required": False, "logged_in": None, "detail": None, "account": None}
-    return {"supported": True, **status.to_dict()}
+    payload = {"supported": True, **status.to_dict()}
+    # 已保存账号的昵称 / 企业属于机器级（管理员）资产：普通成员只看到登录态，
+    # 看不到这台机器登录过哪些账号（切换 / 删除本来就只对管理员开放）。
+    if not include_accounts:
+        payload["accounts"] = None
+    return payload
+
+
+@router.get("/{type_id}/auth")
+async def runtime_auth(type_id: str, user: Annotated[User, Depends(current_user)]) -> dict:
+    """账号型内核的登录状态（二维码登录 / OAuth）。
+
+    这是用户主动打开详情弹层时才调的接口，探测在后台线程里跑，最多等一个内部超时，
+    不影响内核列表的缓存探测策略。账号清单只回给管理员。
+    """
+    return await _auth_payload(type_id, include_accounts=user.role == "admin")
 
 
 @router.post("/{type_id}/login", dependencies=[Depends(require_admin)])
 async def login_runtime(type_id: str) -> StreamingResponse:
     """启动一次内核登录（二维码走 SSE 的 ``provision.qr`` 事件推给前端）。"""
     return await _provision_stream(type_id, "login")
+
+
+@router.post("/{type_id}/accounts/{account_id}/activate", dependencies=[Depends(require_admin)])
+async def activate_runtime_account(type_id: str, account_id: str) -> dict:
+    """切换到一个已保存的账号（多账号内核），返回切换后的登录状态。
+
+    账号槽位是适配器自己的存储（例如 CodeBuddy 的 session 快照），框架只调用
+    ``activate_account()``；切换失败时把可读原因回给界面。
+    """
+    try:
+        definition = get_agent(type_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    if not definition.supports_accounts():
+        raise HTTPException(status_code=409, detail=f"{definition.name} 不支持多账号切换")
+    try:
+        await asyncio.to_thread(definition.activate_account, account_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="账号不存在或槽位已损坏") from None
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return await _auth_payload(type_id, include_accounts=True)
+
+
+@router.delete("/{type_id}/accounts/{account_id}", dependencies=[Depends(require_admin)])
+async def remove_runtime_account(type_id: str, account_id: str) -> dict:
+    """删除一个已保存的账号槽位；当前正在用的登录态不受影响。"""
+    try:
+        definition = get_agent(type_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    if not definition.supports_accounts():
+        raise HTTPException(status_code=409, detail=f"{definition.name} 不支持多账号切换")
+    try:
+        await asyncio.to_thread(definition.remove_account, account_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="账号不存在") from None
+    except RuntimeError as exc:
+        # 槽位文件删不掉（权限等）：显式告诉用户，别让界面以为已经删干净了。
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return await _auth_payload(type_id, include_accounts=True)
 
 
 @router.post("/{type_id}/check", dependencies=[Depends(require_admin)])

@@ -333,6 +333,28 @@ async def test_missing_prepare_command_is_only_a_warning():
 
 
 @pytest.mark.asyncio
+async def test_missing_command_error_echoes_the_declared_manager():
+    """命令没起来时只回显**适配器声明**的 manager，不猜具体包管理器、不假设部署形态。
+
+    回归背景：macOS 打包版曾把内置 Node 运行时的**根目录**（而不是 `bin/`）塞进 PATH，
+    于是 npm 内核的安装都失败在「未找到命令 node」。但修复不能把 node / npm 的知识写进
+    框架层（铁律 1：包管理器是适配器的知识），也不能在共享后端里写「桌面版路径」——
+    同一个后端还跑在 Docker 里。提示只负责说清「是哪套安装方式、该检查 PATH」。
+    """
+    definition = _FakeRuntime()
+    definition.provisioner = RuntimeProvisioner(
+        manager="npm",
+        install_argv=["coda-node-does-not-exist"],
+    )
+    events = await _collect(definition, "install")
+    error = events[-1]["error"]
+    assert "未找到命令 `coda-node-does-not-exist`" in error
+    assert "管理方式：npm" in error
+    assert "resources/node-runtime" not in error, "部署形态的知识不该进框架层"
+    assert events[-1]["ok"] is False
+
+
+@pytest.mark.asyncio
 async def test_stream_provision_without_command_is_explicit():
     events = await _collect(_NoCommandRuntime(), "install")
     assert events[-1]["type"] == "provision.finished"
@@ -471,9 +493,10 @@ async def test_list_runtimes_reports_status_and_provisioning(client: httpx.Async
     assert all(item["logo"] for item in payload["items"])
     assert items["openai-harness"]["provisioning"]["supported"] is False
     # 登录态探测与「有没有可代跑的登录命令」是两件事：只靠 API 密钥的内核不探测，
-    # 账号型内核（豆包 / CodeBuddy）即便没有登录命令也要把状态摆给管理员看。
+    # 账号型内核（豆包 / CodeBuddy）要把登录状态与可执行的登录动作都摆给管理员看。
     assert claude["auth_supported"] is False
     assert items["codebuddy-cli"]["auth_supported"] is True
+    assert items["codebuddy-cli"]["provisioning"]["commands"]["login"]
     assert items["doubao-cli"]["auth_supported"] is True
 
 
@@ -496,6 +519,95 @@ async def test_runtime_auth_is_not_applicable_for_api_key_kernels(client: httpx.
         "detail": None,
         "account": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_runtime_account_switch_api(client: httpx.AsyncClient, monkeypatch, tmp_path):
+    """多账号：切回已保存的账号后，登录态接口与 session 文件都要跟着变。"""
+    from app.agents.builtin import codebuddy_accounts as accounts
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for key in ("CODEBUDDY_CONFIG_DIR", "CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+
+    root = accounts.auth_store_dir()
+    root.mkdir(parents=True)
+    live = root / "Tencent-Cloud.coding-copilot.info"
+    live.write_bytes(b"session-A")
+    slot_a = accounts.snapshot_live({"userId": "u-a", "userName": "Alice"})
+    live.write_bytes(b"session-B")
+    accounts.snapshot_live({"userId": "u-b", "userName": "Bob"})
+
+    payload = (await client.get("/api/runtimes/codebuddy-cli/auth")).json()
+    assert payload["logged_in"] is True
+    assert payload["account"] == "Bob"
+    assert {item["label"] for item in payload["accounts"]} == {"Alice", "Bob"}
+
+    switched = await client.post(f"/api/runtimes/codebuddy-cli/accounts/{slot_a}/activate")
+    assert switched.status_code == 200
+    assert switched.json()["account"] == "Alice"
+    assert live.read_bytes() == b"session-A"
+
+    removed = await client.delete(f"/api/runtimes/codebuddy-cli/accounts/{slot_a}")
+    assert removed.status_code == 200
+    assert [item["label"] for item in removed.json()["accounts"]] == ["Bob"]
+
+    assert (
+        await client.post("/api/runtimes/codebuddy-cli/accounts/does-not-exist/activate")
+    ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_runtime_account_api_rejects_single_account_kernels(client: httpx.AsyncClient):
+    assert (
+        await client.post("/api/runtimes/claude-code/accounts/x/activate")
+    ).status_code == 409
+    assert (await client.delete("/api/runtimes/claude-code/accounts/x")).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_runtime_auth_hides_saved_accounts_from_members(
+    client: httpx.AsyncClient, monkeypatch, tmp_path
+):
+    """账号清单是机器级（管理员）资产：普通成员只看登录态，看不到这台机器登录过哪些账号。"""
+    from app.agents.builtin import codebuddy_accounts as accounts
+    from app.settings import get_settings
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for key in ("CODEBUDDY_CONFIG_DIR", "CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    root = accounts.auth_store_dir()
+    root.mkdir(parents=True)
+    (root / "session.info").write_bytes(b"session-A")
+    accounts.snapshot_live({"userId": "u-a", "userName": "Alice"})
+
+    # 打开鉴权：首任注册者是管理员，第二个是普通成员。
+    monkeypatch.setattr(get_settings(), "auth_enabled", True)
+    admin = (
+        await client.post(
+            "/api/auth/register", json={"username": "root", "password": "root-pass-123"}
+        )
+    ).json()
+    member = (
+        await client.post(
+            "/api/auth/register", json={"username": "alice", "password": "alice-pass-123"}
+        )
+    ).json()
+
+    def headers(user: dict) -> dict:
+        return {"Authorization": f"Bearer {user['access_token']}"}
+
+    admin_view = (
+        await client.get("/api/runtimes/codebuddy-cli/auth", headers=headers(admin))
+    ).json()
+    assert admin_view["logged_in"] is True
+    assert [item["label"] for item in admin_view["accounts"]] == ["Alice"]
+
+    member_view = (
+        await client.get("/api/runtimes/codebuddy-cli/auth", headers=headers(member))
+    ).json()
+    assert member_view["logged_in"] is True
+    assert member_view["accounts"] is None
 
 
 @pytest.mark.asyncio

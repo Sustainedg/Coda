@@ -77,6 +77,20 @@ def from_storable(data: Any) -> GraphSpec:
     return GraphSpec.model_validate(data)
 
 
+def has_graph_snapshot(data: Any) -> bool:
+    """这份运行快照是否真的能跑（至少有一个节点）。
+
+    空图 / 脏数据一律当作「还没有快照」：运行刚建好时协作组可能还是空草稿，
+    用户补完图后应当能直接开跑，而不是被一张空快照钉死。
+    """
+    return isinstance(data, dict) and bool(data.get("nodes"))
+
+
+def run_graph_source(run_graph: Any, team_graph: Any) -> Any:
+    """这次运行该用哪张图：优先运行自己的快照，没有快照的老运行才回退协作组现图。"""
+    return run_graph if has_graph_snapshot(run_graph) else team_graph
+
+
 def budget_to_storable(budget: BudgetSpec) -> dict[str, Any]:
     return budget.model_dump(mode="json")
 

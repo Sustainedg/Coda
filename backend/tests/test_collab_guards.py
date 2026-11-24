@@ -350,6 +350,61 @@ async def test_budget_patch_rescues_exhausted_run(client: httpx.AsyncClient, tmp
     assert detail["steps_used"] > 2  # 确实又推进了，而不是原地挂起
 
 
+async def test_editing_the_team_does_not_break_a_paused_run(
+    client: httpx.AsyncClient, tmp_path: Path
+):
+    """运行按自己第一次推进时冻结的图走：改协作组（哪怕改 key）也不会打断已下发的工单。"""
+    env = await make_env(
+        {
+            "ceo": [split("se", "实现暗色主题"), {"action": "done", "summary": "收尾"}],
+            "se": [{"action": "submit", "summary": "已实现"}],
+        },
+        tmp_path,
+    )
+    spec = GraphSpec(
+        nodes=[
+            NodeSpec(key="ceo", agent_profile_id=env["agent_profiles"]["ceo"], label="CEO", duty=Duty.COORDINATOR),
+            NodeSpec(key="se", agent_profile_id=env["agent_profiles"]["se"], label="SE", duty=Duty.ENGINEER),
+        ],
+        edges=[EdgeSpec(from_key="ceo", to_key="se", kind=EdgeKind.ASSIGN)],
+    )
+    budget = {
+        "max_steps": 1,
+        "max_tickets": 10,
+        "max_rounds_per_ticket": 2,
+        "max_tokens": 0,
+        "timeout_seconds": 600,
+    }
+    team = await create_team(client, spec, budget=budget)
+    run_id, _ = await start_run(client, team["id"], "把登录页改成暗色主题")
+
+    detail = (await client.get(f"/api/collab/runs/{run_id}")).json()
+    assert detail["status"] == "waiting_user"
+    # 子工单已经派出去、攥在 se 手里
+    assert any(ticket["holder_key"] == "se" for ticket in detail["tickets"])
+
+    # 把 se 改名成 sde：以前这里 409，现在必须允许保存
+    graph = (await client.get(f"/api/collab/teams/{team['id']}")).json()["graph"]
+    for node in graph["nodes"]:
+        if node["key"] == "se":
+            node["key"] = "sde"
+    for edge in graph["edges"]:
+        if edge["from_key"] == "se":
+            edge["from_key"] = "sde"
+        if edge["to_key"] == "se":
+            edge["to_key"] = "sde"
+    saved = await client.put(f"/api/collab/teams/{team['id']}", json={"graph": graph})
+    assert saved.status_code == 200, saved.text
+
+    # 续跑仍按快照里的 se 走完，不会报「持有者不在图里」
+    await client.post(f"/api/collab/runs/{run_id}/budget", json={"max_steps": 20})
+    resume = await client.post(f"/api/collab/runs/{run_id}/resume")
+    assert resume.status_code == 200, resume.text
+    await read_sse(resume)
+    detail = (await client.get(f"/api/collab/runs/{run_id}")).json()
+    assert detail["status"] == "done", detail["error"]
+
+
 async def test_budget_patch_can_rescue_token_exhausted_run(client: httpx.AsyncClient, tmp_path: Path):
     """token 超限挂起后，调高上限（或设为 0 不限）也必须能把运行救回来。"""
     env = await make_env(

@@ -897,6 +897,9 @@ def _isolate_codebuddy_env(monkeypatch, tmp_path) -> None:
         "CODEBUDDY_AUTH_TOKEN",
         "CODEBUDDY_INTERNET_ENVIRONMENT",
         "CODEBUDDY_IS_SANDBOX",
+        # 这两个会改变 auth_status() 的结论：本机设了就提前清掉，测试才可复现
+        "CODEBUDDY_CREDENTIALS_IN_MEMORY",
+        "CODEBUDDY_LOGIN_METHOD",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -1154,17 +1157,25 @@ def test_codebuddy_auth_status_reports_credential_sources(monkeypatch, tmp_path)
     status = definition.auth_status()
     assert status.required is True
     assert status.logged_in is False
-    assert "/login" in (status.detail or "")
+    assert "登录" in (status.detail or "")
 
-    # 非空的凭据缓存算「已登录」
+    # MCP / 插件的 OAuth 缓存不是账号登录态（它是另一份存储）
     cfg.mkdir(parents=True)
     (cfg / ".credentials.json").write_text(
         json.dumps({"mcp-server": {"accessToken": "x"}}), encoding="utf-8"
     )
+    assert definition.auth_status().logged_in is False
+
+    # 真正的账号 session 落在 Data/Public/auth/*.info（跟随真实 HOME）
+    from app.agents.builtin.codebuddy_cli import auth_store_dir
+
+    store = auth_store_dir()
+    store.mkdir(parents=True)
+    (store / "abc.info").write_text("{}", encoding="utf-8")
     assert definition.auth_status().logged_in is True
 
-    # 空对象只是占位文件，不能当成登录态
-    (cfg / ".credentials.json").write_text("{}", encoding="utf-8")
+    # 空文件只是占位，不能当成登录态
+    (store / "abc.info").write_text("", encoding="utf-8")
     assert definition.auth_status().logged_in is False
 
     # 环境变量凭据：平台不联网校验，结论是「未知」但要说清来源
@@ -1191,9 +1202,15 @@ def test_codebuddy_auth_status_reports_credential_sources(monkeypatch, tmp_path)
     assert "apiKeyHelper" in (status.detail or "")
 
 
-def test_codebuddy_probes_auth_without_declaring_a_login_command():
-    """内核没有 `login` 子命令：只声明登录态探测，不假装有可代跑的登录动作。"""
+def test_codebuddy_declares_visual_login_helper():
+    """内核没有 `login` 子命令：登录按钮由 ``--serve`` API 助手实现，输出二维码。"""
+    from pathlib import Path
+
     definition = get_agent("codebuddy-cli")
     assert definition.supports_auth() is True
     assert definition.provisioner is not None
-    assert definition.provisioner.supports("login") is False
+    assert definition.provisioner.supports("login") is True
+    argv = definition.provisioner.argv_for("login")
+    assert len(argv) == 2
+    assert Path(argv[1]).is_file()
+    assert Path(argv[1]).name == "codebuddy_login.py"

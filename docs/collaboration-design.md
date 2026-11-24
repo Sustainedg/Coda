@@ -527,7 +527,7 @@ UI 提供「继续」按钮（从就绪队列重新推进）。不删数据、�
 | `GET` | `/api/collab/teams` | 协作组列表（含节点数/是否可运行） |
 | `POST` | `/api/collab/teams` | 新建（可先空图） |
 | `GET` | `/api/collab/teams/{id}` | 详情：元信息 + 完整图 + 上次校验结果 |
-| `PUT` | `/api/collab/teams/{id}` | **整图保存**（元信息 + nodes + edges），返回校验结果；删改仍被历史运行引用的节点 key → 409 |
+| `PUT` | `/api/collab/teams/{id}` | **整图保存**（元信息 + nodes + edges），返回校验结果；改图只影响还没开跑 / 之后新建的运行（已下工单的运行用自己的图快照） |
 | `POST` | `/api/collab/teams/{id}/validate` | 只校验不保存（编辑器实时校验用） |
 | `POST` | `/api/collab/teams/{id}/duplicate` | 复制 |
 | `DELETE` | `/api/collab/teams/{id}` | 删除（有运行记录 → 409） |
@@ -549,10 +549,13 @@ UI 提供「继续」按钮（从就绪队列重新推进）。不删数据、�
 
 **节点 key 是引用键，不是显示名**：工单（`owner_key` / `holder_key` / `submitter_key` / `escalation`）、
 步骤（`role_key` / `target_key`）、运行（`entry_key`）与入口对话（`role_key`）里存的都是**当时的 key**，
-改名不会自动迁移。因此保存时若发现某个 key 消失、而它还被历史运行引用着，直接返回 **409** 并列出引用处 ——
-改名与「删掉旧节点、新建一个」在图里无从区分，只能拦住；要改名请先删除相关运行，或复制协作组在副本里改。
-同理，提示词里**不得出现任何写死的示例 key**：节点 key 由用户在画布上起名，写死的示例（曾经是 `dev`）
-会被模型当成答案抄进 `assignee`，改名后每一轮派发都必错。
+改名不会自动迁移。**运行在第一次推进（下发第一张工单）时会把整张图快照进 `collab_runs.graph`**，
+之后引擎只读这份快照 —— 所以改协作组（改 key、删节点、换边、换入口）只影响**还没开跑 / 之后新建**的运行，
+已下工单的运行继续按自己的图跑完，不会再出现「改图打断在跑任务」的 409。还没开跑的运行不拍快照，
+因此「先建任务、再回去修图」仍然能把这次任务救回来。升级前没有快照的老运行由启动回填
+（`store.backfill_run_graphs`）或保存前的补拍冻结住正在用的那张图。同理，提示词里**不得出现任何
+写死的示例 key**：节点 key 由用户在画布上起名，写死的示例（曾经是 `dev`）会被模型当成答案抄进
+`assignee`，改名后每一轮派发都必错。
 
 ---
 
@@ -696,7 +699,7 @@ collab_teams(id PK, name, description, entry_key, workspace_dir,
              graph JSON, budget JSON, owner_id, created_at, updated_at)
 
 collab_runs(id PK, team_id → collab_teams RESTRICT, title, goal, status,
-            entry_key, workspace_dir, budget JSON, usage JSON,
+            entry_key, workspace_dir, graph JSON, budget JSON, usage JSON,
             steps_used, tickets_used, error, owner_id, created_at, updated_at)
             idx(team_id), idx(status), idx(owner_id)
 
@@ -724,6 +727,9 @@ collab_steps(id PK, run_id → collab_runs CASCADE, ticket_id → collab_tickets
   删除"运行"是显式操作，级联清理工单与步骤（等价于"删对话必须清消息"的既有惯例）。
 - **`parent_ticket_id` 用 `SET NULL`**：父工单被拒绝/删除时不连带毁掉子工单记录。
 - **零迁移风险**：全部是新增表，`create_all` 会自动建；现有 `data/coda.db` 直接启动即可（铁律 9）。
+- **运行快照 `collab_runs.graph`**：运行第一次推进时复制整张图，之后引擎只读这份快照（与 `budget` /
+  `entry_key` / `workspace_dir` 同属「运行时的配置快照」）。协作组的后续修改只影响还没开跑的新运行，
+  已下工单的运行不会被改 key / 删节点打断。后加列由 `ADDITIVE_COLUMNS` 幂等补上，老行留空。
 - **多用户归属**：`collab_teams.owner_id` 与 `collab_runs.owner_id` 都是后加的可空列（旧库由
   `bootstrap.backfill_ownership` 回填给首任管理员）。协作组、运行、工单与步骤的读写接口按
   `owner_id` 隔离；协作图节点只能引用当前用户自己的智能体（管理员除外），否则运行时会用到
@@ -848,7 +854,7 @@ curl -s http://127.0.0.1:8010/api/health
 | `backend/app/transport/sse.py` | 由 `api/sse.py` 平移而来的通用 SSE 设施 |
 | `backend/tests/test_collab_tickets.py` | 29 项：解析容错、语义校验、协议说明（含「协议说明里不得写死示例 key」） |
 | `backend/tests/test_collab_graph.py` | 14 项：主链通过、缺失入口、孤立节点、审查闭环、assign 成环、岗位边不相容、智能体被删… |
-| `backend/tests/test_collab_api.py` | 7 项：CRUD、草稿可存但报错、`validate`、404、422、有运行记录删除返回 409、改掉仍在被引用的节点 key 返回 409（未被引用的照旧可改） |
+| `backend/tests/test_collab_api.py` | 9 项：CRUD、草稿可存但报错、`validate`、404、422、有运行记录删除返回 409、改节点 key 照常保存且已下工单的运行保留自己的图快照、未开跑的运行跟随最新图、启动回填只冻结已下工单的老运行（幂等） |
 | `backend/tests/test_collab_architecture.py` | 7 条分层守卫（§2.5） |
 
 验证（M0 当时的基线）：`bash scripts/test.sh` → **115 passed, 2 skipped** +

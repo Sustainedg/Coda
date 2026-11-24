@@ -46,6 +46,8 @@ ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "owner_id": "VARCHAR(64)",
         # 步骤序号计数器：并行推进时用「UPDATE ... RETURNING」原子取号，避免撞号
         "step_seq": "INTEGER NOT NULL DEFAULT 0",
+        # 第一次推进时冻结的编排图快照：之后改协作组不再影响已下工单的运行
+        "graph": "JSON",
     },
 }
 
@@ -100,6 +102,11 @@ class CollabRun(SQLModel, table=True):
     budget: dict[str, Any] = Field(
         default_factory=dict, sa_column=Column(JSON, nullable=False, default=dict)
     )
+    #: 第一次推进（下发第一张工单）时冻结的编排图快照（``collab_teams.graph`` 的副本）。
+    #: 拍下快照后运行就只认自己的图：用户之后改协作组（改 key、删节点、换边）
+    #: 都不会打断已有工单。为空表示还没开跑（跟着协作组现图）或升级前的老数据
+    #: （引擎回退现图，并在下一次推进时补拍；见 ``engine.prepare_turn`` / ``store.backfill_run_graphs``）。
+    graph: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
     usage: dict[str, Any] = Field(
         default_factory=dict, sa_column=Column(JSON, nullable=False, default=dict)
     )

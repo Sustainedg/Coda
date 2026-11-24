@@ -42,10 +42,13 @@ from .graph import (
     effective_output_contract,
     entry_node,
     from_storable,
+    has_graph_snapshot,
     node_map,
     reviewer_of,
     rework_edge,
     rework_targets,
+    run_graph_source,
+    to_storable,
     validate_graph,
 )
 from .prompt import (
@@ -301,18 +304,25 @@ async def prepare_turn(
     team = await session.get(CollabTeam, run.team_id)
     if team is None:
         raise TurnError("协作组已被删除")
+    # 已经下过工单的运行只认自己的图快照；还没开跑的运行跟着协作组的最新图。
+    pinned = has_graph_snapshot(run.graph)
     try:
-        graph = from_storable(team.graph)
+        graph = from_storable(run_graph_source(run.graph, team.graph))
     except ValueError as exc:
         raise TurnError(f"编排图无法解析：{exc}") from None
 
-    validation = validate_graph(graph, team.entry_key)
+    entry_key = (run.entry_key or team.entry_key) if pinned else team.entry_key
+    validation = validate_graph(graph, entry_key)
     if not validation.ok:
         detail = "；".join(issue.message for issue in validation.errors[:3])
         raise TurnError(f"编排图还不能跑：{detail}")
 
-    entry = entry_node(graph, team.entry_key)
+    entry = entry_node(graph, entry_key)
     assert entry is not None  # validate_graph 已经保证
+    if not pinned:
+        # 第一张工单下发的同时冻结图：之后改协作组（改 key / 删节点 / 换边）就与它无关了。
+        run.graph = to_storable(graph)
+        run.entry_key = entry_key
 
     text = (content or "").strip()
     tickets = await _tickets(session, run_id)
@@ -541,16 +551,20 @@ async def prepare_chat(
     team = await session.get(CollabTeam, run.team_id)
     if team is None:
         raise ChatError("协作组已被删除")
+    pinned = has_graph_snapshot(run.graph)
     try:
-        graph = from_storable(team.graph)
+        graph = from_storable(run_graph_source(run.graph, team.graph))
     except ValueError as exc:
         raise ChatError(f"编排图无法解析：{exc}") from None
-    validation = validate_graph(graph, team.entry_key)
+    entry_key = (run.entry_key or team.entry_key) if pinned else team.entry_key
+    validation = validate_graph(graph, entry_key)
     if not validation.ok:
         detail = "；".join(issue.message for issue in validation.errors[:3])
         raise ChatError(f"编排图还不能跑：{detail}")
-    entry = entry_node(graph, team.entry_key)
+    entry = entry_node(graph, entry_key)
     assert entry is not None
+    # 聊天不拍快照：它只是「和入口负责人说话」，没有下发工单就不该冻结编排图。
+    # 图快照只在第一张工单下发时由 ``prepare_turn`` 冻结。
 
     tickets = await _tickets(session, run.id)
     history = await _chat_history(session, run.id)

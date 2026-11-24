@@ -129,6 +129,16 @@ export function MobileRuntimesPage() {
     }
   }
 
+  /** 多账号内核：切换一个已保存的账号（移动端直接点账号名）。 */
+  const switchAccount = async (runtime: AgentRuntime, accountId: string) => {
+    try {
+      const status = await api.activateRuntimeAccount(runtime.id, accountId)
+      setAuth((prev) => ({ ...prev, [runtime.id]: status }))
+    } catch (e) {
+      setError(describeError(e))
+    }
+  }
+
   const reload = async () => {
     try {
       // 无实体的内核（自定义 CLI / OpenAI 兼容）不进列表 —— 见 HIDDEN_RUNTIME_IDS 的说明。
@@ -370,6 +380,28 @@ export function MobileRuntimesPage() {
 
                   {managed && provisioning.note && <div className="banner warn">{provisioning.note}</div>}
 
+                  {/* 多账号：内核只保留当前登录态，平台把每次登录存成槽位，点一下即可切换。 */}
+                  {isAdmin && authInfo?.accounts && authInfo.accounts.length > 0 && provisioning.installed && (
+                    <div className="row wrap" style={{ gap: 6 }}>
+                      {authInfo.accounts.map((account) =>
+                        account.active ? (
+                          <span key={account.id} className="pill ok">
+                            ✓ {account.label}
+                          </span>
+                        ) : (
+                          <button
+                            key={account.id}
+                            className="btn sm"
+                            disabled={busy}
+                            onClick={() => void switchAccount(runtime, account.id)}
+                          >
+                            {account.label}
+                          </button>
+                        ),
+                      )}
+                    </div>
+                  )}
+
                   <div className="row wrap" style={{ gap: 6 }}>
                     {busy && (
                       <>
@@ -407,7 +439,7 @@ export function MobileRuntimesPage() {
                         onClick={() => void start(runtime, 'login')}
                         disabled={busy}
                       >
-                        {loggedIn ? '重新登录' : '登录'}
+                        {loggedIn ? (authInfo?.accounts?.length ? '登录其他账号' : '重新登录') : '登录'}
                       </button>
                     ) : null}
                     {isAdmin && managed && provisioning.installed && provisioning.commands?.uninstall?.length ? (

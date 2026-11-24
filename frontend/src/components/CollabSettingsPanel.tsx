@@ -230,6 +230,9 @@ export function CollabSettingsPanel({
               {errors.length === 0 ? '图可以跑' : `${errors.length} 个错误`}
             </span>
             {warnings.length > 0 && <span className="pill warn">{warnings.length} 条提醒</span>}
+            <span className="dim small" title="下过工单的运行已经冻结了当时的编排图，继续按原图跑完">
+              改动只影响之后新建 / 还没开跑的任务
+            </span>
             {dirty && <span className="pill">未保存</span>}
             <button className="btn sm" onClick={() => teamId && void loadTeam(teamId)} disabled={saving}>
               放弃改动

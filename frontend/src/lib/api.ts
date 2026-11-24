@@ -276,6 +276,18 @@ export const api = {
   /** 账号型内核扫码登录：二维码通过 provision.qr 事件推回来。 */
   loginRuntime: (typeId: string, onEvent: (event: ProvisionEvent) => void, signal?: AbortSignal) =>
     streamPost<ProvisionEvent>(`/api/runtimes/${typeId}/login`, {}, onEvent, signal),
+  /** 多账号内核：切换到一个已保存的账号，返回切换后的登录状态。 */
+  activateRuntimeAccount: (typeId: string, accountId: string) =>
+    request<RuntimeAuth>(
+      `/api/runtimes/${typeId}/accounts/${encodeURIComponent(accountId)}/activate`,
+      { method: 'POST' },
+    ),
+  /** 多账号内核：删除一个已保存的账号（不影响当前正在用的登录态）。 */
+  removeRuntimeAccount: (typeId: string, accountId: string) =>
+    request<RuntimeAuth>(
+      `/api/runtimes/${typeId}/accounts/${encodeURIComponent(accountId)}`,
+      { method: 'DELETE' },
+    ),
   /** 列出所有进行中 / 刚完成的安装任务（刷新页面后恢复状态用）。 */
   listProvisionJobs: () =>
     request<{ items: ProvisionJobInfo[] }>('/api/runtimes/provision/jobs').then((r) => r.items),

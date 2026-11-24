@@ -796,14 +796,11 @@ async def test_cannot_start_twice_and_resume_needs_something_to_do(client: httpx
     assert blocked.status_code == 409
     assert "请先告诉入口智能体" in blocked.json()["detail"]
 
-    # 图不合法时不允许开跑
-    broken = team_body(full["agent_profiles"])
-    broken["entry_key"] = "se"
+    # 图不合法时不允许开跑：这次运行还没下过工单、没有快照，仍跟着协作组的图
     await client.put(f"/api/collab/teams/{team_id}", json={"entry_key": "se"})
     response = await client.post(f"/api/collab/runs/{run_id}/messages", json={"content": "开始"})
     assert response.status_code == 409
     assert "编排图还不能跑" in response.json()["detail"]
-    assert broken["entry_key"] == "se"
 
 
 async def test_recover_interrupted_also_settles_streaming_steps(client: httpx.AsyncClient, full):

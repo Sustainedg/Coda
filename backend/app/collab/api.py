@@ -39,7 +39,7 @@ from .tables import CollabRun, CollabStep, CollabTicket
 router = APIRouter(prefix="/collab", tags=["collab"])
 
 
-def _conflict(exc: store.TeamInUse | store.TeamKeyInUse) -> HTTPException:
+def _conflict(exc: store.TeamInUse) -> HTTPException:
     return HTTPException(status_code=409, detail=str(exc))
 
 
@@ -186,8 +186,6 @@ async def save_team(
         await _assert_graph_refs_owned(session, user, payload.graph)
     try:
         team = await store.save_team(session, team_id, payload)
-    except store.TeamKeyInUse as exc:
-        raise _conflict(exc) from None
     except store.TeamNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     return store.to_read(team, await _known_agent_profile_ids(session, user))

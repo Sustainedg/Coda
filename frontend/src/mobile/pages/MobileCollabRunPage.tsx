@@ -131,8 +131,10 @@ export function MobileCollabRunPage() {
   }, [])
 
   const team = useMemo(() => teams.find((item) => item.id === detail?.team_id), [teams, detail?.team_id])
+  /** 这次运行自己的编排图（第一次推进时冻结）：改协作组后，老运行的进度图与岗位名仍按原图渲染。 */
+  const graph = detail?.graph ?? team?.graph
   const leaderKey = detail?.entry_key ?? team?.entry_key ?? ''
-  const leaderLabel = team?.graph.nodes.find((node) => node.key === leaderKey)?.label || leaderKey || '领导者'
+  const leaderLabel = graph?.nodes.find((node) => node.key === leaderKey)?.label || leaderKey || '领导者'
   // 同一步骤既有落库行（可能还停在 streaming、内容为空）又有流式结果时，以流式结果为准。
   const streamedStepIds = useMemo(
     () => new Set([
@@ -553,7 +555,7 @@ export function MobileCollabRunPage() {
               message: { id: step.id, role: 'user' as const, content: step.content, parts: [], status: 'complete' },
             }
           }
-          const node = team?.graph.nodes.find((item) => item.key === step.role_key)
+          const node = graph?.nodes.find((item) => item.key === step.role_key)
           const agent = agents.find((item) => item.id === (step.agent_profile_id ?? node?.agent_profile_id))
           return {
             id: step.id,
@@ -620,7 +622,7 @@ export function MobileCollabRunPage() {
     const persisted = new Set(visibleSteps.map((step) => step.id))
     for (const step of turn?.completed ?? []) {
       if (step.nodeKey !== leaderKey || persisted.has(step.stepId)) continue
-      const node = team?.graph.nodes.find((item) => item.key === step.nodeKey)
+      const node = graph?.nodes.find((item) => item.key === step.nodeKey)
       const agent = agents.find((item) => item.id === node?.agent_profile_id)
       entries.push({
         id: step.stepId,
@@ -645,7 +647,7 @@ export function MobileCollabRunPage() {
     ? {
         id: 'live',
         avatar: agents.find(
-          (agent) => agent.id === team?.graph.nodes.find((node) => node.key === leaderLive.nodeKey)?.agent_profile_id,
+          (agent) => agent.id === graph?.nodes.find((node) => node.key === leaderLive.nodeKey)?.agent_profile_id,
         )?.avatar ?? '🤖',
         label: leaderLive.agentName,
         message: {
@@ -665,10 +667,10 @@ export function MobileCollabRunPage() {
   const chatLiveEntry: TimelineEntry | null = chatTurn.live
     ? {
         id: `chat-live-${chatTurn.live.messageId}`,
-        avatar: agents.find((agent) => agent.id === team?.graph.nodes.find(
+        avatar: agents.find((agent) => agent.id === graph?.nodes.find(
           (node) => node.key === (chatTurn.live?.roleKey || leaderKey),
         )?.agent_profile_id)?.avatar ?? '🤖',
-        label: team?.graph.nodes.find(
+        label: graph?.nodes.find(
           (node) => node.key === (chatTurn.live?.roleKey || leaderKey),
         )?.label ?? chatTurn.live.agentName,
         message: {
@@ -699,7 +701,7 @@ export function MobileCollabRunPage() {
   const progress = useMemo(
     () =>
       buildCollabProgress({
-        graph: team?.graph,
+        graph,
         entryKey: leaderKey,
         steps: detail?.steps ?? [],
         tickets: detail?.tickets ?? [],
@@ -708,7 +710,7 @@ export function MobileCollabRunPage() {
         streamed: turn?.completed ?? [],
         runStatus: status,
       }),
-    [team?.graph, leaderKey, detail?.steps, detail?.tickets, agents, turn?.live, turn?.completed, status],
+    [graph, leaderKey, detail?.steps, detail?.tickets, agents, turn?.live, turn?.completed, status],
   )
   const selectedNode = progress.nodes.find((node) => node.key === selectedNodeKey) ?? null
   const besideLeader =

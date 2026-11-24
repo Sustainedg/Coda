@@ -148,6 +148,15 @@ POST /api/conversations/{id}/messages
 | `auto_provision` | 视需要 | 首次播种是否自动建实例（模板类设为 `False`，如 `custom-cli`） |
 | `docs_url` | 可选 | 配置页的"查看文档"链接 |
 
+可选钩子（默认不实现即关闭，与 `resume_supported(ctx)` 同类）：
+
+- `auth_status()`：账号型内核的登录态探测，返回 `AuthStatus`；只做配置层判断，不联网校验有效性。
+- `AuthStatus.accounts` / `RuntimeAccount`：把保存过的登录列成平台侧「账号槽位」（昵称 / 企业 /
+  是否当前）。适配器覆盖 `activate_account()` / `remove_account()` 实现切换与删除，
+  槽位怎么存（文件快照 / 独立 HOME / 内核自带多账号）是**适配器的知识**；
+  `supports_accounts()` 由「是否覆盖 `activate_account()`」判定。框架只提供切换 / 删除接口，
+  前端据此渲染账号列表，不按 `type_id` 写死任何界面。
+
 ### 4.3 `Capabilities` 语义（声明即生效）
 
 | 能力 | 声明为 True 时框架会做什么 |
@@ -240,6 +249,9 @@ POST /api/conversations/{id}/messages
 │         → 用内置「自定义 CLI」声明式配置（§6.3）
 ├─ 让某个智能体多一个可调参数
 │     → 加一个 ConfigField（§6.4）
+├─ 让账号型内核支持多账号切换
+│     → `auth_status()` 带回 `accounts`（`RuntimeAccount`），覆盖
+│       `activate_account()` / `remove_account()`；框架自动提供切换 / 删除接口（§4.2）
 ├─ 让某个适配器支持技能 / MCP
 │     → 声明 `capabilities.skills` / `capabilities.mcp`，再实现扫描与物化钩子
 │       （`discover_skills()` / `skill_mount()`，`discover_mcp_servers()` / `mcp_mount()`）。

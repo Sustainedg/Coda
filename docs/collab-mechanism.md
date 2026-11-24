@@ -79,7 +79,7 @@ collab_teams   id, name, description, entry_key, workspace_dir,
                graph(JSON), budget(JSON), owner_id, created_at, updated_at
 
 collab_runs    id, team_id→teams RESTRICT, title, goal, status,
-               entry_key, workspace_dir, budget(JSON), usage(JSON),
+               entry_key, workspace_dir, graph(JSON), budget(JSON), usage(JSON),
                steps_used, tickets_used, error, owner_id, created_at, updated_at
 
 collab_tickets id, run_id→runs CASCADE, parent_ticket_id→tickets SET NULL,
@@ -110,8 +110,12 @@ collab_messages id, run_id→runs CASCADE, sender(user|leader), role_key,
 工单（`owner_key` / `holder_key` / `submitter_key` / `escalation`）、步骤（`role_key` / `target_key`）、
 运行（`entry_key`）、聊天（`role_key`）里存的全是**当时的节点 key**。因此：
 
-- 保存协作图时，如果某个 key 消失且**还被历史运行引用**，接口返回 **409** 并列出引用处（`store._stale_key_references`）。
-- 改名与「删旧建新」在图里长得一样，无法区分，所以只能拦；要改名请先删运行，或复制协作组在副本里改。
+- **运行在第一次推进（下发第一张工单）时冻结整张图**（`collab_runs.graph`），引擎每轮只读这份快照。
+  改协作组（改 key / 删节点 / 换边 / 换入口）只影响还没开跑 / 之后新建的运行，已下工单的运行继续按
+  自己的图跑完；保存不再返回 409。
+- 还没开跑的运行不拍快照，仍跟着协作组最新图 —— 所以「先建任务、再回去修图」也能救回来。
+- 升级前没有快照、且已经下过工单的老运行：启动时由 `store.backfill_run_graphs()` 用协作组当时的图补一份；
+  保存协作图前也会先给它们补拍，保证改图不会打断任何已有工单。
 - 提示词里**不得写死示例 key**：模型会把示例当答案抄进 `assignee`（历史事故，见 `test_protocol_guide_never_bakes_in_a_node_key`）。
 
 ---
@@ -584,7 +588,7 @@ open ──(被领取)──▶ working ──submit(有审查者)──▶ revi
 | 码 | 场景 |
 | --- | --- |
 | 404 | 协作组/运行不存在，或**不属于当前用户**（不说 403，避免泄露存在性） |
-| 409 | 正在推进 / CEO 正在回复；协作组下还有运行；节点 key 仍被引用；预算只能调大；图不能跑 |
+| 409 | 正在推进 / CEO 正在回复；协作组下还有运行（删除时）；预算只能调大；图不能跑 |
 | 422 | 请求体结构非法；节点引用了不属于自己的智能体；附件不是合法 base64 |
 | 413 | 附件超过 8 MB |
 
@@ -697,8 +701,8 @@ open ──(被领取)──▶ working ──submit(有审查者)──▶ revi
 1. **默认串行**（`max_parallel=1`）：同一时刻只推进一个步骤；调高后只有「同父兄弟工单 + 不同岗位」能同波并行，同一岗位永远串行。
 2. **不能共享记忆**：智能体之间只有工单，没有聊天记录；每个步骤都是全新内核会话。
 3. **不能自由流转**：必须输出 `work_order` 块并通过语义校验，没有「随便说句话就推进」的路径。
-4. **不能跨图**：一张运行只对应一个协作组；不能运行中换图（换图请新建运行）。
-5. **不能修改历史 key**：运行/工单/步骤里记的是当时的节点 key，改名会被 409 拦住。
+4. **不能跨图**：一张运行只对应一个协作组，下过工单后用的是第一次推进时冻结的图快照；运行中途改协作组不会改变这次运行的图（想换图请新建运行）。
+5. **不能把历史 key 交给新图**：运行/工单/步骤里记的是当时的节点 key；老运行靠自己的图快照继续，改协作组的 key 不会迁移到已有运行里。
 6. **不能把预算调小**：只能调高，且必须大于当前已用量。
 7. **不能强隔离文件系统**：`none` / `read` 是提示词约束 + 事后审计，不是沙箱。
 8. **不能中途注入新指令到正在跑的步骤**：聊天里追加的要求从下一步生效。

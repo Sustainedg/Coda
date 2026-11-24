@@ -5,7 +5,8 @@
 """
 from __future__ import annotations
 
-from app.db import engine, init_db
+from app.collab.tables import CollabTeam
+from app.db import SessionLocal, engine, init_db
 
 #: 模拟"更早版本"建出来的 collab_steps（没有 gist 列）
 OLD_SCHEMA = """
@@ -84,3 +85,40 @@ async def test_report_column_is_added_to_an_existing_tickets_table():
         count = (await conn.exec_driver_sql("SELECT COUNT(*) FROM collab_tickets")).scalar()
     assert "report_at" in columns, "旧库缺 report_at 列时 init_db 应当自动补上"
     assert count is not None  # 补列不能动到旧行
+
+
+async def test_run_graph_column_is_added_to_an_existing_runs_table():
+    """运行图快照 ``graph`` 也是后加的列：旧库补成 NULL（引擎回退读协作组现图）。"""
+    await init_db()
+    async with SessionLocal() as session:
+        team = CollabTeam(name="老库协作组")
+        session.add(team)
+        await session.commit()
+        await session.refresh(team)
+        team_id = team.id
+
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql("ALTER TABLE collab_runs DROP COLUMN graph")
+        await conn.exec_driver_sql(
+            "INSERT INTO collab_runs "
+            "(id, team_id, title, goal, status, budget, usage, steps_used, tickets_used, step_seq) "
+            "VALUES ('老运行', :team_id, '旧任务', '', 'done', '{}', '{}', 0, 0, 0)",
+            {"team_id": team_id},
+        )
+
+    await init_db()
+    await init_db()
+
+    async with engine.begin() as conn:
+        columns = {
+            row[1] for row in (await conn.exec_driver_sql("PRAGMA table_info(collab_runs)")).all()
+        }
+        value = (
+            await conn.exec_driver_sql("SELECT graph FROM collab_runs WHERE id = '老运行'")
+        ).scalar()
+    assert "graph" in columns, "旧库缺 graph 列时 init_db 应当自动补上"
+    assert value is None, "补列不能凭空造图：旧运行留空，由引擎/启动回填兜底"
+
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql("DELETE FROM collab_runs WHERE id = '老运行'")
+        await conn.exec_driver_sql("DELETE FROM collab_teams WHERE id = :team_id", {"team_id": team_id})

@@ -160,6 +160,32 @@ export function KernelManager() {
     }
   }
 
+  /** 多账号内核：切换 / 删除一个已保存的账号，成功后就地刷新登录状态。 */
+  const switchAccount = async (runtime: AgentRuntime, accountId: string, remove = false) => {
+    try {
+      const status = remove
+        ? await api.removeRuntimeAccount(runtime.id, accountId)
+        : await api.activateRuntimeAccount(runtime.id, accountId)
+      setAuth((prev) => ({ ...prev, [runtime.id]: status }))
+    } catch (e) {
+      setError(describe(e))
+      setAuth((prev) => {
+        const current = prev[runtime.id]
+        return {
+          ...prev,
+          [runtime.id]: {
+            supported: true,
+            required: current?.required ?? true,
+            logged_in: current?.logged_in ?? null,
+            account: current?.account ?? null,
+            accounts: current?.accounts ?? null,
+            detail: describe(e),
+          },
+        }
+      })
+    }
+  }
+
   const reload = async () => {
     const apiStartedAt = performance.now()
     try {
@@ -497,6 +523,11 @@ export function KernelManager() {
             onCheck={() => void checkLatest(openRuntime)}
             onRun={(action) => void start(openRuntime, action)}
             onCancel={cancel}
+            onSwitchAccount={(accountId) => void switchAccount(openRuntime, accountId)}
+            onRemoveAccount={(accountId) => {
+              if (!confirm('确认删除这份已保存的账号？当前正在使用的登录态不受影响。')) return
+              void switchAccount(openRuntime, accountId, true)
+            }}
           />
         </Modal>
       )}
@@ -600,6 +631,8 @@ function KernelDetail({
   onCheck,
   onRun,
   onCancel,
+  onSwitchAccount,
+  onRemoveAccount,
 }: {
   runtime: AgentRuntime
   latest?: RuntimeLatest
@@ -613,6 +646,8 @@ function KernelDetail({
   onCheck: () => void
   onRun: (action: RuntimeAction) => void
   onCancel: () => void
+  onSwitchAccount: (accountId: string) => void
+  onRemoveAccount: (accountId: string) => void
 }) {
   const { isAdmin } = useAuth()
   const provisioning = runtime.provisioning
@@ -695,6 +730,42 @@ function KernelDetail({
         </div>
       )}
 
+      {/* 多账号：内核只保留「当前这一个」登录态，平台把每次登录存成槽位，点切换即可。
+          切换只影响之后启动的对话；正在跑的那一轮仍然用原来的账号。
+          `accounts` 为数组（哪怕是空的）就说明内核支持多账号 —— 首次登录前也给一句说明，
+          否则用户会以为这个功能没生效。 */}
+      {isAdmin && authSupported && provisioning.installed && Array.isArray(auth?.accounts) && (
+        <div className="stack" style={{ gap: 6 }}>
+          <div className="dim small">已保存的账号（切换后新对话生效，正在运行的任务不受影响）：</div>
+          {auth!.accounts!.length === 0 ? (
+            <div className="dim small">
+              还没有保存的账号 —— 点「登录」完成授权后会自动保存；再点「登录其他账号」即可加入第二个账号。
+            </div>
+          ) : (
+            auth!.accounts!.map((account) => (
+              <div key={account.id} className="row wrap" style={{ gap: 8, alignItems: 'center' }}>
+                <span className={account.active ? undefined : 'dim'}>
+                  {account.active ? '● ' : '○ '}
+                  {account.label}
+                </span>
+                {account.active ? (
+                  <span className="pill ok">当前</span>
+                ) : (
+                  <>
+                    <button className="btn sm" onClick={() => onSwitchAccount(account.id)} disabled={busy}>
+                      切换
+                    </button>
+                    <button className="btn sm ghost" onClick={() => onRemoveAccount(account.id)} disabled={busy}>
+                      删除
+                    </button>
+                  </>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
       <div className="row wrap" style={{ gap: 8 }}>
         {isAdmin && managed && !provisioning.installed && provisioning.commands?.install?.length ? (
           <button className="btn sm primary" onClick={() => onRun('install')} disabled={busy}>
@@ -713,7 +784,7 @@ function KernelDetail({
         ) : null}
         {isAdmin && loginSupported && provisioning.installed && loggedIn ? (
           <button className="btn sm" onClick={() => onRun('login')} disabled={busy}>
-            重新登录
+            {auth?.accounts?.length ? '登录其他账号' : '重新登录'}
           </button>
         ) : null}
         {isAdmin && managed && provisioning.installed && provisioning.commands?.uninstall?.length ? (

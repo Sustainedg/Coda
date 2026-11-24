@@ -192,9 +192,15 @@ class AgentDefinition(ABC):
   `AgentDefinition.auth_status()`，详情弹层据此显示「已登录 / 未登录」和「登录」按钮。
   登录命令按通用约定输出 `QR_IMAGE=<图片路径>`，框架读出图片（校验 PNG/JPEG/WebP 与大小）
   后以 `provision.qr` 事件推给前端；登录结束后重新调一次 `auth_status()` 收尾。
-  只能交互式登录、没有可代跑子命令的内核（例如 CodeBuddy 的 TUI `/login`）**不要声明
+  只能交互式登录、没有可代跑子命令、也没有可编程登录入口的内核**不要声明
   `login_argv`**：`GET /api/runtimes` 会带 `auth_supported=true`，前端只展示登录状态，
-  不显示一个点了必然失败的「登录」按钮。
+  不显示一个点了必然失败的「登录」按钮。如果内核提供了本地 HTTP 登录 API / OAuth 设备码
+  之类可编程入口，适配器可以写一个登录助手脚本（仍按 `QR_IMAGE=` 协议输出二维码，
+  例如 CodeBuddy 的 `codebuddy_login.py`），框架不因此认识具体内核。
+- **多账号**：适配器在 `auth_status()` 返回 `accounts`（`RuntimeAccount` 列表），并覆盖
+  `activate_account()` / `remove_account()`，框架就提供 `POST /runtimes/{id}/accounts/{账号}/activate`
+  与 `DELETE /runtimes/{id}/accounts/{账号}`；详情弹层据此渲染「切换 / 删除」。
+  槽位怎么存（文件快照 / 独立 HOME / 内核自己的多账号）是适配器的知识，框架只做接口。
 - **已经是最新版就不给「更新」按钮**：界面先查一次最新版本，只有确实更高才显示
   「更新到 <版本>」；查不到（该适配器没声明 `latest_argv`、查询失败或还没查）时保留普通
   「更新」，免得用户失去升级手段。

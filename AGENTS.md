@@ -444,6 +444,9 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
 `docs/collaboration-design.md`）；纯逻辑放 `tickets.py` / `graph.py` / `prompt.py`（有"必须是纯函数"的
 守卫）；对 `runtime`/`agents` 的调用只能加在 `execution.py`。给协作表加列要同时登记
 `ADDITIVE_COLUMNS`（SQLite 的 `create_all` 不会给旧表补列）。**不要**为了让协作跑通去改适配器或 `runtime/`。
+- **运行快照**：`collab_runs.graph` 在第一次推进（下发第一张工单）时冻结整张图，引擎只读它。改协作组只影响还没开跑 / 之后新建的运行；
+  不要再用「有运行记录就禁止改图」的方式保护老任务（老运行靠自己的快照，升级前的由
+  `store.backfill_run_graphs()` / 保存前补拍兜底）。
 协作聊天也能带附件：落盘用共享的 `app.attachments`，接口是
 `POST /api/collab/runs/{id}/attachments`，`chat` 只收相对路径 —— 附件是工作目录里的普通文件，
 不是协作域新表（也别往对话域塞）。
@@ -470,11 +473,21 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
    `AgentDefinition.auth_status()`。登录命令按通用约定输出 `QR_IMAGE=<图片路径>`，框架读成
    `data:` URL 经 `provision.qr` 事件推给界面；登录任务的任务列表 / 重连接口**只对管理员开放**
    （输出里带的是短期凭据，见 §7）。
-   只能交互式登录、没有可代跑子命令的内核（例如 CodeBuddy 的 TUI `/login`）**不要声明假的
+   只能交互式登录、没有可代跑子命令的内核（例如只有 TUI `/login` 的内核）**不要声明假的
    `login_argv`**：只实现 `auth_status()` 即可 —— `supports_auth()` 会让「内核管理」卡片显示
    登录状态，但不出现一个点了必然失败的「登录」按钮。
-3. 不要把「怎么装」写进 `api/` 或 `runtime/`（框架层不得硬编码包管理器或内核 id）。
-4. 不支持由平台代管的适配器（进程内 API 内核、用户自备的 `custom-cli`）保持 `provisioner = None`，
+   如果内核另有**可编程的登录入口**（本地 HTTP API / OAuth 设备码 / 扫码接口），在适配器目录里
+   写一个登录助手脚本，由 `login_argv` 调起，并仍按 `QR_IMAGE=` 协议输出二维码。助手是适配器的
+   一部分，框架仍然不认识具体内核；参考 `builtin/codebuddy_login.py`（`--serve` API → 授权链接
+   → 二维码 → 轮询完成）。
+3. 多账号：内核若只维护「当前这一个」登录态，适配器可以把每次登录的凭据存档成平台侧槽位，
+   在 `auth_status()` 的 `accounts` 里列出（`RuntimeAccount`），并覆盖
+   `activate_account()` / `remove_account()`。框架提供 `POST /runtimes/{id}/accounts/{账号}/activate`
+   与 `DELETE /runtimes/{id}/accounts/{账号}`，前端在内核详情里渲染账号列表；
+   `supports_accounts()` 由「是否覆盖 `activate_account()`」判断。参考
+   `builtin/codebuddy_accounts.py`。切换只影响之后启动的对话，正在跑的不换号。
+4. 不要把「怎么装」写进 `api/` 或 `runtime/`（框架层不得硬编码包管理器或内核 id）。
+5. 不支持由平台代管的适配器（进程内 API 内核、用户自备的 `custom-cli`）保持 `provisioner = None`，
    卡片副标题会写明「进程内运行」/「自备可执行文件」。
 
 ### 4.11 让某个适配器支持 MCP

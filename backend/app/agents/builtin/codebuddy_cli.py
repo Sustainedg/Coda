@@ -11,15 +11,19 @@ CodeBuddy Code 是 Claude Code 家族的 headless 内核：``-p --output-format 
   不能像 Claude Code 那样用 ``base_url_env`` —— ``CODEBUDDY_BASE_URL`` 会被内核拼成
   ``<base>/v2/chat/completions``，那是它自家协议，不是平台的 OpenAI 网关；
 * **官方链路**是「本机账号登录 + 站点选择」：交互式 TUI 里 ``/login`` 完成授权，
-  凭据由内核交给**系统密钥环**（容器里通常没有）。无头部署请改用
-  ``CODEBUDDY_API_KEY``（中国版必须同时设 ``CODEBUDDY_INTERNET_ENVIRONMENT=internal``）
-  或 ``CODEBUDDY_AUTH_TOKEN``，否则请求会打到海外站 www.codebuddy.ai 而鉴权失败。
+  session 落盘在 ``Data/Public/auth/*.info``（跟随真实 HOME，与
+  ``CODEBUDDY_CONFIG_DIR`` 无关）。平台没有 TUI，但可以借 ``--serve`` 的本地 HTTP API
+  做**可视化登录**（授权链接 → 二维码 → 轮询完成），实现见 ``codebuddy_login.py``。
+  无头部署也可以改用 ``CODEBUDDY_API_KEY``（中国版必须同时设
+  ``CODEBUDDY_INTERNET_ENVIRONMENT=internal``）或 ``CODEBUDDY_AUTH_TOKEN``，
+  否则请求会打到海外站 www.codebuddy.ai 而鉴权失败。
 """
 from __future__ import annotations
 
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -33,6 +37,7 @@ from ..base import (
     FieldType,
     Invocation,
     Runtime,
+    RuntimeAccount,
     RuntimeProvisioner,
 )
 from ..events import (
@@ -55,6 +60,16 @@ from ..skills import (
     SkillSpec,
     scan_skill_roots,
 )
+#: 账号槽位（平台侧多账号）：登录态文件是单账号的，槽位负责存档 / 切换。
+#: ``auth_store_dir`` 从这里再导出，测试与文档都按这个入口找。
+from .codebuddy_accounts import (
+    activate as _activate_saved_account,
+    auth_store_dir,
+    is_logged_out,
+    list_saved,
+    read_live_auth,
+    remove as _remove_saved_account,
+)
 from .util import (
     as_list,
     flatten_content,
@@ -74,10 +89,18 @@ _MODELS_FILE = "models.json"
 #: 内核自己的用户级配置文件，按顺序合并（后者覆盖前者）。
 _SYSTEM_SETTINGS_FILES = ("settings.json", "settings.local.json")
 
-#: 本机的凭据缓存文件（插件选项 / MCP OAuth 等）。**账号登录**的 token 由内核交给
-#: 系统密钥环（macOS Keychain / GNOME Keyring / KWallet / Windows 凭据管理器），
-#: 容器里往往没有密钥环 —— 这时下面这几份缓存是唯一能跟着隔离目录走的东西。
+#: 本机的凭据缓存文件（插件选项 / MCP OAuth 等）。**账号登录**的 session 不在
+#: ``CODEBUDDY_CONFIG_DIR`` 里，而是写进下面 :func:`auth_store_dir` 指向的共享数据目录
+#: （见 ``FileAuthenticationStorage``）。这两份缓存仍会跟着隔离目录走，避免插件 / MCP
+#: 的 OAuth token 每次对话都要重新授权。
 _CREDENTIAL_FILES = (".credentials.json", "credentials.json")
+
+#: 登录助手：内核没有 ``login`` 子命令，但 ``--serve`` 暴露了账号登录的本地 HTTP API。
+#: 助手把「拉起服务 → 拿授权链接 → 渲染二维码 → 轮询完成」包成通用登录协议。
+_LOGIN_HELPER = Path(__file__).resolve().with_name("codebuddy_login.py")
+
+#: 让凭据只留进程内存的开关（内核支持，适合一次性沙箱）。
+_CREDENTIALS_IN_MEMORY_ENV = "CODEBUDDY_CREDENTIALS_IN_MEMORY"
 
 #: 官方链路的站点选择。国际站不设；中国版 / iOA / 专享 / 私有化各有取值。
 _NETWORK_ENV = "CODEBUDDY_INTERNET_ENVIRONMENT"
@@ -193,19 +216,6 @@ def _setting_present(name: str, file_env: dict[str, Any]) -> bool:
     return bool(str(value or "").strip())
 
 
-def _credential_cache_names() -> list[str]:
-    """本机存在且非空的凭据缓存文件名；读不到 / 解析不了都当没有。"""
-    found: list[str] = []
-    for name in _CREDENTIAL_FILES:
-        try:
-            data = json.loads((config_dir() / name).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(data, dict) and data:
-            found.append(name)
-    return found
-
-
 def _is_root() -> bool:
     """当前进程是否以 root 身份运行（real uid，与内核的判定一致）。"""
     getuid = getattr(os, "getuid", None)
@@ -249,12 +259,17 @@ class CodeBuddyCliAgent(AgentDefinition):
         uninstall_argv=npm_cli("uninstall", "-g", "@tencent-ai/codebuddy-code"),
         latest_argv=npm_cli("view", "@tencent-ai/codebuddy-code", "version"),
         prepare_argv=npm_prepare_argv("@tencent-ai/codebuddy-code"),
+        #: 内核没有 ``login`` 子命令，但 ``--serve`` 的本地 HTTP API 能拿到浏览器授权
+        #: 链接：助手把它渲染成二维码，按平台的通用 ``QR_IMAGE=`` 协议推给界面。
+        login_argv=[sys.executable or "python3", str(_LOGIN_HELPER)],
         homepage="https://cnb.cool/codebuddy/codebuddy-code",
         note=(
-            "官方链路要「本机账号登录」：在容器内运行 `codebuddy` 后输入 `/login` 完成授权"
-            "（凭据存系统密钥环，容器里通常没有）。无密钥环的部署请改用"
-            " CODEBUDDY_API_KEY（中国版需把「官方网络环境」设为 internal）"
-            " 或 CODEBUDDY_AUTH_TOKEN，填在智能体的「环境变量」里。"
+            "登录：在「内核管理」点「登录」会启动一次临时的 CodeBuddy 登录服务，"
+            "显示授权二维码；用手机扫码在浏览器里完成账号授权即可（登录态保存在服务"
+            "所在机器上，之后所有对话共用）。默认走中国版站点，可用"
+            " CODEBUDDY_LOGIN_METHOD 或 CODEBUDDY_INTERNET_ENVIRONMENT 切换。"
+            "无桌面的部署也可以改用 CODEBUDDY_API_KEY（中国版需把「官方网络环境」"
+            "设为 internal）或 CODEBUDDY_AUTH_TOKEN，填在智能体的「环境变量」里。"
             "自定义网关则直接走 models.json，与账号登录无关。"
         ),
     )
@@ -369,12 +384,12 @@ class CodeBuddyCliAgent(AgentDefinition):
     def auth_status(self) -> AuthStatus:
         """尽力而为地判断官方链路是否已就绪（不联网、不消耗积分）。
 
-        内核把交互登录的 token 交给**系统密钥环**，平台进程读不到，容器里往往也
-        没有密钥环，所以这里只做「配置层」判断，不验证凭据有效性：
+        只做「配置层」判断，不验证凭据有效性：
 
         * 环境变量凭据 / ``apiKeyHelper`` 已配置 → ``logged_in=None``（未知，附说明）；
-        * 本机存在非空的凭据缓存文件 → ``logged_in=True``；
-        * 两者都没有 → ``logged_in=False``，并给出可直接照做的修复建议。
+        * 内核的账号登录 session 已落盘（``Data/Public/auth/*.info``）→ ``logged_in=True``；
+        * 凭据只留进程内存（``CODEBUDDY_CREDENTIALS_IN_MEMORY=1``）→ ``logged_in=None``；
+        * 都没有 → ``logged_in=False``，并给出「点登录按钮扫码」的可直接照做建议。
 
         真正的有效性由内核在运行时确认；失败会以错误事件回到对话里，不会被这里掩盖。
         """
@@ -398,23 +413,64 @@ class CodeBuddyCliAgent(AgentDefinition):
                 logged_in=None,
                 detail="已配置 apiKeyHelper 动态获取 token（平台不联网校验）",
             )
-        caches = _credential_cache_names()
-        if caches:
+        in_memory = str(
+            file_env.get(_CREDENTIALS_IN_MEMORY_ENV)
+            or os.environ.get(_CREDENTIALS_IN_MEMORY_ENV)
+            or ""
+        ).strip().lower()
+        if in_memory in {"1", "true", "yes", "on"}:
+            return AuthStatus(
+                required=True,
+                logged_in=None,
+                detail=(
+                    "已开启 CODEBUDDY_CREDENTIALS_IN_MEMORY：凭据只保存在进程内存，"
+                    "平台无法从磁盘判断登录态（以运行结果为准）"
+                ),
+            )
+        saved = list_saved()
+        accounts = [
+            RuntimeAccount(
+                id=str(item["id"]),
+                label=str(item.get("label") or item["id"]),
+                detail=item.get("detail"),
+                active=bool(item.get("active")),
+            )
+            for item in saved
+        ]
+        if read_live_auth() is not None and not is_logged_out():
+            active = next((item for item in saved if item.get("active")), None)
+            detail = "检测到本机账号登录凭据（以运行结果为准）"
+            if len(saved) > 1:
+                detail += f"；已保存 {len(saved)} 个账号，可在详情里切换"
             return AuthStatus(
                 required=True,
                 logged_in=True,
-                detail=f"检测到本机凭据缓存（{caches[0]}），以运行结果为准",
+                detail=detail,
+                account=str(active.get("label")) if active else None,
+                accounts=accounts,
             )
         return AuthStatus(
             required=True,
             logged_in=False,
             detail=(
-                "未检测到登录凭据，可任选一种方式登录：\n"
-                "① 在服务所在机器的终端里运行 codebuddy，输入 /login 完成账号授权（按提示选择站点）；\n"
-                "② 无头 / 容器部署改用环境变量凭据：在智能体的「环境变量」里配置"
+                "未检测到登录凭据。可在「内核管理」里点「登录」：平台会启动一次 CodeBuddy "
+                "登录服务并显示授权二维码，用手机扫码完成账号授权即可"
+                "（登录态保存在服务所在机器上，之后所有对话共用；已保存的账号可直接切换）。\n"
+                "也可以改用环境变量凭据：在智能体的「环境变量」里配置"
                 " CODEBUDDY_API_KEY（中国版需把「官方网络环境」设为 internal）或 CODEBUDDY_AUTH_TOKEN。"
             ),
+            accounts=accounts,
         )
+
+    # -- 多账号 --------------------------------------------------------------
+
+    def activate_account(self, account_id: str) -> None:
+        """把一个已保存的账号切换到「当前登录」；失败时抛 ``KeyError`` / ``RuntimeError``。"""
+        _activate_saved_account(account_id)
+
+    def remove_account(self, account_id: str) -> None:
+        """删除一个已保存的账号槽位（不影响当前正在用的登录态）。"""
+        _remove_saved_account(account_id)
 
     # -- 技能 ----------------------------------------------------------------
 
@@ -456,8 +512,8 @@ class CodeBuddyCliAgent(AgentDefinition):
         root = config_dir()
         return SkillMount(
             home_name="codebuddy-home",
-            # 只携带用户偏好与凭据缓存，不携带技能目录：技能由平台按分配严格重建。
-            # 隔离目录是每次对话自己的「家」，不带这些的话官方链路会变成未登录。
+            # 只携带用户偏好与插件 / MCP 的 OAuth 缓存，不携带技能目录：技能由平台按分配
+            # 严格重建。账号登录的 session 不在这里（它跟随真实 HOME，见 auth_store_dir）。
             carry=[
                 (str(root / name), name)
                 for name in (*_SYSTEM_SETTINGS_FILES, *_CREDENTIAL_FILES)

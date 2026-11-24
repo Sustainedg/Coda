@@ -31,6 +31,25 @@ export function bundledNodeDir(): string | null {
   return fs.existsSync(exe) ? dir : null;
 }
 
+/** 运行时根目录 → 可执行文件目录（Windows 是根目录本身，POSIX 是 `<root>/bin`）。 */
+function nodeBinDirOf(root: string): string {
+  return process.platform === 'win32' ? root : path.join(root, 'bin');
+}
+
+/**
+ * 内置 Node 的**可执行文件目录**（要放进 PATH 的那个）。
+ *
+ * 两个发行包的布局不一样，混用会得到「未找到命令 node」：
+ *   - Windows：`node.exe` / `npm.cmd` 直接躺在运行时根目录；
+ *   - POSIX（macOS / Linux）：官方发行包是 `<root>/bin/node`、`<root>/bin/npm`，
+ *     根目录里只有 `bin/` `lib/` `VERSION` 等。把根目录塞进 PATH 找不到任何命令 ——
+ *     后端 `provisioning` 起的 `node -e …` 包装命令（npm 安装 / 清扫）因此必然失败。
+ */
+export function bundledNodeBinDir(): string | null {
+  const dir = bundledNodeDir();
+  return dir ? nodeBinDirOf(dir) : null;
+}
+
 /** 该目录是否是内置运行时（供诊断 / 启动页展示）。 */
 export function bundledNodeVersion(): string | null {
   const dir = bundledNodeDir();
@@ -75,7 +94,11 @@ export function desktopRuntimeEnv(): Record<string, string> {
   // 「内核装在哪」也是这个目录，后端与内核都靠它找命令。
   const pathDirs = [nodeGlobalBinDir()];
   if (nodeDir) {
-    pathDirs.unshift(nodeDir);
+    // 前置的是**可执行文件所在目录**（Windows 是运行时根，POSIX 是 <root>/bin），
+    // 不是运行时根 —— 见 bundledNodeBinDir() 的注释。
+    pathDirs.unshift(nodeBinDirOf(nodeDir));
+    // CODA_NODE_HOME 仍指运行时根：它是「内置 Node 装在哪」的标识，诊断与
+    // 后端定位 lib/ 时用，与 PATH 要找可执行文件是两回事。
     env.CODA_NODE_HOME = nodeDir;
   }
   env.PATH = prependPath(pathDirs);

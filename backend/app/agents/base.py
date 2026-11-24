@@ -145,6 +145,26 @@ class Availability:
 
 
 @dataclass(slots=True)
+class RuntimeAccount:
+    """账号型内核的一份已保存登录（平台侧的「账号槽位」）。
+
+    内核自己通常只维护「当前这一个」登录态；平台把每次登录的凭据原样存成槽位后，
+    就能在多个账号之间切换。``id`` 只在本运行时内唯一，前端用它调切换 / 删除接口。
+    """
+
+    id: str
+    #: 展示名（昵称 / 邮箱 + 企业），界面上直接显示
+    label: str
+    #: 补充说明（企业、保存时间等），可空
+    detail: str | None = None
+    #: 是否是当前正在使用的账号
+    active: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "label": self.label, "detail": self.detail, "active": self.active}
+
+
+@dataclass(slots=True)
 class AuthStatus:
     """账号型内核的登录状态（扫码 / OAuth 这类没有 API Key 的内核）。
 
@@ -160,6 +180,8 @@ class AuthStatus:
     detail: str | None = None
     #: 可选的账号标识（邮箱 / 昵称），没有就不展示
     account: str | None = None
+    #: 已保存的账号槽位；``None`` 表示该内核不支持多账号
+    accounts: list[RuntimeAccount] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -167,6 +189,7 @@ class AuthStatus:
             "logged_in": self.logged_in,
             "detail": self.detail,
             "account": self.account,
+            "accounts": None if self.accounts is None else [a.to_dict() for a in self.accounts],
         }
 
 
@@ -403,6 +426,22 @@ class AgentDefinition(ABC):
         「已登录 / 未登录 / 无法判断」摆给管理员看，而不是藏起来。
         """
         return type(self).auth_status is not AgentDefinition.auth_status
+
+    def activate_account(self, account_id: str) -> None:
+        """切换到某个已保存的账号（多账号内核才需要覆盖）。
+
+        同步执行、可能做文件 / 子进程操作，调用方会放进线程池。未知 ``account_id``
+        抛 ``KeyError``；切换失败抛 ``RuntimeError``（消息直接回给界面）。
+        """
+        raise KeyError(account_id)
+
+    def remove_account(self, account_id: str) -> None:
+        """删除一个已保存的账号。未知 ``account_id`` 抛 ``KeyError``。"""
+        raise KeyError(account_id)
+
+    def supports_accounts(self) -> bool:
+        """是否支持多账号切换（覆盖了 :meth:`activate_account` 即为支持）。"""
+        return type(self).activate_account is not AgentDefinition.activate_account
 
     def availability(self) -> Availability:
         if not self.executable:

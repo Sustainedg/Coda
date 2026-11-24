@@ -170,7 +170,7 @@ HOST_PROJECT_DIR=/path/to/projects \
 | `claude-code` | CLI `claude` | ✅ `--session-id` / `--resume` | ✅ | 权限模式、MCP、工具白名单全支持 |
 | `codex` | CLI `codex` | ✅ `exec resume` | ➖ 注入到 prompt | `-c model_providers.*` 指向自定义网关 |
 | `gemini-cli` | CLI `gemini` | ✅ `--resume` | ✅ | 人格自动写入运行期临时文件 |
-| `codebuddy-cli` | CLI `codebuddy` | ✅ `--resume` | ✅ | 腾讯 CodeBuddy Code：官方默认走本机登录 / 环境变量凭据；自定义网关走 `models.json`（仅 OpenAI 兼容） |
+| `codebuddy-cli` | CLI `codebuddy` | ✅ `--resume` | ✅ | 腾讯 CodeBuddy Code：内核详情里点「登录」出授权二维码（`--serve` API），支持**多账号存档与切换**；也支持环境变量凭据；自定义网关走 `models.json`（仅 OpenAI 兼容） |
 | `doubao-cli` | CLI `doubao` | ✅ `--resume` | ➖ 注入到 prompt | 豆包 CLI：扫码登录（无 API Key），内核详情里直接出二维码 |
 | `deepseek-harness` | CLI `dsh` | ✅ `--session-id` | ✅ 写入 `AGENTS.md` | DeepSeek Harness headless：JSON 事件、沙箱权限、技能与 MCP |
 | `openai-harness` | 进程内 API | ✅ | ✅ | 任意 OpenAI 兼容端点：OpenRouter、vLLM、Ollama…（不再出现在新建入口） |

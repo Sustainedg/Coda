@@ -100,6 +100,8 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
 
   const team = useMemo(() => teams.find((item) => item.id === detail?.team_id), [teams, detail?.team_id])
+  /** 这次运行自己的编排图（第一次推进时冻结）：改协作组后，老运行的进度图与岗位名仍按原图渲染。 */
+  const graph = detail?.graph ?? team?.graph
   const leaderKey = detail?.entry_key ?? team?.entry_key ?? ''
   // 同一步骤既有落库行（可能还停在 streaming、内容为空）又有流式结果时，以流式结果为准。
   const streamedStepIds = useMemo(
@@ -503,7 +505,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
   // 头像三字段一起查：气泡画真头像（自定义图 > 头像包 > emoji 回退）要用，
   // 换了头像时间线同步显示。
   const agentFace = (agentId?: string | null, nodeKey?: string) => {
-    const node = team?.graph.nodes.find((item) => item.key === nodeKey)
+    const node = graph?.nodes.find((item) => item.key === nodeKey)
     const agent = agents.find((item) => item.id === (agentId ?? node?.agent_profile_id))
     return {
       avatar: agent?.avatar ?? '🤖',
@@ -513,7 +515,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
     }
   }
   const labelOf = (nodeKey: string, fallback?: string | null) =>
-    team?.graph.nodes.find((item) => item.key === nodeKey)?.label || fallback || nodeKey
+    graph?.nodes.find((item) => item.key === nodeKey)?.label || fallback || nodeKey
 
   const persistedIds = useMemo(() => new Set(visibleSteps.map((step) => step.id)), [visibleSteps])
   const streamedLeader = useMemo(
@@ -673,7 +675,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
   const progress = useMemo(
     () =>
       buildCollabProgress({
-        graph: team?.graph,
+        graph,
         entryKey: leaderKey,
         steps: detail?.steps ?? [],
         tickets: detail?.tickets ?? [],
@@ -682,7 +684,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
         streamed: turn?.completed ?? [],
         runStatus: status,
       }),
-    [team?.graph, leaderKey, detail?.steps, detail?.tickets, agents, turn?.live, turn?.completed, status],
+    [graph, leaderKey, detail?.steps, detail?.tickets, agents, turn?.live, turn?.completed, status],
   )
   const progressDone = progress.nodes.filter((node) => node.state === 'done').length
   const progressLive = progress.nodes.some((node) => node.isLive)
@@ -1052,9 +1054,9 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
         <TicketBoard
           tickets={detail.tickets}
           steps={detail.steps}
-          graph={team?.graph ?? null}
+          graph={graph ?? null}
           agents={agents}
-          nodeLabel={(key) => labelOf(key, team?.graph.nodes.find((item) => item.key === key)?.label)}
+          nodeLabel={(key) => labelOf(key)}
           runTitle={detail.title}
           initialTicketId={boardTicketId}
           onClose={() => {

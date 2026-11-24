@@ -49,6 +49,16 @@ export interface RuntimeCommands {
   login: string[]
 }
 
+/** 多账号内核里的一份已保存登录（平台侧的账号槽位）。 */
+export interface RuntimeAccount {
+  id: string
+  /** 展示名（昵称 / 邮箱 + 企业） */
+  label: string
+  detail?: string | null
+  /** 是否是当前正在使用的账号 */
+  active: boolean
+}
+
 /** 账号型内核的登录状态（二维码登录 / OAuth）。 */
 export interface RuntimeAuth {
   /** 该内核是否由后端提供了登录状态探测 */
@@ -57,6 +67,8 @@ export interface RuntimeAuth {
   logged_in: boolean | null
   detail?: string | null
   account?: string | null
+  /** 已保存的账号；null / 缺省表示该内核不支持多账号切换 */
+  accounts?: RuntimeAccount[] | null
 }
 
 export interface RuntimeProvisioning {
@@ -1191,6 +1203,11 @@ export interface ActiveCollabRun {
 }
 
 export interface CollabRunDetail extends CollabRun {
+  /**
+   * 这次运行实际使用的那张编排图（第一次推进时冻结；还没开跑 / 升级前的老运行是协作组现图）。
+   * 进度图与岗位名都按它渲染：之后改协作组，老运行也不会张冠李戴。
+   */
+  graph: CollabGraph
   tickets: CollabTicket[]
   steps: CollabStep[]
   chat_messages: CollabChatMessage[]

@@ -73,9 +73,11 @@ export function MobileTicketBoardPage() {
     () => teams.find((item) => item.id === detail?.team_id) ?? null,
     [teams, detail],
   )
+  /** 这次运行自己的编排图（第一次推进时冻结）：看板上的岗位名与流转图按它渲染。 */
+  const graph = detail?.graph ?? team?.graph ?? null
   const nodeLabel = useCallback(
-    (key: string) => team?.graph.nodes.find((node) => node.key === key)?.label || key,
-    [team],
+    (key: string) => graph?.nodes.find((node) => node.key === key)?.label || key,
+    [graph],
   )
   const model = useMemo(
     () =>
@@ -83,12 +85,12 @@ export function MobileTicketBoardPage() {
         ? buildBoardModel({
             tickets: detail.tickets,
             steps: detail.steps,
-            graph: team?.graph ?? null,
+            graph,
             agents,
             nodeLabel,
           })
         : null,
-    [detail, team, agents, nodeLabel],
+    [detail, graph, agents, nodeLabel],
   )
   const active = model
     ? model.tickets.find((ticket) => ticket.id === (selectedId ?? model.focusedId)) ?? model.tickets[0] ?? null

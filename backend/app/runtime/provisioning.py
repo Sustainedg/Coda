@@ -94,6 +94,19 @@ _LATEST_TIMEOUT_SECONDS = 30.0
 _HINT_COMMAND_LIMIT = 120
 
 
+def _missing_command_error(command: str, label: str, manager: str | None = None) -> str:
+    """命令根本没起来时的用户文案。
+
+    框架**不认识任何具体包管理器**（铁律 1：「用哪个包管理器、包名叫什么」是适配器的知识），
+    所以这里只回显适配器声明的 ``manager``，不写死 node / npm，也不假设部署形态
+    （同一个后端既跑桌面版也跑 Docker，桌面专属的路径提示只放在桌面文档里）。
+    """
+    message = f"未找到命令 `{command}`，无法执行{label}"
+    if manager:
+        message += f"（管理方式：{manager}；请确认相关命令与运行时已安装并在 PATH 中）"
+    return message
+
+
 def _event(kind: str, **payload: Any) -> dict[str, Any]:
     """产出一条 ``provision.*`` 事件。
 
@@ -210,6 +223,7 @@ async def _run_command(
     outcome: _CommandOutcome,
     *,
     qr: bool = False,
+    manager: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """在受控子进程里跑一条命令，逐行产出 ``provision.output``。
 
@@ -233,7 +247,7 @@ async def _run_command(
             start_new_session=(os.name != "nt"),
         )
     except FileNotFoundError:
-        outcome.error = f"未找到命令 `{argv[0]}`，无法执行{label}"
+        outcome.error = _missing_command_error(argv[0], label, manager)
         return
     except PermissionError as exc:
         outcome.error = f"无法执行 `{argv[0]}`：{exc}"
@@ -345,7 +359,15 @@ async def stream_provision(definition: AgentDefinition, action: Action) -> Async
         # aclosing：客户端断开时框架关闭的是本生成器，`async for` 不像 `yield from`
         # 那样代为关闭被迭代的生成器 —— 必须显式透传，否则子进程成孤儿（铁律 10）。
         async with contextlib.aclosing(
-            _run_command(provisioner.prepare_argv, env, deadline, definition.id, "清扫", prepare)
+            _run_command(
+                provisioner.prepare_argv,
+                env,
+                deadline,
+                definition.id,
+                "清扫",
+                prepare,
+                manager=provisioner.manager,
+            )
         ) as prepare_stream:
             async for event in prepare_stream:
                 yield event
@@ -363,6 +385,7 @@ async def stream_provision(definition: AgentDefinition, action: Action) -> Async
         _run_command(
             argv, env, deadline, definition.id, label, outcome,
             qr=(action == "login"),
+            manager=provisioner.manager,
         )
     ) as command_stream:
         async for event in command_stream:
@@ -483,7 +506,12 @@ async def latest_version(definition: AgentDefinition) -> dict[str, Any]:
             stderr=asyncio.subprocess.STDOUT,
         )
     except FileNotFoundError:
-        return {"supported": True, "latest": None, "command": command, "error": f"未找到命令 `{argv[0]}`"}
+        return {
+            "supported": True,
+            "latest": None,
+            "command": command,
+            "error": _missing_command_error(argv[0], "查询最新版本", provisioner.manager),
+        }
     except PermissionError as exc:
         return {"supported": True, "latest": None, "command": command, "error": f"无法执行 `{argv[0]}`：{exc}"}
 

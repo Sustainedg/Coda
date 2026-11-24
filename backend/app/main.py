@@ -97,6 +97,9 @@ async def lifespan(app: FastAPI):
         if builtin_mcp:
             logger.info("内置 MCP 播种完成：新增 %s 个", builtin_mcp)
         await _scan_skills(session)
+        pinned = await collab.backfill_run_graphs(session)
+        if pinned:
+            logger.info("协作：%s 次老运行补上了编排图快照", pinned)
         recovered = await collab.recover_interrupted(session)
         if recovered:
             logger.info("协作：%s 次运行因重启被标记为 interrupted", recovered)

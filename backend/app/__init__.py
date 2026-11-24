@@ -1,11 +1,57 @@
 from __future__ import annotations
 
-__version__ = "V0.1.6"
+__version__ = "V0.1.7"
 
 #: 版本记录（最新在前）。版本号只在公开发版时递增，日常提交不动版本号。
 #: 版本号采用「V主.次.修订」三段式：V0.1 是首个公开版本，后续修订顺延。
 #: 此前的 V0.01–V0.43 为内部迭代编号，不再逐条单列。
 VERSION_HISTORY: tuple[dict[str, object], ...] = (
+    {
+        "version": "V0.1.7",
+        "date": "2026-11-24",
+        "title": "Antigravity CLI 接入 · 任务进度卡片 · 上下文自动压缩",
+        "highlights": (
+            "【功能】内置内核由 Gemini CLI 切换为 Antigravity CLI（Google 官方 CLI）：OAuth "
+            "账号登录、--conversation 续接、人格拼进提示词；存量 Gemini 智能体按适配器声明的 "
+            "legacy_ids 自动迁移，旧官方链路与旧模型名一并清理",
+            "【功能】新增双向登录协议：登录命令输出 INPUT_PROMPT= 后界面弹出输入框，授权码经 "
+            "POST /runtimes/{id}/login/input 写回登录子进程 stdin；桌面端与移动端共用 LoginInput。"
+            "Antigravity 走「打印链接 + 二维码 → 回填授权码」的 OOB 流程",
+            "【功能】任务进度卡片：模型输出 task_card 围栏块，运行收尾解析并落 task_cards（只读、"
+            "无客户端写入口）；消息正文与 parts 剥离协议块，IM 转发前同样剥掉。对话页顶部任务卡"
+            "随进度更新，桌面端与移动端共用同一份样式",
+            "【功能】上下文用量与自动压缩：输入框上方新增用量按钮与详情面板；达到阈值时把较早"
+            "消息确定性折叠成摘要（原文一条不删），估算与裁剪放线程池执行，不堵事件循环与 SSE；"
+            "上限与阈值按用户持久化，新建对话 / 重生成同样走自动压缩",
+            "【功能】CodeBuddy 可视化登录与多账号：用 --serve 的本地 HTTP API 做扫码登录"
+            "（codebuddy_login.py），会话落盘位置纠正为 Data/Public/auth/*.info；平台侧新增账号"
+            "槽位，可登录多个账号并在内核详情里切换 / 删除",
+            "【功能】技能重扫以磁盘为准：技能目录确实消失（且技能根还在）才解除 agent_skills "
+            "分配并删编目行，同时摘掉用户技能库里失效的 .mounts.json 引用；技能根本身不在"
+            "（数据卷没挂上 / 内核配置目录暂不可用）时只把 available 置 False，不动分配。"
+            "SkillRescanResult 新增 removed / unassigned，两端技能页同步展示",
+            "【优化】协作运行在第一次下发工单时冻结整张编排图：之后改协作组不再返回 409，"
+            "已开跑的运行按冻结快照跑完；未开跑的运行仍跟随最新图。入口对话的消息也按同一张"
+            "图路由，避免中途改图导致派错人",
+            "【优化】对话内容仅本人可见：新增 require_owned_strict（管理员不豁免），对话列表 / "
+            "详情 / 消息 / 附件 / 文件 / 轨迹 / 上下文 / 删除全部按 owner 收敛；用量页保留平台"
+            "总量，但不再向管理员展示他人对话标题",
+            "【优化】SQLite 提交成本与写锁等待：主引擎与轨迹引擎改用 synchronous=NORMAL + "
+            "busy_timeout=30s。默认的 FULL 在慢盘（同步盘 / 容器 / 高 I/O）上单次提交能拖到"
+            "秒级，而 SQLite 只有一个写者，其它写入排队超时即 database is locked；全量测试"
+            "从 27:30 降到 9:15，锁报错归零",
+            "【修复】Antigravity 登录抗网络抖动：扫码前先探 token 端点（连不上就在消耗一次性"
+            "授权码之前中止）；环境里只有 CODA_INSTALL_PROXY 时自动补成标准代理变量；换 token "
+            "遇 EOF / TLS 握手超时自动重跑一轮，invalid_grant 不重试；等待授权码时盯住内核进程，"
+            "空行不当作提交",
+            "【修复】授权码回显泄露：pty 关闭 ECHO 并在打印前兜底脱敏；Windows 顶层 import pty "
+            "导致后端启动即崩；移动端此前无法完成授权码登录；PWA 缓存版本未 +1",
+            "【修复】桌面端：内置 Node 的 PATH 指向可执行文件目录（POSIX 为 bin/）；打包前核对"
+            "内嵌 Python / Node，缺运行时直接失败，而不是产出「能装能开、一装内核就报未找到命令」"
+            "的坏包",
+            "【优化】Antigravity 改用官方图标（antigravity.webp，构建期内嵌）",
+        ),
+    },
     {
         "version": "V0.1.6",
         "date": "2026-11-23",

@@ -2,7 +2,7 @@
   "name": "coda-desktop",
   "productName": "Coda",
   "private": true,
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Coda 桌面版 —— 把 AI 编程内核变成你的聊天同事（Windows / macOS）",
   "main": "dist-main/index.js",
   "author": "Coda",

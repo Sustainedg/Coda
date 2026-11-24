@@ -24,6 +24,7 @@ from ..db import SessionLocal
 from ..models import AgentProfile, Conversation
 from ..runtime import titles
 from ..runtime.manager import registry
+from ..runtime.task_cards import strip_task_card
 from ..runtime.service import (
     ConfigurationError,
     new_conversation,
@@ -236,7 +237,8 @@ async def _collect(run, sink: ReplySink) -> None:
             elif kind == "run.finished":
                 sink.status = str((event.get("payload") or {}).get("status") or "ok")
     finally:
-        body = "".join(parts).strip()
+        # 任务卡协议块只属于控制台卡片，聊天软件里必须剥掉，不能把 JSON 发出去。
+        body = strip_task_card("".join(parts)).strip()
         # 过程内容跟在正文后面，用空行隔开；没有正文时它就是全部内容。
         sink.text = "\n\n".join(part for part in [body, "\n".join(traces)] if part)
         # 失败而正文为空时必须说清楚，否则用户在聊天软件里只会看到「没反应」。

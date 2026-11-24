@@ -126,6 +126,12 @@ AUTH_STYLE_BANNER = (
 )
 DESKTOP_COMPOSER_TUNING = "/* ---------- 桌面端：输入区寄在会话栏底部"
 MOBILE_COMPOSER_TUNING = "/* ---------- 移动端：输入区贴着屏幕最下边"
+#: 「任务进度卡片」：标题 + 进度条 + 任务项（组件见 `components/TaskProgressCard.tsx`）。
+TASK_CARD_STYLE_BANNER = (
+    "/* ================= 任务进度卡片：标题 + 进度条 + 任务项（两端共用这一份）================= */"
+)
+DESKTOP_TASK_CARD_TUNING = "/* ---------- 桌面端：任务进度卡片"
+MOBILE_TASK_CARD_TUNING = "/* ---------- 移动端：任务进度卡片"
 
 
 def _shared_style_block(path: Path, banner: str, cut: str | None = None) -> str:
@@ -308,6 +314,32 @@ def test_composer_styles_are_identical_on_both_ends():
     # 共享段是两端共同的基础值；各自那几条微调（贴底收边、高度上限）写在它之外。
     assert "max-height: calc(160px * var(--composer-vscale))" in desktop, "共享段里应当有输入框高度的基础值"
     assert "safe-bottom" not in desktop, "贴底安全区的处理应当写在移动端微调段里"
+
+
+@needs_frontend
+def test_task_card_styles_are_identical_on_both_ends():
+    """任务进度卡片的样式两端各写一份，共享段必须逐字一致。
+
+    组件只有一份（`components/TaskProgressCard.tsx`），两端样式表各写一份；忘了同步另一边，
+    手机上卡片的间距 / 进度条就会走样。各自的尺寸微调写在共享段之后，不参与比对。
+    """
+    desktop = _shared_style_block(
+        FRONTEND / "src" / "index.css", TASK_CARD_STYLE_BANNER, DESKTOP_TASK_CARD_TUNING
+    )
+    mobile = _shared_style_block(
+        MOBILE_SRC / "mobile.css", TASK_CARD_STYLE_BANNER, MOBILE_TASK_CARD_TUNING
+    )
+    assert desktop == mobile, (
+        "index.css 与 mobile.css 的任务进度卡片样式不一致：改了一边记得把另一边同步（共享段逐字一致）"
+    )
+    # 关键规则必须真的在共享段里，不然「逐字一致」可能只是两边一起空着。
+    for selector in (
+        ".task-progress-card",
+        ".task-progress-bar-fill",
+        ".task-progress-item.is-done .task-progress-text",
+        ".task-progress-mark.is-done",
+    ):
+        assert selector in desktop, f"任务进度卡片共享样式段里少了 {selector}"
 
 
 @needs_frontend

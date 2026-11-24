@@ -2151,3 +2151,40 @@ code, pre, .mono { font-family: var(--mono); }
 
 /* 账号页的字段在手机上单列排布（复用 .grid 时默认是两列，三字段会挤） */
 .m-page .account-card .grid { grid-template-columns: 1fr; }
+
+/* ================= 任务进度卡片：标题 + 进度条 + 任务项（两端共用这一份）================= */
+/* 任务项是纯文本 + 状态标记，没有 checkbox / 输入框 / 可点击任务项；唯一按钮只切换折叠。 */
+.task-card-turn { align-items: stretch; }
+.task-progress-card {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-elevated); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.task-progress-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.task-progress-icon { font-size: 13px; flex: none; display: flex; align-items: center; }
+.task-progress-title {
+  font-weight: 650; font-size: 13px; color: var(--text); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.task-progress-count { font-size: 11px; color: var(--text-muted); flex: none; }
+.task-progress-bar {
+  flex: 1; min-width: 44px; height: 5px; border-radius: 999px;
+  background: var(--bg-hover); overflow: hidden;
+}
+.task-progress-bar-fill {
+  display: block; height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--brand), var(--accent));
+}
+.task-progress-toggle {
+  flex: none; margin-left: auto; font-size: 11px; color: var(--text-muted);
+  background: transparent; border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 9px; cursor: pointer; font-family: inherit;
+}
+.task-progress-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.task-progress-item { display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--text); }
+.task-progress-item.is-done .task-progress-text { color: var(--text-dim); text-decoration: line-through; }
+.task-progress-mark { flex: none; width: 14px; text-align: center; color: var(--text-dim); }
+.task-progress-mark.is-done { color: var(--ok); }
+
+/* ---------- 移动端：任务进度卡片贴着对话留一点边距 ---------- */
+.task-progress-card { margin: 4px 0; }

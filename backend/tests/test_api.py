@@ -118,7 +118,7 @@ async def test_gateway_delete_blocked_while_an_agent_uses_it(client: httpx.Async
 async def test_agent_types_expose_config_schema_and_availability(client: httpx.AsyncClient):
     types = (await client.get("/api/agent-types")).json()["items"]
     by_id = {t["id"]: t for t in types}
-    assert {"claude-code", "codex", "gemini-cli", "openai-harness", "custom-cli"} <= set(by_id)
+    assert {"claude-code", "codex", "antigravity-cli", "openai-harness", "custom-cli"} <= set(by_id)
     claude = by_id["claude-code"]
     assert claude["availability"]["installed"] is True
     assert claude["runtime"] == "cli"

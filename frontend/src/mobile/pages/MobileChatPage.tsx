@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { MessageView, type RenderMessage } from '../../components/MessageView'
+import { TaskProgressCard } from '../../components/TaskProgressCard'
 import { applyAgentEvent, emptyAgentStream, type AgentStreamState } from '../../lib/agentStream'
 import { api, ApiError, conversationFileUrl, isNetworkError, streamGet, streamPost } from '../../lib/api'
 import { useComposerDraft } from '../../lib/composerDraft'
@@ -31,8 +32,9 @@ import type {
   ConversationDetail,
   ConversationModelOptions,
   Message,
+  TaskCard,
 } from '../../lib/types'
-import { sameMessageList, useAutoRefresh } from '../../lib/useAutoRefresh'
+import { sameMessageList, sameTaskCard, useAutoRefresh } from '../../lib/useAutoRefresh'
 import { summarizeUsage } from '../../lib/usage'
 import { AgentIcon, FolderIcon, ModelIcon, PencilIcon, PlusIcon, ShareIcon, SpeakerIcon } from '../../components/Icons'
 import { useAuth } from '../../components/AuthGate'
@@ -95,6 +97,8 @@ export function MobileChatPage() {
 
   const [active, setActive] = useState<Conversation | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
+  /** 任务进度卡片（对话级对象，只读）：随详情返回，按锚点插进消息流 */
+  const [taskCard, setTaskCard] = useState<TaskCard | null>(null)
   const [live, setLive] = useState<LiveTurn | null>(null)
   /**
    * 草稿（文字 + 待发附件）按对话各记各的：切到别的对话再切回来，没发出去的内容还在原处，
@@ -184,6 +188,11 @@ export function MobileChatPage() {
 
   const applyDetail = useCallback((detail: ConversationDetail, resetLive: boolean) => {
     setMessages((prev) => (sameMessageList(prev, detail.messages) ? prev : detail.messages))
+    // 卡片与消息分开比较：版本没变就不重渲染整张卡（3 秒轮询不会闪）。
+    setTaskCard((prev) => {
+      const next = detail.task_card ?? null
+      return sameTaskCard(prev, next) ? prev : next
+    })
     setActive(detail.conversation)
     if (resetLive) {
       // 主动重开 / 刷新这条对话：旧的实时卡片先撤掉，若仍在运行则让订阅 effect 重新连一次。
@@ -1039,24 +1048,33 @@ export function MobileChatPage() {
             ? scopeAgents.find((agent) => agent.id === message.agent_profile_id)
             : undefined
           return (
-            <MessageView
-              key={message.id}
-              message={message}
-              avatar={summoned ? (summoner?.avatar ?? '🤖') : (active?.agent_avatar ?? undefined)}
-              avatarPreset={summoned ? summoner?.avatar_preset : active?.agent_avatar_preset}
-              avatarFile={summoned ? summoner?.avatar_file : active?.agent_avatar_file}
-              agentId={summoned ? summoner?.id : active?.agent_profile_id}
-              // @ 召唤轮的回复：名字一行亮出被召唤者，一眼分清不是主场智能体说的
-              label={
-                summoned
-                  ? `✦ ${summoner?.name ?? '被召唤智能体'}（@ 召唤）`
-                  : (active?.agent_name ?? undefined)
-              }
-              finalOnly={!showTools}
-              user={user}
-            />
+            <Fragment key={message.id}>
+              <MessageView
+                message={message}
+                avatar={summoned ? (summoner?.avatar ?? '🤖') : (active?.agent_avatar ?? undefined)}
+                avatarPreset={summoned ? summoner?.avatar_preset : active?.agent_avatar_preset}
+                avatarFile={summoned ? summoner?.avatar_file : active?.agent_avatar_file}
+                agentId={summoned ? summoner?.id : active?.agent_profile_id}
+                // @ 召唤轮的回复：名字一行亮出被召唤者，一眼分清不是主场智能体说的
+                label={
+                  summoned
+                    ? `✦ ${summoner?.name ?? '被召唤智能体'}（@ 召唤）`
+                    : (active?.agent_name ?? undefined)
+                }
+                finalOnly={!showTools}
+                user={user}
+              />
+              {taskCard && message.id === taskCard.anchor_message_id && (
+                <TaskProgressCard card={taskCard} />
+              )}
+            </Fragment>
           )
         })}
+
+        {/* 锚点找不到（历史数据异常）：卡片放在所有已落库消息之后、实时流之前 */}
+        {taskCard && !chatMessages.some((message) => message.id === taskCard.anchor_message_id) && (
+          <TaskProgressCard card={taskCard} />
+        )}
 
         {live && (live.userText || live.userAttachments.length > 0) && (
           <MessageView

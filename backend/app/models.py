@@ -197,7 +197,7 @@ class AgentProfile(SQLModel, table=True):
     #: 备注
     description: str | None = Field(default=None, sa_column=Column(Text))
     system_prompt: str = Field(default="", sa_column=Column(Text, nullable=False))
-    #: 适配器 id（claude-code / codex / gemini-cli / deepseek-harness / openai-harness / custom-cli …）
+    #: 适配器 id（claude-code / codex / antigravity-cli / deepseek-harness / openai-harness / custom-cli …）
     type_id: str = Field(sa_column=Column(String(64), nullable=False, index=True))
     #: 使用的自定义网关；为空（或指向官方链路）表示「官方默认」——平台不接管路由，
     #: 运行时回落到适配器读到的本机配置（见 ``runtime/gateway.py:bind_gateway``）
@@ -461,6 +461,46 @@ class Message(SQLModel, table=True):
     #: 这条回复实际由哪个智能体产出。为空 = 对话归属的智能体（主场）；
     #: 非空 = 用户在对话里 @ 召唤的智能体（只回答这一轮，不改变对话归属）。
     agent_profile_id: str | None = Field(default=None, sa_column=Column(String(64)))
+
+
+class TaskCard(SQLModel, table=True):
+    """一条对话的「任务进度卡片」（一个对话最多一张）。
+
+    卡片是**对话级对象**，不是消息的一部分：消息是不可变的历史原文，进度会反复变化，
+    写回旧消息既语义错误、也会和消息落库路径抢同一行。任务项存 JSON 列，
+    ``conversation_id`` 唯一约束从根上杜绝同一对话出现多张卡。
+
+    卡片没有任何客户端写入口：唯一写入方是运行收尾时对模型输出的解析（见
+    ``runtime/task_cards.py``）。界面只读，勾选状态只能由服务端按模型声明变更。
+    """
+
+    __tablename__ = "task_cards"
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    #: 所属对话：唯一 + 级联删除（删对话时卡片随之消失，不留孤儿）
+    conversation_id: str = Field(
+        sa_column=Column(
+            String(64),
+            ForeignKey("conversations.id", ondelete="CASCADE"),
+            nullable=False,
+            unique=True,
+            index=True,
+        )
+    )
+    #: 建卡那一轮的助手消息 id：决定卡片在对话流中的位置（重规划时更新到最新一轮）
+    anchor_message_id: str | None = Field(default=None, sa_column=Column(String(64), index=True))
+    #: 卡片标题；为空时界面显示「任务进度」
+    title: str = Field(default="", sa_column=Column(String(200), nullable=False, default=""))
+    #: 任务项数组：``{id, text, done, done_at, updated_at}``
+    items: list[dict[str, Any]] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=False, default=list)
+    )
+    #: 乐观锁版本号：每次成功写入 +1，前端据此判断要不要重渲染
+    version: int = Field(default=1, sa_column=Column(Integer, nullable=False, default=1))
+    #: 最近一次写入它的运行 id：同一运行重复应用时幂等跳过
+    last_run_id: str | None = Field(default=None, sa_column=Column(String(64)))
+    created_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime))
+    updated_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime))
 
 
 class TraceEvent(SQLModel, table=True):

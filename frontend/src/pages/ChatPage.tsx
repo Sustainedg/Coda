@@ -7,6 +7,7 @@ import { AgentIcon, FolderIcon, MenuIcon, ModelIcon, PlusIcon, ShareIcon, Speake
 import { TraceDrawer } from '../components/TraceDrawer'
 import { AgentAvatar } from '../components/AgentAvatar'
 import { MascotStage } from '../components/MascotStage'
+import { TaskProgressCard } from '../components/TaskProgressCard'
 import type { RenderMessage } from '../components/MessageView'
 import { Modal } from '../components/Modal'
 import { ConversationExportForm } from '../components/ConversationExportForm'
@@ -48,8 +49,9 @@ import type {
   ConversationDetail,
   ConversationModelOptions,
   Message,
+  TaskCard,
 } from '../lib/types'
-import { sameMessageList, useAutoRefresh } from '../lib/useAutoRefresh'
+import { sameMessageList, sameTaskCard, useAutoRefresh } from '../lib/useAutoRefresh'
 import { summarizeUsage } from '../lib/usage'
 
 interface LiveTurn extends AgentStreamState {
@@ -110,6 +112,8 @@ export function ChatPage() {
 
   const [messages, setMessages] = useState<Message[]>([])
   const [active, setActive] = useState<Conversation | null>(null)
+  /** 任务进度卡片（对话级对象，只读）：随详情返回，按锚点插进消息流 */
+  const [taskCard, setTaskCard] = useState<TaskCard | null>(null)
   const [live, setLive] = useState<LiveTurn | null>(null)
   /**
    * 草稿（文字 + 待发附件）按对话各记各的：切到别的对话再切回来，没发出去的内容还在原处，
@@ -196,6 +200,11 @@ export function ChatPage() {
 
   const applyDetail = useCallback((detail: ConversationDetail, resetLive: boolean) => {
     setMessages((prev) => (sameMessageList(prev, detail.messages) ? prev : detail.messages))
+    // 卡片与消息分开比较：版本没变就不重渲染整张卡（3 秒轮询不会闪）。
+    setTaskCard((prev) => {
+      const next = detail.task_card ?? null
+      return sameTaskCard(prev, next) ? prev : next
+    })
     setActive(detail.conversation)
     if (resetLive) {
       // 主动重开 / 刷新这条对话：旧的实时卡片先撤掉，若仍在运行则让订阅 effect 重新连一次。
@@ -943,51 +952,65 @@ export function ChatPage() {
     }
   }
 
-  const threadItems: ConversationThreadItem[] = [
-    ...chatMessages.map((message) => {
-      const identity = assistantIdentity(message)
-      return {
-        id: message.id,
-        message,
-        avatar: identity.avatar,
-        avatarPreset: identity.avatarPreset,
-        avatarFile: identity.avatarFile,
-        agentId: identity.agentId,
-        label: identity.label,
-        // @ 召唤轮的回复：气泡上方再亮一条「✦ 某某 的回答」，一眼分清不是主场智能体说的
-        meta: identity.meta,
+  // 任务进度卡片：插在「建卡那一轮助手消息」之后；锚点找不到（历史数据异常）时
+  // 放到最后一条已落库消息之后、实时流条目之前，保证始终可见且不重复。
+  const cardItem: ConversationThreadItem | null = taskCard
+    ? {
+        id: `task-card-${taskCard.id}`,
+        className: 'task-card-turn',
+        custom: <TaskProgressCard card={taskCard} />,
       }
-    }),
-    ...(live && (live.userText || live.userAttachments.length > 0)
-      ? [{
-          id: 'live-user',
-          message: {
-            id: 'live-user',
-            role: 'user' as const,
-            // 附件清单拼回正文：图片缩略图当场就画进「你」的气泡，不用等整轮回复跑完、重新拉库。
-            content: composeWithAttachments(live.userText, live.userAttachments),
-            parts: [],
-            status: 'complete',
-          },
-        }]
-      : []),
-    ...(liveMessage
-      ? [
-          {
-            id: liveMessage.id,
-            message: liveMessage,
-            avatar: live?.avatar,
-            avatarPreset: live?.avatarPreset,
-            avatarFile: live?.avatarFile,
-            agentId: live?.agentProfileId,
-            // 正在作答的是谁就显示谁：@ 召唤轮是 live.agentName（send 时已取被召唤者）
-            label: live?.agentName,
-            // @ 召唤轮正在输出：同样亮出「某某正在回答」，与历史消息的标识一致
-            meta: live?.summoned ? `✦ ${live.agentName} 正在回答（@ 召唤）` : undefined,
-          },
-        ]
-      : []),
-  ]
+    : null
+
+  const threadItems: ConversationThreadItem[] = []
+  let cardPlaced = false
+  for (const message of chatMessages) {
+    const identity = assistantIdentity(message)
+    threadItems.push({
+      id: message.id,
+      message,
+      avatar: identity.avatar,
+      avatarPreset: identity.avatarPreset,
+      avatarFile: identity.avatarFile,
+      agentId: identity.agentId,
+      label: identity.label,
+      // @ 召唤轮的回复：气泡上方再亮一条「✦ 某某 的回答」，一眼分清不是主场智能体说的
+      meta: identity.meta,
+    })
+    if (cardItem && taskCard && message.id === taskCard.anchor_message_id) {
+      threadItems.push(cardItem)
+      cardPlaced = true
+    }
+  }
+  if (cardItem && !cardPlaced) threadItems.push(cardItem)
+
+  if (live && (live.userText || live.userAttachments.length > 0)) {
+    threadItems.push({
+      id: 'live-user',
+      message: {
+        id: 'live-user',
+        role: 'user' as const,
+        // 附件清单拼回正文：图片缩略图当场就画进「你」的气泡，不用等整轮回复跑完、重新拉库。
+        content: composeWithAttachments(live.userText, live.userAttachments),
+        parts: [],
+        status: 'complete',
+      },
+    })
+  }
+  if (liveMessage) {
+    threadItems.push({
+      id: liveMessage.id,
+      message: liveMessage,
+      avatar: live?.avatar,
+      avatarPreset: live?.avatarPreset,
+      avatarFile: live?.avatarFile,
+      agentId: live?.agentProfileId,
+      // 正在作答的是谁就显示谁：@ 召唤轮是 live.agentName（send 时已取被召唤者）
+      label: live?.agentName,
+      // @ 召唤轮正在输出：同样亮出「某某正在回答」，与历史消息的标识一致
+      meta: live?.summoned ? `✦ ${live.agentName} 正在回答（@ 召唤）` : undefined,
+    })
+  }
 
   // 整段对话（含正在流式输出的这一轮）累计的 token 消耗。
   const usageSummary = useMemo(

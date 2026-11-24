@@ -23,6 +23,7 @@ from ..image_ingest import ingest_images
 from ..models import AgentProfile, Conversation, Gateway, Message
 from ..settings import get_settings
 from . import context as context_service
+from . import task_cards as task_card_service
 from .credentials import decrypt_for_profile
 from .gateway import bind_gateway
 from .manager import ActiveRun, registry
@@ -427,6 +428,10 @@ async def prepare_run(
         # 一旦本轮建立新的内核会话，下一轮自动恢复原生续接。
         ctx.prompt = prior_context_prompt(history, ctx.prompt)
 
+    # 任务进度卡片协议：只对主场运行注入（召唤轮不改这条对话的进度）。
+    if persist_session:
+        await _inject_task_card_notice(session, conversation.id, payload.content, ctx)
+
     assistant_message = Message(
         conversation_id=conversation.id,
         role="assistant",
@@ -528,6 +533,27 @@ def _merge_part(parts: list[dict[str, Any]], kind: str, text: str) -> None:
         parts[-1]["text"] = (parts[-1].get("text") or "") + text
     else:
         parts.append({"kind": kind, "text": text})
+
+
+async def _inject_task_card_notice(
+    session: AsyncSession, conversation_id: str, user_text: str, ctx: AgentContext
+) -> None:
+    """按设计 §6.2 把任务卡协议追加进本轮提示词。
+
+    条件：已有卡 → 每轮都注入（模型要能补报勾选）；无卡且用户正文像多步任务 →
+    注入建卡协议；其余不注入，闲聊不产生额外 token。
+    """
+    try:
+        card = await task_card_service.load_card(session, conversation_id)
+    except Exception:  # noqa: BLE001 - 读卡失败不影响本轮正常作答
+        logger.warning("读取任务进度卡片失败，本轮不注入协议", exc_info=True)
+        return
+    if card is None and not task_card_service.looks_like_task_request(user_text or ""):
+        return
+    notice = task_card_service.render_notice(card, allow_create=card is None)
+    if not notice:
+        return
+    ctx.prompt = f"{ctx.prompt}\n\n{notice}" if ctx.prompt else notice
 
 
 async def _execute_prepared(prepared: PreparedRun) -> None:
@@ -663,7 +689,10 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
         yield error(str(exc))
         yield run_finished("error", detail=str(exc))
     finally:
-        content = "".join(text_parts)
+        raw_text = "".join(text_parts)
+        # 任务卡协议块永远不展示给用户：运行失败 / 解析失败也要剥掉原文再落库。
+        content = task_card_service.strip_task_card(raw_text)
+        parts = task_card_service.strip_task_card_from_parts(parts)
         # 网关生成的图只在 MCP 侧有一份：落库前取回工作目录并改写为相对路径，
         # 保证对话历史自包含（网关下线/清缓存后老对话仍能显示）。
         prefixes = get_settings().image_ingest_prefix_list
@@ -685,10 +714,22 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
         prepared.conversation.updated_at = datetime.now(timezone.utc)
         session.add(message)
         session.add(prepared.conversation)
+        committed = False
         try:
             await session.commit()
+            committed = True
         except Exception:  # noqa: BLE001 - 落库失败也要保持客户端事件流不断
             await session.rollback()
+        # 任务进度卡片只在「消息已提交 + 本轮成功结束 + 主场运行」时应用。
+        # 卡片写入内部吞异常（独立会话），绝不影响上面的消息落库。
+        if committed and status == "complete" and prepared.persist_session:
+            block, parse_error = task_card_service.parse_task_card(raw_text)
+            if block is not None:
+                await task_card_service.apply_block(
+                    prepared.conversation.id, message.id, block, prepared.run.id
+                )
+            elif parse_error:
+                logger.warning("任务卡片块解析失败，已忽略：%s", parse_error)
         # 先落库再登记结束：重连方看到 active_run 消失时，数据库里一定已经是最终消息，
         # 不会出现「运行没了、消息还停在 streaming」的空窗。
         registry.finish(prepared.run, status)
@@ -757,6 +798,9 @@ async def regenerate_last(
     elif ctx.session_id is None:
         # 与 prepare_run 同一条兜底：无可续接会话时用最终回复做前置上下文，防止重生成失忆。
         ctx.prompt = prior_context_prompt(history, ctx.prompt)
+
+    # 重生成同样走主场协议注入：已有卡每轮都允许 update，无卡时按用户正文判定。
+    await _inject_task_card_notice(session, conversation.id, last_user.content, ctx)
 
     assistant_message = Message(
         conversation_id=conversation.id, role="assistant", content="", status="streaming"

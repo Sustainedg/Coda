@@ -146,6 +146,7 @@ POST /api/conversations/{id}/messages
 | `default_gateway` / `default_model` / `default_models` | 视需要 | 播种官方网关与新建智能体时的默认值（`default_models` 是官方链路的预置模型清单） |
 | `executable` | CLI 必填 | 用于 `shutil.which` 探测是否安装 |
 | `auto_provision` | 视需要 | 首次播种是否自动建实例（模板类设为 `False`，如 `custom-cli`） |
+| `legacy_ids` | 视需要 | 本适配器取代过的旧 id（已下线 / 改名的内核）；启动时框架据此迁移存量智能体，框架层不硬编码具体内核 |
 | `docs_url` | 可选 | 配置页的"查看文档"链接 |
 
 可选钩子（默认不实现即关闭，与 `resume_supported(ctx)` 同类）：
@@ -370,7 +371,7 @@ class AcmeHarness(OpenAIHarnessBase):
 
 | 目标 | 现状 | 接入方式 |
 | --- | --- | --- |
-| Gemini CLI | 已有 `gemini_cli.py`（`GEMINI_SYSTEM_MD` 注入人格、`--resume` 续接） | 已接入；新版本差异用 `ConfigField` 暴露开关 |
+| Antigravity CLI | 已有 `antigravity_cli.py`（人格拼进 prompt、`--conversation` 续接、OAuth 账号登录） | 已接入；新版本差异用 `ConfigField` 暴露开关 |
 | 任意 OpenAI 兼容端点 | 已有 `openai_harness.py`（OpenRouter/vLLM/Ollama/Kimi/GLM） | 新供应商 = 一个子类 |
 | 未来的 Aider / Cline / Continue 等 CLI | 无适配器 | 按 §6.1 写模块；或先用 §6.3 |
 | 非 OpenAI 协议的 API（如 Anthropic Messages API） | 复用 `OpenAIHarnessBase` 不合适 | 以 `Runtime.API` 直接实现 `async stream(ctx)`，产出标准事件即可 |
@@ -399,7 +400,7 @@ class AcmeHarness(OpenAIHarnessBase):
   `TicketBoardKit` / `Composer` / `ContextMeter` / `Icons` / `McpPicker` / `McpServerForm` /
   `McpAssignPanel` /
   `AuthGate` / `LoginScreen` / `AccountPanel` / `UserAdminPanel` / `TeamAvatarStack` /
-  `ConversationExportForm`
+  `ConversationExportForm` / `LoginInput` / `TaskProgressCard`
   等纯展示组件，以及 `lib/agentStream` 里的事件归约。共享组件的样式必须两端样式表各写一份
   （`account-*` / `auth-*` 就是例子）。
 - 移动端原语沿用既有类名（`btn` / `pill` / `banner` / `field` / `input` / `card` / `grid` /

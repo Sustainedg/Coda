@@ -291,7 +291,7 @@ xcrun stapler validate "Coda.app"                    # 确认已装订
 | --- | --- | --- | --- |
 | Claude Code | `claude-win32-x64.zip`、`claude-darwin-arm64.tar.gz`、`claude-darwin-x64.tar.gz`、linux 四份 | 158–173 MB | ✅ |
 | Codex | `codex-x86_64-pc-windows-msvc.exe.zip`、`codex-*-apple-darwin.tar.gz`、linux musl | 115–215 MB | ✅ |
-| Gemini CLI | 只有 `gemini-darwin-{arm64,x64}-unsigned.zip` + `gemini-cli-bundle.zip` | 21–38 MB | ❌ 没有 Windows 版 |
+| Gemini CLI（已下线，由 Antigravity CLI 取代，不再作为内置内核） | 只有 `gemini-darwin-{arm64,x64}-unsigned.zip` + `gemini-cli-bundle.zip` | 21–38 MB | ❌ 没有 Windows 版 |
 
 结论：
 

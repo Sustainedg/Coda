@@ -113,7 +113,8 @@ collab.engine.consume_turn()  ── 取就绪工单跑一步（max_parallel>1 �
 > 它包住原始 `AgentEvent` 后发给协作页；**不是**对这张表的扩展。
 >
 > 「内核管理」页（设置 → 内核管理）的安装 / 更新 / 卸载也走自有信封（`provision.started` / `provision.output` /
-> `provision.finished`），由 `runtime/provisioning.py` 产出，同样**不属于**这张事件表。
+> `provision.qr` / `provision.input` / `provision.finished`），由 `runtime/provisioning.py` 产出，
+> 同样**不属于**这张事件表。
 
 ## 4. 适配器的契约
 
@@ -192,6 +193,9 @@ class AgentDefinition(ABC):
   `AgentDefinition.auth_status()`，详情弹层据此显示「已登录 / 未登录」和「登录」按钮。
   登录命令按通用约定输出 `QR_IMAGE=<图片路径>`，框架读出图片（校验 PNG/JPEG/WebP 与大小）
   后以 `provision.qr` 事件推给前端；登录结束后重新调一次 `auth_status()` 收尾。
+  需要把浏览器里的授权码贴回来的 OAuth 内核（如 Antigravity CLI）再输出一行
+  `INPUT_PROMPT=<提示文本>`：框架据此产出 `provision.input` 事件并保持登录子进程的 stdin
+  打开，界面弹出的输入框经 `POST /runtimes/{id}/login/input` 把文本写回子进程。
   只能交互式登录、没有可代跑子命令、也没有可编程登录入口的内核**不要声明
   `login_argv`**：`GET /api/runtimes` 会带 `auth_supported=true`，前端只展示登录状态，
   不显示一个点了必然失败的「登录」按钮。如果内核提供了本地 HTTP 登录 API / OAuth 设备码
@@ -256,9 +260,10 @@ runtime/availability.scheduler()（lifespan 启动，随服务关闭取消）
 - 界面卡片据此显示「检测于 …」；可用性只是展示元数据，一次运行并不依赖它
   （`runtime/service.prepare_run` 不读它），所以缓存过期最多是版本号晚几小时。
 - `provision.*` 是安装器**自有的信封**（`provision.started / provision.output /
-  provision.qr / provision.finished`），与协作域的 `collab.*` 同理，**不是**适配器事件协议，
-  因此不参与铁律 5 的四处同步。其中 `provision.qr` 只在「登录」动作里出现，
-  带的是短期登录二维码，只对管理员订阅可见。
+  provision.qr / provision.input / provision.finished`），与协作域的 `collab.*` 同理，
+  **不是**适配器事件协议，因此不参与铁律 5 的四处同步。其中 `provision.qr` 与
+  `provision.input` 只在「登录」动作里出现：前者是短期登录二维码，后者是「请把授权码贴回来」
+  的提示（不含凭据）；登录子进程的输入写回接口同样只对管理员开放。
 - 未声明 `provisioner` 的适配器（进程内 API 内核、`custom-cli`）卡片副标题写明
   「进程内运行」/「自备可执行文件」，平台不代管它们的环境。卸载属于破坏性操作，接口要求显式 `confirm`。
 
@@ -481,11 +486,11 @@ HTTP / SSE 端点。与技能完全对称，平台把它们**统一编目**，�
   | --- | --- | --- |
   | Claude Code | 隔离目录的 `mcp.json` | `--mcp-config <file> --strict-mcp-config`（本机 / 项目的其它 MCP 一律不认） |
   | Codex | 隔离 `CODEX_HOME/config.toml` 的 `[mcp_servers.*]` | 先剥掉技能物化带过来的本机配置，再追加分配到的 |
-  | Gemini CLI | 工作目录 `.gemini/settings.json` | 项目级 `mcpServers` + `--allowed-mcp-server-names` 收窄启用范围（它会合并用户级配置） |
+  | Antigravity CLI | 暂未支持 | `agy mcp` 的本地落盘格式尚未确认，v1 不声明 MCP mount（宁可不支持，也不写假的配置面） |
 
   技能与 MCP **共用同一个「家」**（`AgentContext.home_dir`）：同一个隔离目录里既有分配到的技能，
-  也有分配到的 MCP 声明，每次运行重建，取消分配即立刻消失。（只把配置写进工作目录的内核 ——
-  Gemini CLI —— 没有这个家，框架不会凭空给它建一个空目录。）
+  也有分配到的 MCP 声明，每次运行重建，取消分配即立刻消失。（只把配置写进工作目录的内核
+  没有这个家，框架不会凭空给它建一个空目录。）
 - **密钥只经 `app/security.py`**：`env` / `headers` 的值加密落库（键明文、值密文），接口只回键名与
   掩码，明文只在「解密后注入适配器」的一瞬间存在。编辑语义：**列出的键留空＝保持原值、删掉整行＝
   删除、新键必须给值**（`runtime/mcp.py:_merge_pairs`）。
@@ -584,6 +589,11 @@ conversations(id, title, agent_profile_id→agent_profiles, session_id, workspac
 messages(id, conversation_id→conversations, role, content, parts JSON, usage JSON, status, error,
          agent_profile_id)   # agent_profile_id 为空 = 对话归属的智能体；非空 = @ 召唤的智能体
                                # 回答的那一轮（消息仍在对话流里，归属与主场会话记忆不变）
+task_cards(id, conversation_id→conversations UNIQUE, anchor_message_id, title, items JSON,
+           version, last_run_id, created_at, updated_at)
+           # 一个对话最多一张；items = [{id,text,done,done_at,updated_at}]
+           # 客户端没有任何写接口：唯一写入方是运行收尾解析模型输出的 task_card 块
+           # anchor_message_id 决定卡片插在对话流的哪一条助手消息之后
 skills(id="<type_id>:<slug>", type_id, slug, name, description, source_kind, path, fingerprint,
        version, author, when_to_use, allowed_tools JSON, files JSON, total_bytes, meta JSON,
        available, note, source_url)   # source_kind 含 market（市场技能，可卸载）
@@ -625,6 +635,11 @@ im_chats(id, connection_id→im_connections, chat_key, kind(direct|group), title
   点亮时会摘掉同一用户其它智能体的星，删掉带星的那颗会自动补一颗）；新建对话不传
   `agent_profile_id` 时回落到当前用户的星 —— 还没有星时先用他自己「唯一启用的那个」，
   一个可用的都没有才报 422。老库启动时由 `ensure_default_agent` 补星。
+- **任务进度卡片是对话级对象，不是消息的一部分**：进度会反复变化，写回旧消息会篡改历史、
+  也会和消息落库路径抢同一行；因此单独建 `task_cards`（一个对话唯一一张）。模型在正文末尾
+  输出一个 `task_card` 围栏 JSON 块声明建卡 / 勾选，运行收尾时服务端解析、从正文与
+  `parts` 里剥离后落库；**没有客户端写接口**，界面只读。`done` 单向（`false → true`），
+  解析失败 / 冲突一律保持原状态并记日志。
 - **`parts` 用 JSON**：工具调用/结果/推理的形态随智能体变化，无需为每种智能体建表；
   它是按真实发生顺序排列的时间线（`thinking` / `text` / `tool_call` / `tool_result`），
   前端据此按**真实顺序**渲染，只把**连续**出现的「思考 / 工具调用 / 工具结果」收进一个默认折叠的
@@ -783,7 +798,7 @@ entrypoint 的依赖安装**必须**走 `run_with_install_proxy`：pip 只认 `H
 - Codex 默认把 OTEL 指标导出到它的分析后端，连不上时会在**退出前**干等满 10 秒
   （表现为「回复完还要等一会儿才结束」）。适配器用 `-c otel.metrics_exporter="none"` 关掉它；
   要自己接 OTEL 的可以在「额外命令行参数」里再覆盖回来。
-- Gemini CLI 的人格注入依赖 `GEMINI_SYSTEM_MD`，若目标版本不支持可切换为 prepend 模式。
+- Antigravity CLI 没有系统提示词旗标，人格统一拼进提示词最前面（`AGENTS.md` 属于用户项目，不写）。
 - 工具循环（API harness）的权限模型是「工作目录沙箱」，没有做命令级审批。
 - 技能「严格仅分配」只保证**平台注入的技能 == 智能体分配**：内核自带的个别技能（Claude Code 的
   `doctor`）要靠 `skillOverrides` 关闭；工作目录自带的 `.claude/skills` 会被内核直接读取，
@@ -791,9 +806,8 @@ entrypoint 的依赖安装**必须**走 `run_with_install_proxy`：pip 只认 `H
 - 技能目前只支持「查看 + 分配」；编辑、安装与上传留待后续（技能目录仍由各内核自己管理）。
 - MCP 的「严格仅分配」同样只保证**平台注入的服务器 == 智能体分配**，各内核的隔离强度不一样：
   Claude Code 用 `--strict-mcp-config` 能彻底关掉其它 MCP（工作目录自带的 `.mcp.json` 一律不生效，
-  运行时会提示）；Codex 靠改写隔离 `config.toml` 做到；Gemini CLI 没有「换配置目录」的开关，
-  只能把项目级设置与启用白名单收窄 —— 当某次运行**没有分配任何服务器**时，它在用户级
-  `~/.gemini/settings.json` 里自己配的 MCP 仍会被内核加载（内核的合并语义决定，平台无法从外部关掉）。
+  运行时会提示）；Codex 靠改写隔离 `config.toml` 做到；Antigravity CLI 的本地 MCP 配置面
+  尚未确认，v1 直接不声明 MCP 支持，避免「写了配置但内核不认」的假隔离。
 - 协作域（`collab/`）与技能一样**暂不注入 MCP**：挂着 MCP 的智能体参加协作运行时，
   引擎只在工单里给一行提示（要真正用上 MCP，得先按对话运行）。
 - 运行时的安装 / 更新按适配器声明的命令执行（内置 CLI 内核为官方 npm 包）。若某台机器上的

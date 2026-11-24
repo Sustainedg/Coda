@@ -141,6 +141,8 @@ export interface ProvisionEvent {
   error?: string | null
   /** 登录动作产出的二维码（data:image/...;base64,...） */
   data_url?: string | null
+  /** 双向登录（OAuth 授权码）：登录进程请求用户输入时的提示文本 */
+  prompt?: string | null
   /** 登录动作结束时的登录状态 */
   auth?: RuntimeAuth | null
 }
@@ -569,11 +571,40 @@ export interface ActiveRunInfo {
   user_message_id?: string | null
 }
 
+/** 任务进度卡片里的一个任务项（后端只读返回）。 */
+export interface TaskCardItem {
+  id: string
+  text: string
+  /** 勾选状态只能由服务端按模型声明变更，界面永远只读 */
+  done: boolean
+  done_at?: string | null
+  updated_at?: string | null
+}
+
+/**
+ * 一条对话的任务进度卡片（`GET /conversations/{id}` 的 `task_card`）。
+ * 一个对话最多一张；没有卡时为 null。
+ */
+export interface TaskCard {
+  id: string
+  conversation_id: string
+  /** 建卡那一轮的助手消息 id：卡片渲染在这条消息之后 */
+  anchor_message_id?: string | null
+  title: string
+  items: TaskCardItem[]
+  /** 乐观锁版本号：前端据此判断要不要重渲染 */
+  version: number
+  created_at: string
+  updated_at: string
+}
+
 /** 单条对话的完整读取结果：对话本身 + 全部消息 + 正在跑的那次运行（若有）。 */
 export interface ConversationDetail {
   conversation: Conversation
   messages: Message[]
   active_run: ActiveRunInfo | null
+  /** 任务进度卡片；null 表示这条对话没有卡片 */
+  task_card?: TaskCard | null
 }
 
 /**

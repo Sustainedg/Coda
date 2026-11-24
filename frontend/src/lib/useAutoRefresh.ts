@@ -6,7 +6,7 @@
  * 不会因为每次渲染生成新闭包而反复重建定时器。
  */
 import { useEffect, useRef } from 'react'
-import type { Conversation, Message } from './types'
+import type { Conversation, Message, TaskCard } from './types'
 
 interface AutoRefreshOptions {
   intervalMs?: number
@@ -66,6 +66,20 @@ export function sameMessageList(left: Message[], right: Message[]): boolean {
       message.error === next.error
     )
   })
+}
+
+/**
+ * 任务进度卡片是否没变：只比 `id` 与 `version`。
+ *
+ * 卡片状态与消息状态分开比较：`sameMessageList` 只比消息的四个字段，
+ * 卡片内容变了不会触发它；这里单独判断，避免 3 秒轮询每次都重渲染整张卡。
+ */
+export function sameTaskCard(
+  left: TaskCard | null | undefined,
+  right: TaskCard | null | undefined,
+): boolean {
+  if (!left || !right) return !left && !right
+  return left.id === right.id && left.version === right.version
 }
 
 export function sameConversationList(left: Conversation[], right: Conversation[]): boolean {

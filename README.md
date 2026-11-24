@@ -6,7 +6,7 @@
 
 **把 AI 编程内核，变成你的聊天同事。** 🐝
 
-Claude Code · Codex · Gemini CLI · 任意 OpenAI 兼容端点 ——
+Claude Code · Codex · Antigravity CLI · 任意 OpenAI 兼容端点 ——
 配上网关、人格、技能与 MCP，在浏览器里像发消息一样使唤它们；
 多智能体「工单」协作看得见，手机 PWA 与 7 大 IM 平台随时在线。
 
@@ -42,7 +42,7 @@ Claude Code · Codex · Gemini CLI · 任意 OpenAI 兼容端点 ——
 
 | 🧩 内核即智能体 | 🔑 密钥统一管家 | 🗣️ 多智能体协作 |
 | --- | --- | --- |
-| 把 Claude Code / Codex / Gemini CLI 配成一个个「员工」：头像、人格、技能、MCP 各自定义 | 网关是 API 密钥的唯一来源：Fernet 加密落库、接口只回掩码、日志自动脱敏 | 可视化编排协作组：工单在岗位间接力，「办公室实况」页面实时看到谁在忙、谁卡住、谁在等你 |
+| 把 Claude Code / Codex / Antigravity CLI 配成一个个「员工」：头像、人格、技能、MCP 各自定义 | 网关是 API 密钥的唯一来源：Fernet 加密落库、接口只回掩码、日志自动脱敏 | 可视化编排协作组：工单在岗位间接力，「办公室实况」页面实时看到谁在忙、谁卡住、谁在等你 |
 | 🧰 技能与 MCP 编目 | 🎛️ 对话式系统管理 | 📱 双端在线 |
 | 各内核的技能与 MCP 服务器统一编目，「严格仅分配」才生效，不给就绝不冒用 | 平台自带「系统管理」MCP + 个人访问令牌，智能体在对话里就能帮你管智能体 / 技能 / MCP | 主站之外物理独立的 `/m/` 移动端 PWA；IM 连接只用长连接，**不需要公网地址** |
 | 📊 用量透明 | 🔌 新智能体是插件 | 🐳 部署即所得 |
@@ -151,7 +151,7 @@ HOST_PROJECT_DIR=/path/to/projects \
 
 ## 🧭 上手只要五步
 
-0. **设置 → 内核管理** —— 按需安装内核（Claude Code / Codex / Gemini CLI / Hermes / DeepSeek Harness / 豆包 CLI）。镜像与首次启动都**不预装**内核，不装就没有可用的智能体类型（为什么？见 [FAQ](#-常见问题)）；豆包这类账号型内核在详情里点「登录」扫码即可。
+0. **设置 → 内核管理** —— 按需安装内核（Claude Code / Codex / Antigravity CLI / Hermes / DeepSeek Harness / 豆包 CLI）。镜像与首次启动都**不预装**内核，不装就没有可用的智能体类型（为什么？见 [FAQ](#-常见问题)）；豆包这类账号型内核在详情里点「登录」扫码即可。
 1. **设置 → 自定义网关** —— 新建网关（名称、地址、协议、鉴权、API 密钥），点「获取模型」拿到可选模型并勾选
 2. **智能体 → 新建** —— 选内核类型、选网关、定默认模型，写头像与系统提示词，按需勾选技能 / MCP，点「连通性测试」确认一次通过
 3. **对话 → 新建对话** —— 选择智能体开始聊天；工具调用、推理过程、token 用量实时展开
@@ -169,7 +169,7 @@ HOST_PROJECT_DIR=/path/to/projects \
 | --- | --- | --- | --- | --- |
 | `claude-code` | CLI `claude` | ✅ `--session-id` / `--resume` | ✅ | 权限模式、MCP、工具白名单全支持 |
 | `codex` | CLI `codex` | ✅ `exec resume` | ➖ 注入到 prompt | `-c model_providers.*` 指向自定义网关 |
-| `gemini-cli` | CLI `gemini` | ✅ `--resume` | ✅ | 人格自动写入运行期临时文件 |
+| `antigravity-cli` | CLI `agy` | ✅ `--conversation` | ➖ 注入到 prompt | Google Antigravity CLI：OAuth 账号登录（内核详情里点「登录」出授权链接 / 二维码，粘贴授权码完成）；无 API Key，不接管网关；v1 暂不接 MCP |
 | `codebuddy-cli` | CLI `codebuddy` | ✅ `--resume` | ✅ | 腾讯 CodeBuddy Code：内核详情里点「登录」出授权二维码（`--serve` API），支持**多账号存档与切换**；也支持环境变量凭据；自定义网关走 `models.json`（仅 OpenAI 兼容） |
 | `doubao-cli` | CLI `doubao` | ✅ `--resume` | ➖ 注入到 prompt | 豆包 CLI：扫码登录（无 API Key），内核详情里直接出二维码 |
 | `deepseek-harness` | CLI `dsh` | ✅ `--session-id` | ✅ 写入 `AGENTS.md` | DeepSeek Harness headless：JSON 事件、沙箱权限、技能与 MCP |

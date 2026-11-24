@@ -9,6 +9,7 @@ import asyncio
 import os
 import re
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable
 
@@ -76,13 +77,32 @@ async def _collect(definition: AgentDefinition, action: str) -> list[dict]:
 
 def test_cli_kernels_declare_a_provisioner():
     """三个 CLI 内核都要声明安装方式，否则「运行时」页无从下手。"""
-    for type_id in ("claude-code", "codex", "gemini-cli", "hermes-agent", "deepseek-harness"):
+    for type_id in ("claude-code", "codex", "hermes-agent", "deepseek-harness"):
         provisioner = get_agent(type_id).provisioner
         assert provisioner is not None, f"{type_id} 未声明 provisioner"
         assert provisioner.manager and provisioner.package, f"{type_id} 缺少包管理器/包名"
         for action in ("install", "update", "uninstall"):
             assert provisioner.supports(action), f"{type_id} 缺少「{action}」命令"
         assert provisioner.latest_argv, f"{type_id} 缺少「查询最新版本」命令"
+
+
+def test_antigravity_installs_from_the_official_script():
+    """Antigravity 是原生二进制：走官方安装脚本 + 自更新，没有 npm 那套清扫流程。"""
+    definition = get_agent("antigravity-cli")
+    provisioner = definition.provisioner
+    assert provisioner is not None
+    assert definition.executable == "agy"
+    for action in ("install", "update", "uninstall"):
+        assert provisioner.supports(action), f"antigravity-cli 缺少「{action}」命令"
+    install = provisioner.argv_for("install")
+    assert install[:2] == ["bash", "-c"]
+    assert "antigravity.google/cli/install.sh" in install[2]
+    # 自更新：没有「查询最新版本」子命令，界面不该出现「检查更新」。
+    assert provisioner.latest_argv == []
+    # 账号型登录：助手脚本随包存在。
+    login = provisioner.argv_for("login")
+    assert Path(login[-1]).name == "antigravity_login.py"
+    assert Path(login[-1]).exists()
 
 
 def test_api_kernels_are_not_managed():
@@ -94,7 +114,7 @@ def test_api_kernels_are_not_managed():
 
 def test_npm_kernels_clean_up_leftovers_before_acting():
     """npm 的中转目录残留会让安装 / 更新 / 卸载永久失败，三个 npm 内核都要声明清扫命令。"""
-    for type_id in ("claude-code", "codex", "gemini-cli", "deepseek-harness"):
+    for type_id in ("claude-code", "codex", "deepseek-harness"):
         provisioner = get_agent(type_id).provisioner
         assert provisioner is not None and provisioner.prepare_argv, f"{type_id} 缺少「清扫」命令"
 
@@ -108,7 +128,6 @@ def test_npm_kernels_install_through_the_conflict_aware_wrapper():
     kernels = (
         ("claude-code", "@anthropic-ai/claude-code"),
         ("codex", "@openai/codex"),
-        ("gemini-cli", "@google/gemini-cli"),
         ("deepseek-harness", "@deepseek-ai/dsh"),
     )
     for type_id, package in kernels:
@@ -129,11 +148,11 @@ def test_npm_kernels_install_through_the_conflict_aware_wrapper():
 
 def test_npm_prepare_command_only_targets_its_own_leftovers():
     """清扫命令只删自己那个包的残留目录，不碰别的东西。"""
-    scoped = npm_prepare_argv("@google/gemini-cli")
+    scoped = npm_prepare_argv("@openai/codex")
     assert scoped[:2] == ["node", "-e"]
     script = scoped[2]
     assert "npm" in script and "'root', '-g'" in script
-    assert '["@google", "gemini-cli"]' in script
+    assert '["@openai", "codex"]' in script
     # 普通包没有作用域目录（scope 为空串）
     plain = npm_prepare_argv("aider")
     assert '["", "aider"]' in plain[2]
@@ -481,7 +500,7 @@ async def test_timeout_kills_the_child_and_reports_error(monkeypatch: pytest.Mon
 async def test_list_runtimes_reports_status_and_provisioning(client: httpx.AsyncClient):
     payload = (await client.get("/api/runtimes")).json()
     items = {item["id"]: item for item in payload["items"]}
-    assert {"claude-code", "codex", "gemini-cli", "hermes-agent"} <= set(items)
+    assert {"claude-code", "codex", "antigravity-cli", "hermes-agent"} <= set(items)
     claude = items["claude-code"]
     assert claude["provisioning"]["supported"] is True
     assert claude["provisioning"]["manager"] == "npm"

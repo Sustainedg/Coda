@@ -41,6 +41,15 @@ ACTION_LABELS: dict[str, str] = {
 #: 这是账号型内核的**通用**登录协议，框架不认识具体内核。等号两侧允许空白。
 _QR_LINE = re.compile(r"^QR_IMAGE\s*=\s*(.+)$")
 
+#: 登录命令请求用户输入的约定：``INPUT_PROMPT=<提示文本>``。
+#: 有些 OAuth 内核必须把浏览器里的授权码贴回登录进程（Antigravity CLI 就是这种），
+#: 框架据此把「需要输入」推给界面，并把用户提交的文本写回子进程 stdin。
+#: 同样是**通用**协议，框架不认识具体内核。等号两侧允许空白。
+_INPUT_PROMPT_LINE = re.compile(r"^INPUT_PROMPT\s*=\s*(.+)$")
+
+#: 单次输入的长度上限：OAuth 授权码远小于这个值，超过按异常截断，避免脏数据灌进子进程。
+_MAX_LOGIN_INPUT = 8192
+
 #: 二维码图片上限：一张登录二维码远小于这个值，超过就按异常处理，避免把大文件塞进 SSE。
 _QR_MAX_BYTES = 2 * 1024 * 1024
 
@@ -180,6 +189,49 @@ def _workdir() -> str | None:
     return home if home and os.path.isdir(home) else None
 
 
+class LoginInputChannel:
+    """登录动作的双向输入通道：把界面提交的文本写回登录子进程的 stdin。
+
+    大多数扫码型内核是单向的（框架只把二维码推出去，登录命令自己轮询完成）。
+    OAuth 授权码型内核（例如 Antigravity CLI）必须在浏览器授权后把授权码贴回来：
+    登录命令用 ``INPUT_PROMPT=`` 声明自己要读输入，框架把子进程的 stdin 挂到这里，
+    API 层再通过 ``ProvisionJob.send_input()`` 把用户提交的文本送进去。
+
+    通道与具体内核无关 —— 适配器只负责在自己的登录助手里打印约定行、从 stdin 读文本。
+    """
+
+    def __init__(self) -> None:
+        self._writer: asyncio.StreamWriter | None = None
+
+    def attach(self, process: asyncio.subprocess.Process) -> None:
+        """子进程启动后挂上它的 stdin 写入端。"""
+        self._writer = process.stdin
+
+    def detach(self) -> None:
+        self._writer = None
+
+    @property
+    def available(self) -> bool:
+        """登录进程当前是否能接收输入（已启动且 stdin 未关闭）。"""
+        writer = self._writer
+        return writer is not None and not writer.is_closing()
+
+    async def send(self, text: str) -> bool:
+        """把一段文本写进登录进程；进程已退出 / stdin 已关闭时返回 ``False``。"""
+        writer = self._writer
+        if not self.available or writer is None:
+            return False
+        # 授权码是单行文本：统一按行提交，内核那边 ``readline()`` 才收得到。
+        payload = text[:_MAX_LOGIN_INPUT].replace("\r", "").rstrip("\n") + "\n"
+        try:
+            writer.write(payload.encode("utf-8"))
+            await writer.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            self._writer = None
+            return False
+        return True
+
+
 @dataclass(slots=True)
 class _CommandOutcome:
     """一条受控命令的执行结论。"""
@@ -224,12 +276,16 @@ async def _run_command(
     *,
     qr: bool = False,
     manager: str | None = None,
+    login_input: LoginInputChannel | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """在受控子进程里跑一条命令，逐行产出 ``provision.output``。
 
     结论（退出码 / 是否超时 / 是否压根没起来）写进调用方传入的 ``outcome``。
     这里**不**产出 ``provision.finished``：收尾要重测安装状态、判定成败，由调用方决定。
     超时会杀掉子进程；客户端断开时生成器被关闭，``finally`` 同样杀掉它（铁律 10）。
+
+    传入 ``login_input`` 时子进程的 stdin 保持打开（双向管道），登录助手据此把用户
+    提交的授权码读回去；否则沿用 ``DEVNULL``，避免普通命令误等输入。
     """
     try:
         process = await asyncio.create_subprocess_exec(
@@ -237,7 +293,7 @@ async def _run_command(
             *_spawn_argv(argv),
             cwd=_workdir(),
             env=env,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE if login_input is not None else asyncio.subprocess.DEVNULL,
             # 合并 stderr 到 stdout：安装日志里两者交错，合并后既能保证顺序，
             # 也避免两条流各自读取带来的死锁风险。
             stdout=asyncio.subprocess.PIPE,
@@ -255,6 +311,9 @@ async def _run_command(
 
     try:
         assert process.stdout is not None
+        # 双向登录：把子进程的 stdin 挂到通道上，界面提交的授权码从这里写回去。
+        if login_input is not None:
+            login_input.attach(process)
         lines = _StreamLines(process.stdout)
         while True:
             if asyncio.get_event_loop().time() > deadline:
@@ -289,9 +348,20 @@ async def _run_command(
                         level="warn",
                     )
                 continue
+            # 双向登录：登录助手声明要读输入时，把提示推给界面，等用户提交。
+            prompt_match = _INPUT_PROMPT_LINE.match(text.strip()) if login_input is not None else None
+            if prompt_match:
+                yield _event(
+                    "input",
+                    runtime_id=runtime_id,
+                    prompt=prompt_match.group(1).strip(),
+                )
+                continue
             yield _event("output", runtime_id=runtime_id, text=text)
         await process.wait()
     finally:
+        if login_input is not None:
+            login_input.detach()
         if process.returncode is None:
             await _terminate(process)
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
@@ -299,7 +369,12 @@ async def _run_command(
     outcome.returncode = process.returncode
 
 
-async def stream_provision(definition: AgentDefinition, action: Action) -> AsyncIterator[dict[str, Any]]:
+async def stream_provision(
+    definition: AgentDefinition,
+    action: Action,
+    *,
+    login_input: LoginInputChannel | None = None,
+) -> AsyncIterator[dict[str, Any]]:
     """执行一次安装 / 更新 / 卸载，并流式回显输出。
 
     终态始终是一条 ``provision.finished`` 事件（含 ``ok`` / ``status`` / ``version``），
@@ -308,6 +383,10 @@ async def stream_provision(definition: AgentDefinition, action: Action) -> Async
 
     适配器声明了 ``prepare_argv`` 时，先跑一遍清扫命令（清掉上一次被中断的动作留下的
     残留），再跑动作本身；两者共用同一个总时限。
+
+    ``login_input`` 只在登录动作里有意义：它让登录子进程的 stdin 保持打开，
+    并把 ``INPUT_PROMPT=`` 约定行翻译成 ``provision.input`` 事件（见
+    :class:`LoginInputChannel`）。非登录动作传进来也不会用到。
     """
     provisioner = definition.provisioner
     label = ACTION_LABELS.get(action, action)
@@ -386,6 +465,7 @@ async def stream_provision(definition: AgentDefinition, action: Action) -> Async
             argv, env, deadline, definition.id, label, outcome,
             qr=(action == "login"),
             manager=provisioner.manager,
+            login_input=login_input if action == "login" else None,
         )
     ) as command_stream:
         async for event in command_stream:
@@ -559,6 +639,17 @@ class _ProvisionQr:
     data_url: str
 
 
+@dataclass(slots=True)
+class _ProvisionInput:
+    """一次登录动作请求用户输入的提示（``INPUT_PROMPT=`` 的翻译结果）。
+
+    与二维码同理放在订阅队列里，重连后界面仍能看到输入框，不必重新发起登录。
+    提示文本里不含凭据，落日志是安全的。
+    """
+
+    prompt: str
+
+
 class ProvisionJob:
     """一次安装 / 更新 / 卸载任务的状态，支持断线重连。
 
@@ -575,7 +666,9 @@ class ProvisionJob:
         self.error: str | None = None
         #: 登录动作结束时的登录态（``AuthStatus.to_dict()``）；其它动作恒为 None。
         self.auth: dict[str, Any] | None = None
-        self.lines: list[_ProvisionLogLine | _ProvisionQr] = []
+        #: 双向登录的输入通道（OAuth 授权码这类需要贴回文本的内核才用得上）。
+        self.login_input = LoginInputChannel()
+        self.lines: list[_ProvisionLogLine | _ProvisionQr | _ProvisionInput] = []
         self._subscribers: list[asyncio.Queue] = []
         self._done = asyncio.Event()
 
@@ -591,6 +684,16 @@ class ProvisionJob:
         for queue in self._subscribers:
             queue.put_nowait(item)
 
+    def add_input(self, prompt: str) -> None:
+        item = _ProvisionInput(prompt=prompt)
+        self.lines.append(item)
+        for queue in self._subscribers:
+            queue.put_nowait(item)
+
+    async def send_input(self, text: str) -> bool:
+        """把界面提交的文本写进登录进程；进程已结束或不收输入时返回 ``False``。"""
+        return await self.login_input.send(text)
+
     def finish(
         self,
         status: str,
@@ -605,7 +708,7 @@ class ProvisionJob:
         for queue in self._subscribers:
             queue.put_nowait(None)
 
-    async def subscribe(self) -> AsyncIterator[_ProvisionLogLine | _ProvisionQr | None]:
+    async def subscribe(self) -> AsyncIterator[_ProvisionLogLine | _ProvisionQr | _ProvisionInput | None]:
         """订阅输出行：先发已有行，再实时发新行，最后发 None 表示结束。"""
         queue: asyncio.Queue = asyncio.Queue()
         self._subscribers.append(queue)
@@ -676,7 +779,7 @@ async def _execute_provision(
 ) -> None:
     """执行安装任务，将输出写入 job 对象。"""
     try:
-        async for event in stream_provision(definition, action):
+        async for event in stream_provision(definition, action, login_input=job.login_input):
             event_type = event.get("type", "")
             if event_type == "provision.started":
                 command = event.get("command")
@@ -688,6 +791,10 @@ async def _execute_provision(
                 data_url = event.get("data_url")
                 if data_url:
                     job.add_qr(str(data_url))
+            elif event_type == "provision.input":
+                prompt = event.get("prompt")
+                if prompt:
+                    job.add_input(str(prompt))
             elif event_type == "provision.finished":
                 job.finish(
                     "ok" if event.get("ok") else "error",
@@ -706,6 +813,8 @@ async def stream_job(job: ProvisionJob) -> AsyncIterator[dict[str, Any]]:
             break
         if isinstance(item, _ProvisionQr):
             yield _event("qr", runtime_id=job.runtime_id, data_url=item.data_url)
+        elif isinstance(item, _ProvisionInput):
+            yield _event("input", runtime_id=job.runtime_id, prompt=item.prompt)
         else:
             yield _event("output", runtime_id=job.runtime_id, text=item.text, level=item.level)
     yield _event(

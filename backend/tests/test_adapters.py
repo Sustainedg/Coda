@@ -25,7 +25,7 @@ def test_registry_exposes_first_party_adapters():
     for expected in (
         "claude-code",
         "codex",
-        "gemini-cli",
+        "antigravity-cli",
         "openai-harness",
         "custom-cli",
         "hermes-agent",
@@ -198,13 +198,41 @@ def test_codex_parses_modern_and_legacy_events():
     assert run.session_id == "th1"
 
 
-def test_gemini_invocation_writes_system_file():
-    definition = get_agent("gemini-cli")
+def test_antigravity_invocation_resumes_and_prepends_system_prompt():
+    definition = get_agent("antigravity-cli")
     invocation = definition.build_invocation(ctx(session_id="sess-9"))
-    assert "--resume" in invocation.argv and "sess-9" in invocation.argv
-    assert invocation.files[".coda/system.md"] == "You are a tester."
-    assert invocation.env["GEMINI_SYSTEM_MD"] == "{{RUN_DIR}}/.coda/system.md"
-    assert invocation.env["GEMINI_API_KEY"] == "sk-secret"
+    assert "--conversation" in invocation.argv and "sess-9" in invocation.argv
+    # 提示词走 stdin：-p "" 收尾，内容（含人格）从 stdin 喂进去。
+    assert invocation.argv[-2:] == ["-p", ""]
+    assert invocation.stdin.startswith("You are a tester.")
+    assert invocation.files == {}
+    # 账号型内核：平台不注入密钥 / 网关。
+    assert "GEMINI_API_KEY" not in invocation.env
+
+
+def test_antigravity_parses_gemini_and_claude_stream_shapes():
+    """Antigravity 是 Gemini 谱系，但事件形状未公开：两种常见形状都要能解析。"""
+    definition = get_agent("antigravity-cli")
+    run = definition.create_run(ctx(prompt="hi"))
+
+    init = list(run.feed('{"type":"init","session_id":"s-1","model":"m"}\n'))
+    assert any(event.type == "session" for event in init)
+
+    gemini_text = list(run.feed('{"type":"message","role":"assistant","content":"hello"}\n'))
+    assert any(event.type == "message.delta" and event.text == "hello" for event in gemini_text)
+
+    claude_text = list(
+        run.feed('{"type":"assistant","message":{"content":[{"type":"text","text":"world"}]}}\n')
+    )
+    assert any(event.type == "message.delta" and event.text == "world" for event in claude_text)
+
+    tool = list(
+        run.feed(
+            '{"type":"assistant","message":{"content":'
+            '[{"type":"tool_use","id":"t1","name":"read","input":{"path":"a"}}]}}\n'
+        )
+    )
+    assert any(event.type == "tool.call" and event.name == "read" for event in tool)
 
 
 def test_custom_cli_declarative_args_and_plain_text():
@@ -872,17 +900,13 @@ def test_codex_unrestricted_respects_user_sandbox_choice():
     assert fresh.argv[fresh.argv.index("-s") + 1] == "read-only"
 
 
-def test_gemini_workspace_only_forces_sandbox_flag():
-    """「仅工作目录」时 Gemini 强制带 --sandbox（未单独勾选沙箱也要带）。"""
-    definition = get_agent("gemini-cli")
-    argv = definition.build_invocation(ctx(options={"file_access_scope": "workspace_only"})).argv
-    assert "--sandbox" in argv
-
-
-def test_gemini_unrestricted_skips_sandbox_flag():
-    definition = get_agent("gemini-cli")
-    argv = definition.build_invocation(ctx()).argv
-    assert "--sandbox" not in argv
+def test_antigravity_sandbox_flag_follows_option():
+    """勾选沙箱才带 --sandbox；默认不限制文件访问。"""
+    definition = get_agent("antigravity-cli")
+    on = definition.build_invocation(ctx(options={"sandbox": True})).argv
+    assert "--sandbox" in on
+    off = definition.build_invocation(ctx()).argv
+    assert "--sandbox" not in off
 
 
 # --- CodeBuddy CLI --------------------------------------------------------

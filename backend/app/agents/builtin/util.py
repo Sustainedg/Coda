@@ -197,7 +197,7 @@ def npm_install_argv(
 def workspace_only(ctx: Any) -> bool:
     """智能体是否选了「文件访问范围 = 仅工作目录」。
 
-    ``file_access_scope`` 是多个内核共用的语义（Claude Code / Codex / Gemini CLI 各自
+    ``file_access_scope`` 是多个内核共用的语义（Claude Code / Codex 等各自
     落到自己的机制），读取方式只有这一份，避免各适配器自己写默认值时对不齐。
     """
     return (ctx.option("file_access_scope") or "unrestricted") == "workspace_only"

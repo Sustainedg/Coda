@@ -50,7 +50,7 @@ DOCUMENTED_EVENTS = {
 BUILTIN_IDS = {
     "claude-code",
     "codex",
-    "gemini-cli",
+    "antigravity-cli",
     "openai-harness",
     "custom-cli",
     "hermes-agent",

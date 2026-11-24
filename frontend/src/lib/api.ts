@@ -276,6 +276,15 @@ export const api = {
   /** 账号型内核扫码登录：二维码通过 provision.qr 事件推回来。 */
   loginRuntime: (typeId: string, onEvent: (event: ProvisionEvent) => void, signal?: AbortSignal) =>
     streamPost<ProvisionEvent>(`/api/runtimes/${typeId}/login`, {}, onEvent, signal),
+  /**
+   * 双向登录：把界面提交的文本（OAuth 授权码）写进正在进行的登录进程。
+   * 登录进程通过 provision.input 事件声明「需要输入」。
+   */
+  loginRuntimeInput: (typeId: string, text: string) =>
+    request<{ ok: boolean }>(`/api/runtimes/${typeId}/login/input`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
   /** 多账号内核：切换到一个已保存的账号，返回切换后的登录状态。 */
   activateRuntimeAccount: (typeId: string, accountId: string) =>
     request<RuntimeAuth>(

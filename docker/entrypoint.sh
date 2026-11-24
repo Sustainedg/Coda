@@ -338,7 +338,7 @@ if [ ! -x "$VENV/bin/python" ] || [ "$(cat "$MARKER" 2>/dev/null || true)" != "$
 fi
 
 # ---- 内核：镜像不预装，全部装在 HOME 数据卷（$NPM_CONFIG_PREFIX）里 ----
-# 这样 Claude Code / Codex / Gemini 的安装态跟着数据卷走，容器重建不需要重装。
+# 这样 Claude Code / Codex 的安装态跟着数据卷走，容器重建不需要重装。
 # 用户在界面里「卸载」某个内核时删的是 HOME 下 npm 全局目录里的包，重启后这里补回去；
 # 装失败不致命（界面里仍可手动装）。网络不通时可用 CODA_SKIP_KERNEL_INSTALL=1 跳过。
 ensure_kernels() {
@@ -350,12 +350,11 @@ ensure_kernels() {
   fi
   command -v npm >/dev/null 2>&1 || return 0
   local pkg
-  for pkg in @anthropic-ai/claude-code @openai/codex @google/gemini-cli; do
+  for pkg in @anthropic-ai/claude-code @openai/codex; do
     local bin
     case "$pkg" in
       @anthropic-ai/claude-code) bin=claude ;;
       @openai/codex)             bin=codex ;;
-      @google/gemini-cli)        bin=gemini ;;
     esac
     if ! command -v "$bin" >/dev/null 2>&1; then
       log "补装内核 $bin（$pkg，最多 5 分钟）"

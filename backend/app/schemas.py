@@ -270,6 +270,16 @@ class RuntimeAction(BaseModel):
     confirm: bool = False
 
 
+class RuntimeLoginInput(BaseModel):
+    """双向登录（OAuth 授权码这类）时，界面提交给登录进程的一段输入。
+
+    只有登录命令用 ``INPUT_PROMPT=`` 声明了要读输入时才有意义；文本按单行写入，
+    长度上限由框架层裁剪。授权码是短期凭据，不落库、不进日志。
+    """
+
+    text: str = Field(min_length=1, max_length=8192)
+
+
 # --- 技能 -------------------------------------------------------------------
 
 
@@ -551,6 +561,34 @@ class MessageRead(BaseModel):
     created_at: datetime
     #: 这条回复由哪个智能体产出；为空 = 对话归属的智能体（主场），非空 = @ 召唤的
     agent_profile_id: str | None = None
+
+
+class TaskCardItemRead(BaseModel):
+    """任务进度卡片里的一个任务项（只读）。"""
+
+    id: str
+    text: str
+    done: bool = False
+    done_at: str | None = None
+    updated_at: str | None = None
+
+
+class TaskCardRead(BaseModel):
+    """一条对话的任务进度卡片（只读响应模型）。
+
+    卡片只随对话详情返回，没有任何写接口；``anchor_message_id`` 决定它在对话流中的位置。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    conversation_id: str
+    anchor_message_id: str | None = None
+    title: str = ""
+    items: list[TaskCardItemRead] = Field(default_factory=list)
+    version: int = 1
+    created_at: datetime
+    updated_at: datetime
 
 
 class TraceEventRead(BaseModel):

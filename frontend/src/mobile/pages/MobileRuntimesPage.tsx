@@ -11,6 +11,7 @@ import type {
 } from '../../lib/types'
 import { RefreshIcon } from '../../components/Icons'
 import { KernelLogo } from '../../components/KernelLogo'
+import { LoginInput } from '../../components/LoginInput'
 import { updateTargetOf, versionCore } from '../../lib/runtimeVersion'
 import { MobileSheet } from '../components/MobileSheet'
 import { MobileTopBar } from '../components/MobileTopBar'
@@ -42,6 +43,8 @@ interface Job {
   lines: LogLine[]
   /** 登录动作产出的二维码（data URL）；其它动作恒为 null */
   qr?: string | null
+  /** 双向登录请求输入时的提示文本（OAuth 授权码）；没有则隐藏输入框 */
+  inputPrompt?: string | null
   status: 'running' | 'ok' | 'error'
   error?: string | null
 }
@@ -184,6 +187,17 @@ export function MobileRuntimesPage() {
     }
   }, [job?.lines])
 
+  /** 双向登录：把界面输入的授权码写回正在等待的登录进程。 */
+  const submitLoginInput = async (text: string) => {
+    if (!job) return
+    try {
+      await api.loginRuntimeInput(job.runtimeId, text)
+      setJob((prev) => (prev ? { ...prev, inputPrompt: null } : prev))
+    } catch (e) {
+      setJob((prev) => (prev ? { ...prev, error: describeError(e) } : prev))
+    }
+  }
+
   const start = async (runtime: AgentRuntime, action: RuntimeAction) => {
     if (action === 'uninstall') {
       const command = (runtime.provisioning.commands?.uninstall ?? []).join(' ')
@@ -191,7 +205,15 @@ export function MobileRuntimesPage() {
     }
     const controller = new AbortController()
     abortRef.current = controller
-    setJob({ runtimeId: runtime.id, name: runtime.name, action, lines: [], qr: null, status: 'running' })
+    setJob({
+      runtimeId: runtime.id,
+      name: runtime.name,
+      action,
+      lines: [],
+      qr: null,
+      inputPrompt: null,
+      status: 'running',
+    })
     setShowLog(true)
     showLogRef.current = true
     setProvisionJobs((prev) => ({
@@ -210,6 +232,8 @@ export function MobileRuntimesPage() {
         )
       } else if (event.type === 'provision.qr') {
         setJob((prev) => (prev ? { ...prev, qr: event.data_url ?? null } : prev))
+      } else if (event.type === 'provision.input') {
+        setJob((prev) => (prev ? { ...prev, inputPrompt: event.prompt ?? null } : prev))
       } else if (event.type === 'provision.finished') {
         setJob((prev) => (prev ? { ...prev, status: event.ok ? 'ok' : 'error', error: event.error } : prev))
         if (event.auth) {
@@ -259,7 +283,15 @@ export function MobileRuntimesPage() {
     setShowLog(true)
     showLogRef.current = true
     if (job && job.runtimeId === runtimeId && job.lines.length > 0) return
-    setJob({ runtimeId, name: info.name, action: info.action, lines: [], qr: null, status: info.status })
+    setJob({
+      runtimeId,
+      name: info.name,
+      action: info.action,
+      lines: [],
+      qr: null,
+      inputPrompt: null,
+      status: info.status,
+    })
     const controller = new AbortController()
     abortRef.current = controller
     const onEvent = (event: ProvisionEvent) => {
@@ -273,6 +305,8 @@ export function MobileRuntimesPage() {
         )
       } else if (event.type === 'provision.qr') {
         setJob((prev) => (prev ? { ...prev, qr: event.data_url ?? null } : prev))
+      } else if (event.type === 'provision.input') {
+        setJob((prev) => (prev ? { ...prev, inputPrompt: event.prompt ?? null } : prev))
       } else if (event.type === 'provision.finished') {
         setJob((prev) => (prev ? { ...prev, status: event.ok ? 'ok' : 'error', error: event.error } : prev))
         if (event.auth) {
@@ -518,6 +552,9 @@ export function MobileRuntimesPage() {
                 <img src={job.qr} alt="登录二维码" />
                 <span>用手机扫描二维码完成登录；扫码成功后状态会自动更新。</span>
               </div>
+            )}
+            {job.inputPrompt && job.status === 'running' && (
+              <LoginInput prompt={job.inputPrompt} onSubmit={submitLoginInput} />
             )}
             <pre className="runtime-log" ref={logRef}>
               {job.lines.length === 0

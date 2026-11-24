@@ -62,7 +62,7 @@ CLI 内核的真实 HTTP 报文在子进程内，平台不可见（见 §10 偏�
 | 实际历史注入 | 同上 | `history = _clip_history(...)`（`:308`，`regenerate_last` 在 `:576`） |
 | 不支持会话续接时 | 同上 | `transcript_prompt`（`:198-207`）、`prior_context_prompt`（`:210-226`）、能力分支 `:324-333` |
 | API 内核 messages 数组 | `backend/app/agents/builtin/openai_harness.py` | `build_messages`（`:111-120`） |
-| CLI 内核注入方式 | 各适配器 | Claude Code：`--system-prompt` / `--append-system-prompt` 与 stdin（`claude_code.py:483-489,516`）；Codex 折进 prompt（`codex.py:345-346`）；Gemini 写 `.coda/system.md`（`gemini_cli.py:207-211`） |
+| CLI 内核注入方式 | 各适配器 | Claude Code：`--system-prompt` / `--append-system-prompt` 与 stdin（`claude_code.py:483-489,516`）；Codex 折进 prompt（`codex.py:345-346`）；Antigravity CLI 没有系统提示词旗标，同样折进 prompt（`antigravity_cli.py`） |
 
 ### 1.4 模型 SDK / API 调用封装
 
@@ -112,8 +112,8 @@ CLI 内核的真实 HTTP 报文在子进程内，平台不可见（见 §10 偏�
   `system_prompt=with_notice(profile.system_prompt or None, credentials)`；
   凭据说明拼接见 `backend/app/credentials.py:100-105`（`with_notice`）。
 - 实际发送：API 内核进 `messages[0]`（`openai_harness.py:113-114`）；
-  CLI 内核走 argv（`claude_code.py:483-489`）、文件（`gemini_cli.py:207-211`）或折进 prompt（`codex.py:345-346`、
-  `service.py:326-328`）。
+  CLI 内核走 argv（`claude_code.py:483-489`）或折进 prompt（`codex.py:345-346`、
+  `antigravity_cli.py`、`service.py:326-328`）。
 - 缺口：**每轮最终生效的 system prompt 文本没有落库**；`messages` 表没有该字段（`models.py:428-442`），
   且 `with_notice` 拼接结果、非原生人格折进 prompt 的结果都只存在于 `AgentContext`。
 

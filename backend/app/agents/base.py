@@ -317,6 +317,9 @@ class AgentDefinition(ABC):
 
     id: ClassVar[str]
     name: ClassVar[str]
+    #: 该适配器取代过的旧 id（已下线 / 改名的内核）。启动时框架据此把存量智能体迁到本适配器；
+    #: 只影响迁移、不参与运行。这是**声明**：框架层不再硬编码任何具体内核 id。
+    legacy_ids: ClassVar[tuple[str, ...]] = ()
     description: ClassVar[str] = ""
     vendor: ClassVar[str] = ""
     runtime: ClassVar[Runtime] = Runtime.CLI

@@ -501,6 +501,32 @@ async def test_trace_output_is_flattened_and_capped():
     assert sink.text.endswith("…")
 
 
+async def test_task_card_protocol_is_not_forwarded_to_chat_apps():
+    """任务卡协议块只属于控制台卡片：IM 汇总正文时必须剥掉，聊天软件里看不到 JSON。"""
+    from app.im.bridge import ReplySink, _collect
+
+    sink = ReplySink(chat=ChatRef(key="k"), options={})
+    await _collect(
+        _FakeRun(
+            [
+                {
+                    "type": "message.delta",
+                    "text": (
+                        "已经拆好计划。\n\n```task_card\n"
+                        '{"action":"create","items":[{"id":"t1","text":"a"},'
+                        '{"id":"t2","text":"b"}]}\n```'
+                    ),
+                },
+                {"type": "run.finished", "payload": {"status": "ok"}},
+            ]
+        ),
+        sink,
+    )
+    assert sink.text.startswith("已经拆好计划。")
+    assert "task_card" not in sink.text
+    assert '"action"' not in sink.text
+
+
 async def test_options_can_be_set_per_connection_and_partially_updated(
     client: httpx.AsyncClient, fake_adapter: FakeAdapter
 ):

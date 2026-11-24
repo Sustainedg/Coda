@@ -12,7 +12,7 @@
 
 | 项 | 事实 |
 | --- | --- |
-| 产品 | Coda —— 多智能体对话控制台，管理 Claude Code / Codex / Gemini CLI 等智能体，为它们配置网关、模型与人格 |
+| 产品 | Coda —— 多智能体对话控制台，管理 Claude Code / Codex / Antigravity CLI 等智能体，为它们配置网关、模型与人格 |
 | 后端 | Python 3.11 · FastAPI 0.115 · SQLModel + SQLite(aiosqlite) · Pydantic v2 · httpx（依赖见 `backend/requirements.txt`） |
 | 前端 | React 18 + TypeScript + Vite 6 · react-router · **无 UI 框架，手写 CSS**（`frontend/src/index.css`） |
 | 后端入口 | `backend/app/main.py`（`uvicorn app.main:app --app-dir backend`） |
@@ -140,7 +140,7 @@ if agent.type_id == "codex":
 from ..models import AgentProfile   # in agents/builtin/foo.py
 
 # ✗ 前端硬编码某适配器的字段
-{typeId === 'gemini-cli' && <input name="approval_mode" />}
+{typeId === 'antigravity-cli' && <input name="approval_mode" />}
 ```
 
 ---
@@ -163,7 +163,7 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
 `default_gateway`、`default_model`、`protocol`（openai / anthropic / gemini）、`default_auth_style`、
 `default_models`（官方链路预置模型）、`docs_url`、`logo`（官方 Logo 的前端静态资源路径，如
 `/icons/kernels/claude.webp`）、`logo_style`（`mask` = 单色 SVG 遮罩染色；`image` = 真彩色位图
-按原色显示）、`executable`、`auto_provision`、
+按原色显示）、`executable`、`auto_provision`、`legacy_ids`（取代过的旧 id，启动时据此迁移存量智能体）、
 `availability()`、`probe()`/`probe_api()`、`auth_status()`（账号型内核的登录态探测，可选）、
 `resume_supported(ctx)`（可选钩子）。
 - `parse_line(line, run)` 里**不要吞异常**：解析不了就 `yield log(...)` 或忽略该行，别让整个运行崩掉。
@@ -352,7 +352,8 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
   `src/index.css`（有守卫测试 `tests/test_mobile_web.py`），但可以复用 `src/lib/*` 与
   `DynamicForm` / `MessageView` / `MarkdownView` / `ConversationThread` / `CollabAgentThread` /
   `KernelLogo` / `TicketBoardKit` / `Composer` / `ContextMeter` / `Icons` / `McpPicker` /
-  `McpServerForm` / `McpAssignPanel` / `TeamAvatarStack` / `ConversationExportForm`
+  `McpServerForm` / `McpAssignPanel` / `TeamAvatarStack` / `ConversationExportForm` /
+  `LoginInput` / `TaskProgressCard`
   这些纯展示组件（对话气泡只有 `MessageView` 一份，线程装配只有 `ConversationThread` 一份）。
 - **两端功能对齐、交互各表**：桌面端有的能力（例如协作组编排）移动端也要能用，但按触屏重做交互 ——
   移动端**不引用**桌面端的编排画布（`components/CollabCanvas` 等），协作组改用表单式编辑
@@ -486,6 +487,12 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
    写一个登录助手脚本，由 `login_argv` 调起，并仍按 `QR_IMAGE=` 协议输出二维码。助手是适配器的
    一部分，框架仍然不认识具体内核；参考 `builtin/codebuddy_login.py`（`--serve` API → 授权链接
    → 二维码 → 轮询完成）。
+   如果内核的登录**必须把浏览器里的授权码贴回来**（例如 Antigravity CLI 的 OAuth 授权码模式），
+   助手再额外打印一行 `INPUT_PROMPT=<提示文本>`：框架据此产出 `provision.input` 事件、界面弹出
+   输入框，用户提交的文本由 `POST /runtimes/{id}/login/input` 写回登录子进程的 stdin
+   （框架层 `LoginInputChannel`，登录子进程的 stdin 因此保持打开）。参考
+   `builtin/antigravity_login.py`（`ANTIGRAVITY_REMOTE_OOB_AUTH=1` 的非交互 OOB 认证 →
+   链接 / 二维码 / 输入框 → 轮询凭据落盘）。
 3. 多账号：内核若只维护「当前这一个」登录态，适配器可以把每次登录的凭据存档成平台侧槽位，
    在 `auth_status()` 的 `accounts` 里列出（`RuntimeAccount`），并覆盖
    `activate_account()` / `remove_account()`。框架提供 `POST /runtimes/{id}/accounts/{账号}/activate`
@@ -532,7 +539,7 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
 
 - **面向用户的一切（界面文案、后端提示、错误信息、接口 `description`、文档）用中文。**
 - **代码注释与 docstring 用中文。**
-- 保留的专有名词：Claude Code、Codex、Gemini CLI、MCP、SSE、JSONL、Fernet、token、WebSocket、
+- 保留的专有名词：Claude Code、Codex、Antigravity CLI、MCP、SSE、JSONL、Fernet、token、WebSocket、
   以及适配器 `id`（`claude-code`…）、环境变量名、字段名等标识符。
 
 | 统一用词 | 不要写成 |
@@ -650,7 +657,7 @@ curl -s http://127.0.0.1:8010/api/health
 | `app/avatars.py` / `api/auth.py` 的头像接口 | `models.ADDITIVE_COLUMNS` 的 `users.avatar_file`、`schemas` / `types.ts` 的 `AuthUser.avatar`、前端 `lib/avatar.ts` + `UserAvatar` / `AvatarUploader`（两端共用）、`tests/test_auth.py` 的头像用例 |
 | 任一资产表新增 `owner_id` 或新的共享目录 | 对应 `ADDITIVE_COLUMNS`、`bootstrap.backfill_ownership`、列表/详情/写入三处的归属过滤、成员端应隐藏的管理员按钮 |
 | `runtime/runner.py` | CLI 与 API 两条路径、取消/超时、脱敏 |
-| `runtime/provisioning.py` | 运行时维护动作：命令来自适配器、SSE 事件信封（含登录的 `provision.qr`）、超时、取消、脱敏；任务列表 / 重连接口收紧为管理员 |
+| `runtime/provisioning.py` | 运行时维护动作：命令来自适配器、SSE 事件信封（含登录的 `provision.qr` / `provision.input` 与 `login/input` 写回）、超时、取消、脱敏；任务列表 / 重连接口收紧为管理员 |
 | 新增「运行时可由平台安装 / 更新」 | 适配器的 `provisioner`（`RuntimeProvisioner`）+ `docs/architecture.md` §4.1 |
 | 新增 `ConfigField` | 无需改前端；但要在 `bootstrap.py` 播种默认值里确认不影响首次启动 |
 | `AgentProfile` 新增字段 | `schemas.py` 读写、`ADDITIVE_COLUMNS` 登记、前端 `types.ts` 与智能体弹窗、旧数据兼容 |

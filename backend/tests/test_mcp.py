@@ -14,8 +14,9 @@ from sqlmodel import select
 
 import app.runtime.mcp as mcp_service
 from app.agents import get_agent
-from app.agents.base import AgentContext
+from app.agents.base import AgentContext, AgentDefinition, Capabilities, Runtime
 from app.agents.mcp import (
+    McpMount,
     McpServerSpec,
     parse_json_servers,
     parse_toml_servers,
@@ -23,6 +24,7 @@ from app.agents.mcp import (
     safe_slug,
     strip_toml_table,
     to_json_config,
+    to_json_servers,
 )
 from app.db import SessionLocal
 from app.models import AgentMcpServer, AgentProfile, McpServer
@@ -182,13 +184,53 @@ def test_codex_mcp_mount_replaces_host_servers(tmp_path: Path, monkeypatch: pyte
     assert parsed["projects"]["/tmp/ws"]["trust_level"] == "trusted"
 
 
-def test_gemini_mcp_mount_writes_project_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+class _WorkspaceOnlyMcpRuntime(AgentDefinition):
+    """只把 MCP 配置写进工作目录的假内核。
+
+    Gemini CLI 已由 Antigravity CLI 取代（后者本地 MCP 配置面尚未确认），
+    这里用假内核单独覆盖框架的 ``workspace_files`` 物化路径，避免把测试绑在
+    某个真实内核的私有力配置格式上。
+    """
+
+    id = "fake-workspace-mcp"
+    name = "假工作目录 MCP 内核"
+    description = "测试用"
+    runtime = Runtime.CLI
+    executable = None
+    provisioner = None
+    capabilities = Capabilities(mcp=True)
+
+    def discover_mcp_servers(self) -> list[McpServerSpec]:
+        try:
+            raw = json.loads((Path.home() / ".fake" / "settings.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        return parse_json_servers(raw, type_id=self.id, source_kind="user")
+
+    def mcp_mount(self, ctx: AgentContext) -> McpMount:
+        return McpMount(
+            home_name="fake-home",
+            workspace_files={
+                ".gemini/settings.json": json.dumps(
+                    {"mcpServers": to_json_servers(ctx.mcp_servers)}, ensure_ascii=False
+                )
+            },
+        )
+
+    def build_invocation(self, ctx: AgentContext):  # pragma: no cover - 契约占位
+        raise NotImplementedError
+
+    def parse_line(self, line: str, run) -> tuple:  # pragma: no cover - 契约占位
+        return ()
+
+
+def test_workspace_mcp_mount_writes_project_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / ".gemini").mkdir()
-    (tmp_path / ".gemini" / "settings.json").write_text(
+    (tmp_path / ".fake").mkdir()
+    (tmp_path / ".fake" / "settings.json").write_text(
         json.dumps({"mcpServers": {"host": {"command": "npx"}}}), encoding="utf-8"
     )
-    definition = get_agent("gemini-cli")
+    definition = _WorkspaceOnlyMcpRuntime()
     assert [item.slug for item in definition.discover_mcp_servers()] == ["host"]
 
     workspace = tmp_path / "ws"
@@ -201,18 +243,13 @@ def test_gemini_mcp_mount_writes_project_settings(tmp_path: Path, monkeypatch: p
     mount = definition.mcp_mount(ctx)
     payload = json.loads(mount.workspace_files[".gemini/settings.json"])
     assert list(payload["mcpServers"]) == ["assigned"]
-    assert payload["mcp"]["allowed"] == ["assigned"]
-
-    argv = definition.build_invocation(ctx).argv
-    index = argv.index("--allowed-mcp-server-names")
-    assert argv[index + 1] == "assigned"
 
 
 async def test_workspace_only_mount_does_not_create_an_isolated_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """只把配置写进工作目录的内核（Gemini CLI）：不该凭空建「家」，更不该因此把会话当新的一轮。"""
-    definition = get_agent("gemini-cli")
+    """只把配置写进工作目录的内核：不该凭空建「家」，更不该因此把会话当新的一轮。"""
+    definition = _WorkspaceOnlyMcpRuntime()
 
     async def fake_servers(_session, _profile, **_kwargs):
         return [spec("assigned")]
@@ -419,7 +456,7 @@ async def test_agent_mcp_assignment_rules(client: httpx.AsyncClient, catalog: li
     # 复制智能体时一并复制分配；换内核时丢弃内核专属，保留平台通用。
     clone = (await client.post(f"/api/agents/{codex_agent['id']}/duplicate")).json()
     assert clone["mcp_ids"] == ["codex:github", platform["id"]]
-    retyped = (await client.patch(f"/api/agents/{codex_agent['id']}", json={"type_id": "gemini-cli"})).json()
+    retyped = (await client.patch(f"/api/agents/{codex_agent['id']}", json={"type_id": "antigravity-cli"})).json()
     assert retyped["mcp_ids"] == [platform["id"]]
 
 

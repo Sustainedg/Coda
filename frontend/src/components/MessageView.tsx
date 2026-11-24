@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { AuthUser, MessagePart } from '../lib/types'
 import { extractImagePaths, isImagePath, splitAttachmentBlock, useMediaUrl } from '../lib/media'
+import { stripTaskCardFence } from '../lib/taskCardFence'
 import { MarkdownView } from './MarkdownView'
 import { UserAvatar } from './UserAvatar'
 import { AgentAvatar } from './AgentAvatar'
@@ -50,9 +51,12 @@ export function MessageView({ message, avatar, avatarPreset, avatarFile, agentId
   const isUser = message.role === 'user'
   // 发消息时附件被后端写进正文末尾的「📎 附件」清单；这里把它拆出来，图片画缩略图，
   // 正文照常渲染 —— 否则自己发出去的图，在气泡里只剩一行看不到的路径。
-  const { text: bodyText, paths: attachmentPaths } = isUser
+  const split = isUser
     ? splitAttachmentBlock(message.content)
     : { text: message.content, paths: [] as string[] }
+  // 任务进度卡协议块永远不进气泡：实时流里未闭合的围栏也一并剥到末尾。
+  const bodyText = isUser ? split.text : stripTaskCardFence(split.text)
+  const attachmentPaths = split.paths
   // 智能体经常只把「文件名 / 工作目录路径」写成普通文字（而不是 Markdown 图片），
   // 这些文件其实已经生成好了。把它们从正文里摘出来单独画成图，正文照旧保留，
   // 用户就不用再对着 `/app/data/workspaces/...` 自己猜图在哪。
@@ -66,13 +70,20 @@ export function MessageView({ message, avatar, avatarPreset, avatarFile, agentId
   // 旧消息只有 content 与工具、思考片段（没有内联正文段），这里把 content 合成一段兜底，
   // 并保持「思考在前、正文其次、工具在后」。
   const hasInlineText = message.parts.some((p) => p.kind === 'text')
-  const timeline: MessagePart[] = hasInlineText
-    ? message.parts
-    : [
-        ...message.parts.filter((p) => p.kind === 'thinking'),
-        ...(bodyText ? [{ kind: 'text', text: bodyText } as MessagePart] : []),
-        ...message.parts.filter((p) => p.kind !== 'thinking' && p.kind !== 'text'),
-      ]
+  const timeline: MessagePart[] = (
+    hasInlineText
+      ? message.parts
+      : [
+          ...message.parts.filter((p) => p.kind === 'thinking'),
+          ...(bodyText ? [{ kind: 'text', text: bodyText } as MessagePart] : []),
+          ...message.parts.filter((p) => p.kind !== 'thinking' && p.kind !== 'text'),
+        ]
+  ).map((part) =>
+    // 只剥智能体的输出：用户自己发的正文里若有同名的围栏代码块，不该被吞掉。
+    part.kind === 'text' && !isUser
+      ? { ...part, text: stripTaskCardFence(part.text ?? '') }
+      : part,
+  )
 
   const lastIndex = timeline.length - 1
   // 还在跑、但最后一段不是正文（正在思考 / 调工具）：气泡里没有可挂光标的文字，

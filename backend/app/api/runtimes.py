@@ -21,7 +21,7 @@ from ..db import get_session
 from ..models import AgentProfile, User
 from ..runtime import availability as availability_service
 from ..runtime import provisioning
-from ..schemas import RuntimeAction
+from ..schemas import RuntimeAction, RuntimeLoginInput
 from ..transport.sse import sse_stream
 from .auth import current_user, require_admin
 
@@ -154,6 +154,22 @@ async def runtime_auth(type_id: str, user: Annotated[User, Depends(current_user)
 async def login_runtime(type_id: str) -> StreamingResponse:
     """启动一次内核登录（二维码走 SSE 的 ``provision.qr`` 事件推给前端）。"""
     return await _provision_stream(type_id, "login")
+
+
+@router.post("/{type_id}/login/input", dependencies=[Depends(require_admin)])
+async def login_runtime_input(type_id: str, payload: RuntimeLoginInput) -> dict:
+    """把界面提交的文本写进正在进行的登录进程。
+
+    只服务于双向登录（OAuth 授权码这类）：登录命令声明 ``INPUT_PROMPT=`` 后，
+    前端据此弹出输入框，用户提交的授权码由这里写回子进程 stdin。
+    没有进行中的登录任务、或登录进程已经结束，都显式报错而不是静默丢弃。
+    """
+    job = provisioning.job_registry.get(type_id)
+    if job is None or job.action != "login" or job.status != "running":
+        raise HTTPException(status_code=409, detail="没有正在进行的登录任务")
+    if not await job.send_input(payload.text):
+        raise HTTPException(status_code=409, detail="登录进程已结束或当前不接受输入")
+    return {"ok": True}
 
 
 @router.post("/{type_id}/accounts/{account_id}/activate", dependencies=[Depends(require_admin)])

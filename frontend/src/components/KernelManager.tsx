@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshIcon } from './Icons'
 import { KernelLogo } from './KernelLogo'
+import { LoginInput } from './LoginInput'
 import { Modal } from './Modal'
 import { useAuth } from './AuthGate'
 import { api, ApiError } from '../lib/api'
@@ -46,6 +47,8 @@ interface Job {
   lines: LogLine[]
   /** 登录动作产出的二维码（data URL）；其它动作恒为 null */
   qr?: string | null
+  /** 双向登录请求输入时的提示文本（OAuth 授权码）；没有则隐藏输入框 */
+  inputPrompt?: string | null
   status: 'running' | 'ok' | 'error'
   error?: string | null
 }
@@ -293,6 +296,8 @@ export function KernelManager() {
         )
       } else if (event.type === 'provision.qr') {
         setJob((prev) => (prev ? { ...prev, qr: event.data_url ?? null } : prev))
+      } else if (event.type === 'provision.input') {
+        setJob((prev) => (prev ? { ...prev, inputPrompt: event.prompt ?? null } : prev))
       } else if (event.type === 'provision.finished') {
         setJob((prev) => (prev ? { ...prev, status: event.ok ? 'ok' : 'error', error: event.error } : prev))
         if (event.auth) {
@@ -339,6 +344,19 @@ export function KernelManager() {
     setJob((prev) => (prev ? { ...prev, status: 'error', error: '已中止' } : prev))
   }
 
+  /**
+   * 双向登录：把界面输入的文本（OAuth 授权码）提交给正在等待的登录进程。
+   * 提交成功后先收起输入框；登录成功与否由 provision.finished 的登录态决定。
+   */
+  const submitLoginInput = async (runtime: AgentRuntime, text: string) => {
+    try {
+      await api.loginRuntimeInput(runtime.id, text)
+      setJob((prev) => (prev ? { ...prev, inputPrompt: null } : prev))
+    } catch (e) {
+      setJob((prev) => (prev ? { ...prev, error: describe(e) } : prev))
+    }
+  }
+
   /** 从后端重连到一个进行中 / 已完成的任务，把全部日志取回来。 */
   const viewProgress = async (runtimeId: string) => {
     const info = provisionJobs[runtimeId]
@@ -359,6 +377,8 @@ export function KernelManager() {
         )
       } else if (event.type === 'provision.qr') {
         setJob((prev) => (prev ? { ...prev, qr: event.data_url ?? null } : prev))
+      } else if (event.type === 'provision.input') {
+        setJob((prev) => (prev ? { ...prev, inputPrompt: event.prompt ?? null } : prev))
       } else if (event.type === 'provision.finished') {
         setJob((prev) => (prev ? { ...prev, status: event.ok ? 'ok' : 'error', error: event.error } : prev))
         if (event.auth) {
@@ -523,6 +543,7 @@ export function KernelManager() {
             onCheck={() => void checkLatest(openRuntime)}
             onRun={(action) => void start(openRuntime, action)}
             onCancel={cancel}
+            onSubmitInput={(text) => void submitLoginInput(openRuntime, text)}
             onSwitchAccount={(accountId) => void switchAccount(openRuntime, accountId)}
             onRemoveAccount={(accountId) => {
               if (!confirm('确认删除这份已保存的账号？当前正在使用的登录态不受影响。')) return
@@ -631,6 +652,7 @@ function KernelDetail({
   onCheck,
   onRun,
   onCancel,
+  onSubmitInput,
   onSwitchAccount,
   onRemoveAccount,
 }: {
@@ -646,6 +668,7 @@ function KernelDetail({
   onCheck: () => void
   onRun: (action: RuntimeAction) => void
   onCancel: () => void
+  onSubmitInput: (text: string) => void
   onSwitchAccount: (accountId: string) => void
   onRemoveAccount: (accountId: string) => void
 }) {
@@ -829,6 +852,9 @@ function KernelDetail({
               <img src={job.qr} alt="登录二维码" />
               <span>用手机扫描二维码完成登录；扫码成功后状态会自动更新。</span>
             </div>
+          )}
+          {job.inputPrompt && job.status === 'running' && (
+            <LoginInput prompt={job.inputPrompt} onSubmit={onSubmitInput} />
           )}
           <pre className="runtime-log" ref={logRef}>
             {job.lines.length === 0

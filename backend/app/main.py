@@ -20,6 +20,7 @@ from .bootstrap import (
     active_admin,
     backfill_ownership,
     ensure_default_agent,
+    migrate_legacy_runtime_ids,
     seed_if_empty,
     seed_initial_admin,
 )
@@ -84,6 +85,9 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     await init_db()
     async with SessionLocal() as session:
+        # 先迁掉已下线内核的存量智能体，免得下面的播种 / 默认智能体拿到不存在的 type_id。
+        # 旧 id 由适配器声明（legacy_ids），框架不硬编码具体内核。
+        await migrate_legacy_runtime_ids(session, all_agents())
         await seed_if_empty(session, all_agents())
         # 老库升级上来时可能一颗星都没有：补一次，保证「新建对话」直接可用
         await ensure_default_agent(session)
@@ -126,7 +130,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Coda 多智能体控制台",
     version=__version__,
-    description="多智能体对话控制台：把 Claude Code、Codex、Gemini CLI 等 "
+    description="多智能体对话控制台：把 Claude Code、Codex、Antigravity CLI 等 "
                 "内核配成智能体，给它们挑选网关、模型与人格后进行对话。",
     lifespan=lifespan,
 )

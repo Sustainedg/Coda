@@ -2998,3 +2998,50 @@ code, pre, .mono { font-family: var(--mono); }
   .trace-drawer-head { flex-wrap: wrap; }
   .trace-drawer-actions { margin-left: 0; }
 }
+
+/* ================= 任务进度卡片：标题 + 进度条 + 任务项（两端共用这一份）================= */
+/* 任务项是纯文本 + 状态标记，没有 checkbox / 输入框 / 可点击任务项；唯一按钮只切换折叠。 */
+.task-card-turn { align-items: stretch; }
+.task-progress-card {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-elevated); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.task-progress-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.task-progress-icon { font-size: 13px; flex: none; display: flex; align-items: center; }
+.task-progress-title {
+  font-weight: 650; font-size: 13px; color: var(--text); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.task-progress-count { font-size: 11px; color: var(--text-muted); flex: none; }
+.task-progress-bar {
+  flex: 1; min-width: 44px; height: 5px; border-radius: 999px;
+  background: var(--bg-hover); overflow: hidden;
+}
+.task-progress-bar-fill {
+  display: block; height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--brand), var(--accent));
+}
+.task-progress-toggle {
+  flex: none; margin-left: auto; font-size: 11px; color: var(--text-muted);
+  background: transparent; border: 1px solid var(--border); border-radius: 999px;
+  padding: 3px 9px; cursor: pointer; font-family: inherit;
+}
+.task-progress-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.task-progress-item { display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--text); }
+.task-progress-item.is-done .task-progress-text { color: var(--text-dim); text-decoration: line-through; }
+.task-progress-mark { flex: none; width: 14px; text-align: center; color: var(--text-dim); }
+.task-progress-mark.is-done { color: var(--ok); }
+
+/* ---------- 桌面端：任务进度卡片稍大一号，带抬起阴影 ---------- */
+.task-progress-card { padding: 12px 14px; gap: 10px; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.12); }
+.task-progress-head { gap: 8px; }
+.task-progress-icon { font-size: 14px; }
+.task-progress-title { font-size: 13.5px; }
+.task-progress-count { font-size: 11.5px; }
+.task-progress-bar { min-width: 60px; height: 6px; }
+.task-progress-bar-fill { transition: width 0.25s ease; }
+.task-progress-toggle { font-size: 11.5px; padding: 3px 10px; }
+.task-progress-toggle:hover { color: var(--text); border-color: var(--border-strong); }
+.task-progress-item { gap: 8px; font-size: 13px; line-height: 1.55; }
+.task-progress-mark { width: 16px; }

@@ -36,12 +36,6 @@ STARTER_PERSONAS = {
         "你是务实的结对编程伙伴。每次改动尽量小而可评审，改完立刻运行相关测试，"
         "并总结改了什么。",
     ),
-    "gemini-cli": (
-        "🔎",
-        "调研助手",
-        "你是研究型助手。先收集证据，引用你读过的文件路径，"
-        "并明确区分「已验证的事实」与「推测」。",
-    ),
     "openai-harness": (
         "🔗",
         "网关通用助手",
@@ -186,6 +180,47 @@ async def active_admin(session: AsyncSession) -> User | None:
             .limit(1)
         )
     ).scalars().first()
+
+
+async def migrate_legacy_runtime_ids(
+    session: AsyncSession, definitions: Sequence[AgentDefinition]
+) -> None:
+    """把存量智能体从已下线的内核迁到替代它的适配器（幂等）。
+
+    旧 id → 新适配器的映射来自适配器自己的 ``legacy_ids`` 声明，框架不认识具体内核。
+    迁移时顺带切断只属于旧内核的官方链路；新内核不接管模型（``default_model`` 为空，
+    由内核按账号能力自决）时，旧模型名也一并清掉 —— 否则会作为非法参数传下去。
+    """
+    new_by_old = {
+        old_id: definition
+        for definition in definitions
+        for old_id in definition.legacy_ids
+    }
+    if not new_by_old:
+        return
+    rows = (
+        await session.execute(
+            select(AgentProfile).where(AgentProfile.type_id.in_(new_by_old))
+        )
+    ).scalars().all()
+    if not rows:
+        return
+    for profile in rows:
+        definition = new_by_old[profile.type_id]
+        # 旧内核的官方链路不属于新内核：断掉，运行时回落到「官方默认」。
+        if profile.gateway_id:
+            gateway = await session.get(Gateway, profile.gateway_id)
+            if (
+                gateway is not None
+                and gateway.kind == "official"
+                and gateway.type_id == profile.type_id
+            ):
+                profile.gateway_id = None
+        if definition.default_model is None:
+            profile.model = None
+        profile.type_id = definition.id
+        session.add(profile)
+    await session.commit()
 
 
 async def backfill_ownership(session: AsyncSession, admin: User) -> None:

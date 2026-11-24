@@ -18,6 +18,7 @@ from ..models import AgentProfile, Conversation, Gateway, Message, TraceEvent, U
 from ..runtime import context as context_service
 from ..runtime import registry
 from ..runtime import skills as skill_service
+from ..runtime import task_cards as task_card_service
 from ..runtime import titles
 from ..runtime.trace import MAX_PAGE_LIMIT
 from ..runtime.conversations import (
@@ -43,6 +44,7 @@ from ..schemas import (
     ConversationUpdate,
     MessageRead,
     SendMessage,
+    TaskCardRead,
     TraceEventRead,
 )
 from ..transport.sse import sse_stream
@@ -260,12 +262,15 @@ async def get_conversation(
             ).scalars()
         }
     participants = ordered_participants(conversation, profile, summoned_ids, extra_profiles)
+    card = await task_card_service.load_card(session, conversation.id)
     return {
         "conversation": _conversation_read(
             conversation, profile, len(messages), participants=participants
         ).model_dump(),
         "messages": [MessageRead.model_validate(m).model_dump() for m in messages],
         "active_run": registry.active_for(conversation_id).snapshot() if registry.active_for(conversation_id) else None,
+        # 任务进度卡片：没有卡时为 null。只读，没有任何写接口。
+        "task_card": TaskCardRead.model_validate(card).model_dump() if card is not None else None,
     }
 
 

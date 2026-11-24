@@ -9,9 +9,9 @@ import httpx
 import pytest
 
 from app.agents import all_agents, get_agent
-from app.bootstrap import seed_if_empty
+from app.bootstrap import migrate_legacy_runtime_ids, seed_if_empty
 from app.db import SessionLocal
-from app.models import Gateway
+from app.models import AgentProfile, Gateway
 from app.runtime import gateway_probe
 from app.runtime.gateway import bind_gateway
 from app.security import encrypt
@@ -165,9 +165,48 @@ async def test_bootstrap_seeds_official_gateways_and_starters(
         get_settings.cache_clear()
 
     assert kinds == {"official"}
-    # 声明了官方地址的内核都有一条官方链路（custom-cli 没有官方地址，不播种）
-    assert {"claude-code", "codex", "gemini-cli", "openai-harness"} <= types
+    # 声明了官方地址的内核都有一条官方链路（账号型 / 自备可执行文件的不播种）
+    assert {"claude-code", "codex", "openai-harness"} <= types
     assert "custom-cli" not in types
+    assert "antigravity-cli" not in types
+
+
+async def test_legacy_runtime_ids_migrate_by_adapter_declaration(client: httpx.AsyncClient):
+    """旧内核的存量智能体按 ``legacy_ids`` 迁移，并清掉只属于旧内核的官方链路与模型。"""
+    async with SessionLocal() as session:
+        gateway = Gateway(
+            name="Gemini 官方",
+            kind="official",
+            type_id="gemini-cli",
+            protocol="gemini",
+            auth_style="query",
+            base_url="https://generativelanguage.googleapis.com",
+            selected_models=["gemini-2.5-pro"],
+        )
+        session.add(gateway)
+        await session.commit()
+        await session.refresh(gateway)
+        profile = AgentProfile(
+            name="旧 Gemini 智能体",
+            type_id="gemini-cli",
+            gateway_id=gateway.id,
+            model="gemini-2.5-pro",
+        )
+        session.add(profile)
+        await session.commit()
+        await session.refresh(profile)
+        profile_id = profile.id
+
+    async with SessionLocal() as session:
+        await migrate_legacy_runtime_ids(session, all_agents())
+
+    async with SessionLocal() as session:
+        row = await session.get(AgentProfile, profile_id)
+        assert row is not None
+        assert row.type_id == "antigravity-cli"
+        # 账号型新内核不接管旧官方链路，也不接受旧模型名
+        assert row.gateway_id is None
+        assert row.model is None
 
 
 def _select_gateways():

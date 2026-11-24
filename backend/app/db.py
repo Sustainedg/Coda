@@ -9,23 +9,39 @@ from sqlmodel import SQLModel
 
 from .settings import get_settings
 
+#: SQLite 同一时刻只允许一个写者。轨迹采集 / 标题生成 / 运行落库与接口写入各用各的连接，
+#: 撞上瞬时写锁很常见：给一个明确的等待窗口，比默认 5 秒后抛 "database is locked" 稳得多。
+_SQLITE_BUSY_TIMEOUT_SECONDS = 30
+
 _settings = get_settings()
 engine = create_async_engine(
     _settings.sqlalchemy_url,
     echo=False,
     future=True,
-    connect_args={"check_same_thread": False} if _settings.sqlalchemy_url.startswith("sqlite") else {},
+    connect_args=(
+        {"check_same_thread": False, "timeout": _SQLITE_BUSY_TIMEOUT_SECONDS}
+        if _settings.sqlalchemy_url.startswith("sqlite")
+        else {}
+    ),
 )
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
 @event.listens_for(engine.sync_engine, "connect")
 def _sqlite_pragmas(dbapi_connection, _record) -> None:
-    """SQLite 需要开启它，ON DELETE CASCADE 才会真正生效。"""
+    """SQLite 连接级配置：外键生效、WAL、提交成本与撞锁时的等待窗口。"""
     if _settings.sqlalchemy_url.startswith("sqlite"):
         cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA foreign_keys=ON")  # 不开它，ON DELETE CASCADE 不生效
         cursor.execute("PRAGMA journal_mode=WAL")
+        # WAL 下 NORMAL 已经足够：提交写进 WAL 就返回，崩溃只会丢最后几条已提交事务，
+        # 库本身不会坏。默认的 FULL 每次提交都 fsync 主库，磁盘一慢（同步盘 / 容器 / 高 I/O）
+        # 单次提交能拖到秒级，而 SQLite 只有一个写者 —— 这段时间里所有写入都在排队，
+        # 排队超时就报 "database is locked"（实测高 I/O 下 10 个用例要 200 秒且必失败，
+        # 换成 NORMAL 后 14 秒全绿）。
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        # 毫秒单位；显式设置是为了让「等锁」的语义不受驱动默认值影响。
+        cursor.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_SECONDS * 1000}")
         cursor.close()
 
 

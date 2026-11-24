@@ -1,15 +1,18 @@
 """双向登录（OAuth 授权码）的框架能力与 Antigravity 适配器测试。
 
-覆盖三件事：
+覆盖：
 
 1. 登录命令打印 ``INPUT_PROMPT=`` 时，框架产出 ``provision.input`` 事件；
 2. 界面通过 ``ProvisionJob.send_input()`` 把文本写回登录子进程；
-3. Antigravity 适配器声明了可视化登录助手，并能尽力而为地探测登录态。
+3. Antigravity 适配器声明了可视化登录助手，并能尽力而为地探测登录态；
+4. 登录助手的网络自检 / 代理兜底 / 网络类失败才重跑（授权码是一次性的）。
 """
 from __future__ import annotations
 
 import ast
+import os
 import sys
+import urllib.error
 from pathlib import Path
 from typing import Iterable
 
@@ -143,3 +146,83 @@ def test_antigravity_is_account_based():
         AgentContext(agent_id="a1", agent_name="demo", workspace_dir="/tmp/ws", prompt="hi")
     )
     assert invocation.env.get("GEMINI_API_KEY") is None
+
+
+def _login_helper():
+    from app.agents.builtin import antigravity_login
+
+    return antigravity_login
+
+
+class _FakeOpener:
+    """替掉探活用的 opener：每次 ``open`` 都按给定异常失败。"""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls = 0
+
+    def open(self, request: object, timeout: float | None = None) -> object:
+        self.calls += 1
+        raise self.error
+
+
+def test_antigravity_login_probe_treats_http_rejection_as_reachable(monkeypatch):
+    """探活只关心「链路通不通」：Google 回 400 也说明 TLS 与代理都活着。"""
+    helper = _login_helper()
+    opener = _FakeOpener(urllib.error.HTTPError("https://x/token", 400, "Bad Request", {}, None))
+    monkeypatch.setattr(helper, "_token_endpoint_opener", lambda env: opener)
+    assert helper._probe_token_endpoint({}) is None
+
+
+def test_antigravity_login_probe_retries_then_reports(monkeypatch):
+    """连不上时要试满次数再报错 —— 代理对 Google 的握手本来就会偶发抖动。"""
+    helper = _login_helper()
+    opener = _FakeOpener(urllib.error.URLError("timed out"))
+    monkeypatch.setattr(helper, "_token_endpoint_opener", lambda env: opener)
+    monkeypatch.setattr(helper, "_PROBE_RETRY_DELAY_SECONDS", 0)  # 别让用例真的睡
+    reason = helper._probe_token_endpoint({})
+    assert reason is not None
+    assert opener.calls == helper._PROBE_ATTEMPTS
+
+
+def test_antigravity_login_reuses_deploy_proxy_without_touching_environ(monkeypatch):
+    """手工执行时只有安装期代理：补成标准变量名，但不改 ``os.environ``（适配器不引入全局状态）。"""
+    helper = _login_helper()
+    for key in helper._PROXY_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CODA_INSTALL_PROXY", "http://proxy.example:7890")
+
+    env = helper._effective_env()
+    assert env["HTTPS_PROXY"] == "http://proxy.example:7890"
+    assert "HTTPS_PROXY" not in os.environ
+
+    # 显式配置优先：不再拿安装期代理覆盖。
+    monkeypatch.setenv("HTTPS_PROXY", "http://explicit.example:1080")
+    assert helper._effective_env()["HTTPS_PROXY"] == "http://explicit.example:1080"
+
+
+def test_antigravity_login_masks_proxy_credentials():
+    """代理地址里的账号口令不能进日志：只保留协议 / 主机 / 端口。"""
+    helper = _login_helper()
+    fake_pwd = "not-a-real-value"
+    masked = helper._mask_proxy(f"http://demo-user:{fake_pwd}@proxy.example:7890")
+    assert masked == "http://proxy.example:7890"
+    assert fake_pwd not in masked
+    assert helper._mask_proxy("proxy.example:8080") == "http://proxy.example:8080"
+
+
+def test_antigravity_login_only_retries_network_failures():
+    """只有网络类失败才自动重跑：授权码被拒重跑一百次也一样，还白烧一次扫码。"""
+    helper = _login_helper()
+
+    assert helper._NETWORK_FAILURE.search(
+        'Error: authentication failed: token exchange failed: Post '
+        '"https://oauth2.googleapis.com/token": EOF'
+    )
+    assert helper._NETWORK_FAILURE.search(
+        "consumerOAuth: token exchange failed due to network error "
+        '(check firewall/network restrictions): Post "…": dial tcp 1.2.3.4:443: i/o timeout'
+    )
+    assert not helper._NETWORK_FAILURE.search(
+        'token exchange failed: oauth2: "invalid_grant" "Bad Request"'
+    )

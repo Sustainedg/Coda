@@ -33,8 +33,8 @@ from ..settings import get_settings
 logger = logging.getLogger(__name__)
 
 #: 轨迹写入用**独立引擎与会话**：与消息落库彻底解开事务，且给 SQLite 明确的等待窗口。
-#: 主引擎没有 busy_timeout，WAL 下并发写会瞬间抛 "database is locked"；这里在连接建立
-#: 时（事务之外）设置等待窗口，并在写入遇到瞬时锁时退避重试。
+#: 主引擎（``db.py``）的 busy_timeout 较长，而轨迹是旁路采集、不能拖慢接口，所以这里
+#: 只等 5 秒就退避重试：撞上瞬时写锁重试即可，绝不让整批轨迹丢掉。
 _settings = get_settings()
 _sqlite = _settings.sqlalchemy_url.startswith("sqlite")
 _trace_engine = create_async_engine(
@@ -49,6 +49,8 @@ if _sqlite:  # pragma: no cover - 仅在 SQLite 部署下注册
     def _trace_sqlite_pragmas(dbapi_connection, _record) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA busy_timeout=5000")
+        # 与主引擎同一套提交成本：轨迹是旁路写入，更要避免一次 commit 卡住几秒占着写锁。
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
 

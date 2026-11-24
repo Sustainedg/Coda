@@ -8,6 +8,7 @@
 | `claude.webp` | Claude Code | 微软商店应用图标（`store-images.s-microsoft.com`），2026-11-21 抓取 | 裁透明边、补正方形，256×256 WebP q90，原色 |
 | `openai.webp` | Codex / OpenAI 兼容内核 | 微软商店应用图标（`store-images.s-microsoft.com`），2026-11-21 抓取 | 裁透明边、补正方形，256×256 WebP q90，原色 |
 | `gemini.webp` | Gemini CLI | `geminicli.com/_astro/icon.*.png`，2026-11-21 抓取 | 裁透明边、补正方形，256×256 WebP q90，原色 |
+| `antigravity.webp` | Antigravity CLI | 用户提供的官方 SVG 图标（`viewBox 0 0 180 180`），2026-11-24 提供 | Chromium 768px 渲染 → 裁透明边、按图形比例居中、补正方形，256×256 WebP q90，原色 |
 | `deepseek.webp` | DeepSeek Harness | 微软商店应用图标（`images-eds-ssl.xboxlive.com`），2026-11-21 抓取 | 裁透明边、补正方形，256×256 WebP q90，原色 |
 | `hermes.webp` | Hermes | 微软商店应用图标（`store-images.s-microsoft.com`），2026-11-21 抓取 | 裁透明边、补正方形，256×256 WebP q90，原色 |
 | `cli.svg` | 自定义 CLI | 中性终端线条图形 | 24×24 单色，遮罩 |

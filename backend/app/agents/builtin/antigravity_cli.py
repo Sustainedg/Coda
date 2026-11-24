@@ -203,8 +203,8 @@ class AntigravityCliAgent(AgentDefinition):
     protocol = "openai"
     default_auth_style = "bearer"
     docs_url = "https://antigravity.google/docs/cli-getting-started"
-    #: 复用 Gemini 的图标：两者同属 Google 的编码智能体（暂无独立素材）。
-    logo = "/icons/kernels/gemini.webp"
+    #: Antigravity 官方图标（蓝底 A 形 + 彩色光晕）。
+    logo = "/icons/kernels/antigravity.webp"
     logo_style = "image"
     capabilities = Capabilities(
         streaming=True,

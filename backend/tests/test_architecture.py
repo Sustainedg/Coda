@@ -42,6 +42,8 @@ DOCUMENTED_EVENTS = {
     "usage",
     # 单次模型请求的输入 token（上下文窗口占用），与整轮累计的 usage 分开。
     "context.usage",
+    # 内核侧原生压缩通知（如 Claude Code auto-compact），运行层据此提醒并失效旧快照。
+    "context.compacted",
     "session",
     "log",
     "error",

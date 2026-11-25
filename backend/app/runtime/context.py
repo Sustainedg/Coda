@@ -219,11 +219,14 @@ def _snapshot_index(active: list[Message], conversation: Conversation) -> int | 
     可用条件：
     * 会话 id 还在（内核没有因为压缩 / 重置被换成新会话）；
     * 快照来自本对话的主场智能体（@ 召唤轮不写回会话记忆，不能拿它的数）；
-    * 快照晚于最近一次压缩（压缩会清 session_id，旧快照随之失效）。
+    * 快照晚于最近一次平台压缩（压缩会清 session_id，旧快照随之失效）；
+    * 快照晚于最近一次内核原生压缩（内核压缩不动会话，但压缩前的窗口占用
+      已不代表当前上下文；快照若晚于它则是内核压缩后重新上报的，仍然可用）。
     """
     if not conversation.session_id or not active:
         return None
     compacted_at = _aware(conversation.context_compacted_at)
+    kernel_compacted_at = _aware(conversation.context_kernel_compacted_at)
     for index in range(len(active) - 1, -1, -1):
         message = active[index]
         if message.role != "assistant" or not message.context_tokens:
@@ -231,6 +234,8 @@ def _snapshot_index(active: list[Message], conversation: Conversation) -> int | 
         if message.agent_profile_id and message.agent_profile_id != conversation.agent_profile_id:
             continue
         if compacted_at is not None and _aware(message.created_at) <= compacted_at:
+            continue
+        if kernel_compacted_at is not None and _aware(message.created_at) <= kernel_compacted_at:
             continue
         return index
     return None

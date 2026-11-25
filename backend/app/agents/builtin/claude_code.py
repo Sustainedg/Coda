@@ -20,6 +20,7 @@ from ..base import (
 )
 from ..events import (
     AgentEvent,
+    context_compacted,
     context_usage,
     error,
     log,
@@ -55,6 +56,18 @@ from .util import (
 # privileges for security reasons"），除非进程声明自己处在一个「有意的沙箱」里 —— 这是内核
 # 自带、官方容器场景使用的逃生口 ``IS_SANDBOX=1``。本控制台可能由面板/容器以 root 托管，用户又是
 # 显式勾了 bypassPermissions（无人值守），所以这里替它补上；没勾 bypassPermissions 的节点不受影响。
+
+#: ``compact_boundary`` 事件里 ``compact_metadata`` 的字段白名单（官方 stream-json 协议，
+#: 键为蛇形命名）。只透传面板与运行层用得上的键：内部遥测字段（precomputed、
+#: pre_compact_* 等）不进事件流，避免 payload 无限膨胀。
+_COMPACT_FIELDS = (
+    "trigger",
+    "pre_tokens",
+    "post_tokens",
+    "messages_summarized",
+    "cumulative_dropped_tokens",
+    "duration_ms",
+)
 
 
 def _is_root() -> bool:
@@ -310,6 +323,19 @@ class ClaudeCodeAgent(AgentDefinition):
         ),
         ConfigField("partial_messages", "逐字流式输出", FieldType.BOOLEAN, default=True),
         ConfigField(
+            "autocompact",
+            "原生自动压缩窗口",
+            FieldType.STRING,
+            advanced=True,
+            placeholder="auto 或 ≥100k 的 token 数（如 200k / 200000）",
+            help=(
+                "透传给 Claude Code 的 --autocompact：上下文逼近该窗口时由内核自己"
+                "把旧对话折叠成摘要（压缩后平台会收到 compact_boundary 事件并提示）。"
+                "留空 = 用内核默认；填 auto = 按模型自动选择。注意与平台「上下文」"
+                "面板里的压缩是两套机制：平台压缩会重开会话，内核压缩在会话内完成。"
+            ),
+        ),
+        ConfigField(
             "allowed_tools",
             "工具白名单",
             FieldType.STRING_LIST,
@@ -507,6 +533,12 @@ class ClaudeCodeAgent(AgentDefinition):
         if ctx.session_id:
             argv += ["--resume", ctx.session_id]
 
+        # 原生 auto-compact 窗口：配置了才传，未配置走 Claude Code 自己的默认。
+        # 内核压缩发生时会发 compact_boundary 事件（见 _dispatch），面板据此提醒用户。
+        autocompact = options.get("autocompact")
+        if autocompact not in (None, ""):
+            argv += ["--autocompact", str(autocompact)]
+
         if options.get("allowed_tools"):
             argv += ["--allowedTools", *as_list(options["allowed_tools"])]
         if options.get("disallowed_tools"):
@@ -588,6 +620,18 @@ class ClaudeCodeAgent(AgentDefinition):
             yield from self._from_result(payload, run)
         elif kind == "system":
             subtype = payload.get("subtype")
+            if subtype == "compact_boundary":
+                # Claude Code 原生压缩（auto-compact / /compact）的分界事件：旧消息已被
+                # 折叠成摘要，窗口占用随之下降。上报给运行层做提醒与快照失效；元数据
+                # （trigger、pre/post tokens、折叠条数）透传，面板才能展示真实数字。
+                metadata = payload.get("compact_metadata") or {}
+                if isinstance(metadata, dict):
+                    yield context_compacted(
+                        **{k: v for k, v in metadata.items() if k in _COMPACT_FIELDS}
+                    )
+                else:
+                    yield context_compacted()
+                return
             if subtype == "init":
                 run.state["model"] = payload.get("model")
                 tools = payload.get("tools") or []

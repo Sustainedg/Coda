@@ -62,6 +62,9 @@ ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "context_summary": "TEXT",
         "context_compacted_count": "INTEGER NOT NULL DEFAULT 0",
         "context_compacted_at": "DATETIME",
+        # 「内核侧原生压缩的时间」是后加的（Claude Code auto-compact 等）：
+        # 老行留空 = 内核从未压缩过。用于让压缩前的 context_tokens 快照失效。
+        "context_kernel_compacted_at": "DATETIME",
     },
     # 会话令牌版本：改口令 / 管理员重置口令时 +1，让旧令牌立即失效（无状态 JWT 的吊销机制）。
     # 头像文件名是后加的：老行留空，界面回退到「显示名首字母」的渐变圆。
@@ -453,6 +456,12 @@ class Conversation(SQLModel, table=True):
     )
     #: 最近一次压缩的时间（界面展示用）。
     context_compacted_at: datetime | None = Field(default=None, sa_column=Column(UTCDateTime))
+    #: 内核侧原生压缩（如 Claude Code auto-compact）最近一次发生的时间。
+    #: 与 :attr:`context_compacted_at` 分开记：平台压缩会重开会话（快照随 session_id
+    #: 失效），内核压缩不动会话，必须靠这个时间戳让压缩前的 context_tokens 快照失效。
+    context_kernel_compacted_at: datetime | None = Field(
+        default=None, sa_column=Column(UTCDateTime)
+    )
     #: 所属用户 id；老库由 bootstrap 回填给首任管理员。
     owner_id: str | None = Field(default=None, sa_column=Column(String(64), index=True))
 

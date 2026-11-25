@@ -298,6 +298,37 @@ async def _auto_compact_context(
         return [f"上下文自动压缩失败，已保留原上下文继续本轮：{exc}"]
 
 
+def _kernel_compact_notice(event: AgentEvent) -> str:
+    """把内核原生压缩事件（``context.compacted``）翻成运行日志里的中文提醒。
+
+    数字能对上就带上（压缩前后 token、折叠条数），对不上就只说发生了什么 ——
+    各内核上报的字段参差，日志文案不依赖任何字段一定存在。
+    """
+    payload = event.payload or {}
+    trigger = payload.get("trigger")
+    label = "手动压缩" if trigger == "manual" else "内核自动压缩"
+    pieces: list[str] = []
+
+    def _int(value: Any) -> int | None:
+        """数字字段取整；非数字 / 布尔一律 None（各内核上报字段参差）。"""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return int(value)
+
+    pre, post, dropped = (
+        _int(payload.get("pre_tokens")),
+        _int(payload.get("post_tokens")),
+        _int(payload.get("messages_summarized")),
+    )
+    if pre is not None:
+        after = f"{post} tokens" if post is not None else "未知用量"
+        pieces.append(f"{pre} → {after} tokens")
+    if dropped is not None and dropped > 0:
+        pieces.append(f"{dropped} 条较早消息")
+    detail = f"（{'，'.join(pieces)}）" if pieces else ""
+    return f"{label}：内核已把较早对话折叠为摘要{detail}，会话与上下文口径已按压缩后状态对齐"
+
+
 def resolve_attachment(relative: str, workspace: str) -> str:
     """校验附件确实在本次运行的工作目录内，返回规范化的相对路径。
 
@@ -693,6 +724,9 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
     error_text: str | None = None
     #: 本轮最后一次模型请求的输入 token（上下文窗口真实占用）；没有上报就留空。
     context_tokens: int | None = None
+    #: 本轮内内核是否发生了原生压缩（Claude Code auto-compact 等）；落库后用于
+    #: 让旧快照失效（压缩前的 context_tokens 不再代表当前窗口）。
+    kernel_compacted = False
 
     for warning in prepared.skill_warnings:
         yield log(f"技能：{warning}", "warn")
@@ -738,6 +772,20 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
                     and tokens > 0
                 ):
                     context_tokens = int(tokens)
+            elif event.type is EventType.CONTEXT_COMPACTED:
+                # 内核原生压缩（如 Claude Code auto-compact）：旧消息已在内核侧折叠成摘要。
+                # 快照口径必须重置——之前上报的 context_tokens 已不代表压缩后的窗口，
+                # 下一轮估算回落到「按内容估算」档，避免面板拿着旧快照说「已用 150k」。
+                kernel_compacted = True
+                # 压缩后的窗口占用若内核有报（post_tokens），它就是最新快照。
+                post = (event.payload or {}).get("post_tokens")
+                if (
+                    isinstance(post, (int, float))
+                    and not isinstance(post, bool)
+                    and post > 0
+                ):
+                    context_tokens = int(post)
+                yield log(_kernel_compact_notice(event), "info")
             elif event.type is EventType.SESSION:
                 # 只有主场运行才把内核回报的会话 id 写回对话；@ 召唤轮回报的
                 # session_id 属于召唤者自己的一次性会话，写回去会让主场内核下一轮
@@ -785,6 +833,10 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
         message.context_tokens = context_tokens
         message.error = error_text
         message.status = "error" if status == "error" else ("interrupted" if status == "cancelled" else "complete")
+        if kernel_compacted:
+            # 内核压缩发生在本轮：记下时间戳，估算层据此让更早的快照失效
+            # （见 runtime/context._snapshot_index 的第三个失效条件）。
+            prepared.conversation.context_kernel_compacted_at = datetime.now(timezone.utc)
         prepared.conversation.updated_at = datetime.now(timezone.utc)
         session.add(message)
         session.add(prepared.conversation)

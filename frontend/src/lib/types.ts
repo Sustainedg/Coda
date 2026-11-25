@@ -811,8 +811,8 @@ export interface Message {
 
 export type AgentEventType =
   | 'turn.started' | 'run.started' | 'message.delta' | 'thinking.delta' | 'tool.call'
-  | 'tool.result' | 'usage' | 'context.usage' | 'session' | 'log' | 'error'
-  | 'run.finished' | 'stream.closed'
+  | 'tool.result' | 'usage' | 'context.usage' | 'context.compacted' | 'session' | 'log'
+  | 'error' | 'run.finished' | 'stream.closed'
 
 export interface AgentEvent {
   type: AgentEventType

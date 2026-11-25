@@ -20,6 +20,8 @@ class EventType(str, Enum):
     USAGE = "usage"
     #: 单次模型请求的输入 token 数（上下文窗口的真实占用，不是整轮累计）。
     CONTEXT_USAGE = "context.usage"
+    #: 内核侧原生压缩发生的通知（如 Claude Code 的 auto-compact）。
+    CONTEXT_COMPACTED = "context.compacted"
     SESSION = "session"
     LOG = "log"
     ERROR = "error"
@@ -84,6 +86,17 @@ def context_usage(tokens: int) -> AgentEvent:
     ``context.usage`` 是最近一次请求的窗口快照（用来判断离上限还有多远）。
     """
     return AgentEvent(EventType.CONTEXT_USAGE, payload={"tokens": int(tokens)})
+
+
+def context_compacted(**metadata: Any) -> AgentEvent:
+    """内核侧**原生压缩**发生的通知（如 Claude Code 的 auto-compact）。
+
+    载荷按各内核上报的字段透传（``trigger`` 手动/自动、``pre_tokens`` /
+    ``post_tokens`` 压缩前后 token、``messages_summarized`` 折叠条数等），
+    运行层据此展示提醒并校准快照口径——平台侧的 ``context.usage`` 快照在内核
+    压缩后已不代表新窗口，必须失效（见 ``runtime/context._snapshot_index``）。
+    """
+    return AgentEvent(EventType.CONTEXT_COMPACTED, payload=dict(metadata))
 
 
 def session(session_id: str) -> AgentEvent:

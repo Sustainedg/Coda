@@ -148,10 +148,10 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
 ## 3. 核心契约（改动这些等于改公共 API）
 
 ### 3.1 规范化事件协议（`agents/events.py`）
-`run.started · message.delta · thinking.delta · tool.call · tool.result · usage · context.usage · session · log · error · run.finished`
+`run.started · message.delta · thinking.delta · tool.call · tool.result · usage · context.usage · context.compacted · session · log · error · run.finished`
 外加传输层自有的 `turn.started`（`runtime/service.start_run()` 在启动后台运行前同步发出，携带 run_id 与消息 id）
 与 `stream.closed`（`transport/sse.py` 收尾）。
-**适配器只能产出前 11 种**；`turn.started`/`stream.closed` 由框架产出，适配器不得越权。
+**适配器只能产出前 12 种**；`turn.started`/`stream.closed` 由框架产出，适配器不得越权。
 新增事件类型必须走铁律 5 的四步同步改动。
 框架自有的旁路信封**不属于**本协议：协作域是 `collab.*`（`collab/protocol.py`），
 「内核管理」页（设置 → 内核管理）的安装 / 更新 / 卸载是 `provision.*`（`runtime/provisioning.py`）——

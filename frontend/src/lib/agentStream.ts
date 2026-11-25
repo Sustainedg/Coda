@@ -77,6 +77,10 @@ export function applyAgentEvent(state: AgentStreamState, event: AgentEvent): Age
     case 'context.usage':
       // 单次请求的上下文快照，只用于服务端计量；流式界面不展示，等轮询刷新即可。
       return state
+    case 'context.compacted':
+      // 内核原生压缩（如 Claude Code auto-compact）：服务端已同步发一条 log 提醒；
+      // 上下文数字等轮询刷新即可（服务端已把快照口径按压缩后重置）。
+      return state
     case 'log':
       return { ...state, logs: [...state.logs, event.text ?? ''] }
     case 'error':

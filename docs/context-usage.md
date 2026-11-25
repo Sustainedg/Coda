@@ -23,8 +23,8 @@
 * Codex app-server：取 `thread/tokenUsage/updated` 的 `last.inputTokens`。
 
 下一次估算以**最近一次请求的输入 token** 为基准，再加上此后新增的正文。
-快照在以下情况自动失效：会话被压缩 / 重置（`session_id` 清空）、消息早于最近一次压缩、
-或快照来自 @ 召唤轮（不写回主场会话记忆）。
+快照在以下情况自动失效：会话被压缩 / 重置（`session_id` 清空）、消息早于最近一次平台压缩、
+消息早于最近一次**内核原生压缩**（见下节）、或快照来自 @ 召唤轮（不写回主场会话记忆）。
 
 ### 2. 按内容估算（没有快照时的兜底）
 
@@ -94,6 +94,29 @@
 压缩是确定性的裁剪 + 摘要，不调模型、不阻塞用户继续输入。同一对话有
 `begin_compaction` 占位，避免重复触发。最近一次压缩的状态（进行中 / 成功 / 失败）
 通过 `GET /api/conversations/{id}/context` 返回，按钮上显示徽标、面板里显示详情。
+
+## 与内核原生压缩的协同（以 Claude Code 为例）
+
+Claude Code 自带 auto-compact（`--autocompact <auto|tokens>`）：上下文逼近内核窗口时，
+它**在会话内**把旧消息折叠成摘要，并向 stream-json 输出一条 `system/compact_boundary`
+事件（含 `compact_metadata`：`trigger`、`pre_tokens` / `post_tokens`、
+`messages_summarized` 等）。平台侧与它是两套独立机制，对接点有三：
+
+1. **事件接收**：`claude_code.py` 的 `_dispatch` 解析 `compact_boundary`，上报
+   `context.compacted` 事件（字段白名单透传）；`runtime/service.consume_run` 收到后
+   在运行日志里发出中文提醒，并记录 `conversations.context_kernel_compacted_at`。
+2. **快照失效**：内核压缩不动 `session_id`，但压缩前的 `context_tokens` 快照已不代表
+   当前窗口。`_snapshot_index` 把 `context_kernel_compacted_at` 当作快照失效线：
+   早于它的快照一律作废，估算回落到「按内容估算」档；若内核上报了 `post_tokens`
+   （压缩后的窗口占用），它直接成为最新快照。
+3. **参数透传**：智能体配置字段 `autocompact`（高级）透传 `--autocompact`；留空走
+   内核默认。两套压缩的关系：平台压缩会清 `session_id` 重开会话（换历史注入），内核
+   压缩在会话内完成（会话连续）；两者可以并存，互不替代。
+
+「上限对齐」仍是用户自己的取舍：平台上限（默认 128k）是**平台口径**（决定平台压缩
+何时触发），与内核实际窗口（200k / 1M）无关。想让内核压缩先出手，就把平台上限调高
+或给智能体配 `autocompact`；想让平台接管，就保持默认——平台压缩会在内核窗口打满前
+（按平台口径）先把历史折叠掉。
 
 ## 改动文件
 

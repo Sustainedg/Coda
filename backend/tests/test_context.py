@@ -10,9 +10,10 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
+from sqlmodel import select
 
 from app.agents.builtin.util import context_tokens as request_context_tokens
-from app.agents.events import context_usage, text_delta
+from app.agents.events import context_compacted, context_usage, log, text_delta
 from app.db import SessionLocal
 from app.models import Conversation, Message
 from app.runtime import context as context_service
@@ -472,3 +473,200 @@ async def test_clear_session_also_clears_compaction_memory(client: httpx.AsyncCl
         assert row is not None
         assert row.context_summary is None
         assert row.context_compacted_count == 0
+
+
+# —— 内核原生压缩（Claude Code auto-compact）的协同 ————————————————
+
+
+async def test_kernel_compact_event_logs_and_invalidates_snapshot(
+    client: httpx.AsyncClient, monkeypatch
+):
+    """内核压缩事件：日志提醒可见、时间戳落库、压缩前的大快照失效。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+    async with SessionLocal() as session:
+        session.add(
+            Message(
+                conversation_id=conversation["id"],
+                role="user",
+                content="你好",
+            )
+        )
+        # 压缩前的旧快照：5 万 token（内核已折叠，这个数不再可信）。
+        session.add(
+            Message(
+                conversation_id=conversation["id"],
+                role="assistant",
+                content="旧回复",
+                context_tokens=50_000,
+            )
+        )
+        await session.commit()
+
+    async with SessionLocal() as session:
+        conv = await session.get(Conversation, conversation["id"])
+        rows = (
+            await session.execute(
+                select(Message).where(Message.conversation_id == conv.id)
+            )
+        ).scalars().all()
+        user = next(r for r in rows if r.role == "user")
+        assistant = next(r for r in rows if r.role == "assistant" and r.id != user.id)
+        run = ActiveRun(id="run-kc", conversation_id=conv.id, agent_name="假智能体")
+        prepared = runtime_service.PreparedRun(
+            conversation=conv,
+            profile=None,  # type: ignore[arg-type] - 本用例只验证事件落库
+            gateway=None,
+            definition=None,  # type: ignore[arg-type]
+            ctx=None,  # type: ignore[arg-type]
+            run=run,
+            user_message=user,
+            assistant_message=assistant,
+        )
+
+        async def fake_stream(definition, ctx, active_run):
+            # 先压缩（窗口降到 2k），再上报压缩后的新快照。
+            yield context_compacted(
+                trigger="auto", pre_tokens=50_000, post_tokens=2_000, messages_summarized=18
+            )
+            yield context_usage(2_100)
+            yield text_delta("好")
+
+        monkeypatch.setattr(runtime_service, "stream_run", fake_stream)
+        notices: list[str] = []
+        async for event in runtime_service.consume_run(session, prepared):
+            if event.type.value == "log":
+                notices.append(event.text or "")
+        assert any("内核自动压缩" in text for text in notices), notices
+
+        await session.refresh(assistant)
+        await session.refresh(conv)
+        # post_tokens 成为最新快照；随后 context.usage 覆盖为 2100。
+        assert assistant.context_tokens == 2_100
+        assert conv.context_kernel_compacted_at is not None
+        # session_id 没被清掉：内核压缩在会话内完成，与会话续接不冲突。
+        assert conv.context_summary is None
+
+    # 压缩时间戳让更早的旧快照失效：估算回落到「按内容估算」档。
+    view = (await client.get(f"/api/conversations/{conversation['id']}/context")).json()
+    assert view["measured"] is False
+    assert view["used_tokens"] < 1000
+
+
+async def test_kernel_compact_event_without_post_tokens_falls_back(
+    client: httpx.AsyncClient, monkeypatch
+):
+    """内核没报 post_tokens 时：不落快照，只记时间戳与提醒。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+
+    async with SessionLocal() as session:
+        conv = await session.get(Conversation, conversation["id"])
+        user = Message(conversation_id=conv.id, role="user", content="你好")
+        assistant = Message(conversation_id=conv.id, role="assistant", content="")
+        session.add_all([user, assistant])
+        await session.commit()
+        await session.refresh(assistant)
+
+        run = ActiveRun(id="run-kc2", conversation_id=conv.id, agent_name="假智能体")
+        prepared = runtime_service.PreparedRun(
+            conversation=conv,
+            profile=None,  # type: ignore[arg-type]
+            gateway=None,
+            definition=None,  # type: ignore[arg-type]
+            ctx=None,  # type: ignore[arg-type]
+            run=run,
+            user_message=user,
+            assistant_message=assistant,
+        )
+
+        async def fake_stream(definition, ctx, active_run):
+            yield context_compacted(trigger="manual")
+            yield text_delta("好")
+
+        monkeypatch.setattr(runtime_service, "stream_run", fake_stream)
+        async for _ in runtime_service.consume_run(session, prepared):
+            pass
+
+        await session.refresh(assistant)
+        await session.refresh(conv)
+        assert assistant.context_tokens is None
+        assert conv.context_kernel_compacted_at is not None
+
+
+def test_claude_code_adapter_parses_compact_boundary():
+    """适配器把 Claude Code 的 system/compact_boundary 翻译成 context.compacted 事件。
+
+    字段白名单生效：trigger / pre / post / messages_summarized 透传，
+    内部遥测字段（precomputed、pre_compact_*）不进事件流。
+    """
+    from app.agents.builtin.claude_code import ClaudeCodeAgent
+    from app.agents.base import AgentContext, AgentRun
+
+    definition = ClaudeCodeAgent()
+    run = AgentRun(definition, AgentContext(agent_id="claude-code", agent_name="Claude Code"))
+
+    def events_for(line: str) -> list[AgentEvent]:
+        return list(definition.parse_line(line, run))
+
+    # 带 compact_metadata 的完整事件
+    line = json.dumps(
+        {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "compact_metadata": {
+                "trigger": "auto",
+                "pre_tokens": 150_000,
+                "post_tokens": 20_000,
+                "messages_summarized": 42,
+                "duration_ms": 3_500,
+                "precomputed": True,
+                "pre_compact_discovered_tools": ["Bash", "Read"],
+            },
+        }
+    )
+    events = events_for(line)
+    assert [e.type.value for e in events] == ["context.compacted"]
+    payload = events[0].payload
+    assert payload["trigger"] == "auto"
+    assert payload["pre_tokens"] == 150_000
+    assert payload["post_tokens"] == 20_000
+    assert payload["messages_summarized"] == 42
+    assert "precomputed" not in payload, "内部遥测字段不得透传"
+    assert "pre_compact_discovered_tools" not in payload, "内部遥测字段不得透传"
+
+    # 缺 compact_metadata 也能上報（各内核字段参差，事件不依赖任何字段必在）。
+    bare = json.dumps({"type": "system", "subtype": "compact_boundary"})
+    events = events_for(bare)
+    assert [e.type.value for e in events] == ["context.compacted"]
+    assert events[0].payload == {}
+
+
+def test_claude_code_autocompact_flag_passthrough():
+    """配置了 autocompact 才透传 --autocompact；未配置保持命令行不变。"""
+    from app.agents.builtin.claude_code import ClaudeCodeAgent
+    from app.agents.base import AgentContext
+
+    definition = ClaudeCodeAgent()
+
+    def argv_with(options: dict) -> list[str]:
+        ctx = AgentContext(agent_id="claude-code", agent_name="Claude Code", options=options)
+        return definition.build_invocation(ctx).argv
+
+    argv = argv_with({"autocompact": "auto"})
+    assert argv[argv.index("--autocompact") + 1] == "auto"
+
+    argv = argv_with({"autocompact": "200k"})
+    assert argv[argv.index("--autocompact") + 1] == "200k"
+
+    argv = argv_with({})
+    assert "--autocompact" not in argv
+
+    # coerce_options 按字段声明规整：数字 200000 也能透传（CLI 认裸数字）。
+    coerced = definition.coerce_options({"autocompact": 200000})
+    argv = argv_with(coerced)
+    assert argv[argv.index("--autocompact") + 1] == "200000"

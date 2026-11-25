@@ -122,6 +122,7 @@ POST /api/conversations/{id}/messages
 | `tool.result` | `call_id`、`payload.output`、`payload.is_error` | 工具结果 |
 | `usage` | 任意数值键 | 整轮累计的 token / 费用 / 耗时（计费口径） |
 | `context.usage` | `payload.tokens` | **单次请求**的输入 token（上下文窗口占用，落 `messages.context_tokens`） |
+| `context.compacted` | `payload.trigger`、`payload.pre_tokens`、`payload.post_tokens`… | 内核侧**原生压缩**通知（如 Claude Code auto-compact）；运行层发日志提醒并使压缩前的快照失效 |
 | `session` | `payload.session_id` | 智能体侧会话 id，落库以支持多轮 |
 | `log` | `text`、`payload.level` | 命令回显、诊断信息 |
 | `error` | `text` | 可展示的错误 |

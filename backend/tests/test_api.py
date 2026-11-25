@@ -108,6 +108,98 @@ async def test_agent_avatar_preset_roundtrip(client: httpx.AsyncClient):
     assert next(item for item in listed if item["id"] == agent["id"])["avatar_preset"] == "pack-042"
 
 
+async def test_agent_account_slot_only_on_official_route(client: httpx.AsyncClient):
+    """多账号内核可以按智能体指定登录账号；自定义网关 / 换内核时自动清空。"""
+    created = await client.post(
+        "/api/agents",
+        json={"name": "多号智能体", "type_id": "codebuddy-cli", "account_id": "slot-a"},
+    )
+    assert created.status_code == 201, created.text
+    agent = created.json()
+    assert agent["gateway_id"] is None
+    assert agent["account_id"] == "slot-a"
+
+    # 自定义网关自带地址与密钥，不看内核登录态：账号槽位顺手清掉。
+    gateway = await make_gateway(client)
+    moved = await client.patch(
+        f"/api/agents/{agent['id']}",
+        json={"gateway_id": gateway["id"], "account_id": "slot-b"},
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["gateway_kind"] == "custom"
+    assert moved.json()["account_id"] is None
+
+    # 切回官方链路并重新指定；换内核时没有显式指定 → 回到「跟随当前登录」。
+    back = await client.patch(
+        f"/api/agents/{agent['id']}", json={"gateway_id": None, "account_id": "slot-c"}
+    )
+    assert back.json()["account_id"] == "slot-c"
+
+    # 复制不继承账号槽位：普通成员不能靠复制管理员的智能体绕过账号绑定。
+    clone = await client.post(f"/api/agents/{agent['id']}/duplicate")
+    assert clone.status_code == 201, clone.text
+    assert clone.json()["account_id"] is None
+
+    # 已经挂在自定义网关下时，单独 PATCH account_id 也不能把残留值写进库；
+    # 之后切回官方链路也不会冒出那个没人再选的账号。
+    await client.patch(f"/api/agents/{agent['id']}", json={"gateway_id": gateway["id"]})
+    stale = await client.patch(f"/api/agents/{agent['id']}", json={"account_id": "slot-x"})
+    assert stale.json()["account_id"] is None
+    back_official = await client.patch(f"/api/agents/{agent['id']}", json={"gateway_id": None})
+    assert back_official.json()["account_id"] is None
+
+    retyped = await client.patch(f"/api/agents/{agent['id']}", json={"type_id": "doubao-cli"})
+    assert retyped.status_code == 200
+    assert retyped.json()["account_id"] is None
+
+    # 不支持多账号的内核：显式指定账号直接拒绝。
+    bad = await client.post(
+        "/api/agents",
+        json={"name": "x", "type_id": "custom-cli", "account_id": "slot-a"},
+    )
+    assert bad.status_code == 422
+    assert "不支持指定内核账号" in bad.json()["detail"]
+
+
+async def test_activate_selected_account_best_effort():
+    """运行时切换账号：官方链路才切；槽位失效只告警，不阻断运行。"""
+    from app.models import AgentProfile
+    from app.runtime.service import activate_selected_account
+
+    class FakeKernel:
+        id = "codebuddy-cli"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.error: Exception | None = None
+
+        def supports_accounts(self) -> bool:
+            return True
+
+        def activate_account(self, account_id: str) -> None:
+            self.calls.append(account_id)
+            if self.error is not None:
+                raise self.error
+
+    def profile(account_id: str | None) -> AgentProfile:
+        return AgentProfile(
+            name="x", system_prompt="", type_id="codebuddy-cli", account_id=account_id
+        )
+
+    kernel = FakeKernel()
+    assert await activate_selected_account(profile("slot-a"), None, kernel) == []
+    assert kernel.calls == ["slot-a"]
+
+    # 自定义网关不碰内核登录态
+    gateway = type("G", (), {"kind": "custom"})()
+    assert await activate_selected_account(profile("slot-b"), gateway, kernel) == []
+    assert kernel.calls == ["slot-a"]
+
+    kernel.error = KeyError("slot")
+    warnings = await activate_selected_account(profile("gone"), None, kernel)
+    assert warnings and "已不存在" in warnings[0]
+
+
 async def test_gateway_delete_blocked_while_an_agent_uses_it(client: httpx.AsyncClient):
     agent = await make_agent(client)
     response = await client.delete(f"/api/gateways/{agent['gateway_id']}")

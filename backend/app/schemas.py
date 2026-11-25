@@ -152,6 +152,8 @@ class AgentProfileCreate(BaseModel):
     description: str | None = None
     system_prompt: str = ""
     gateway_id: str | None = None
+    #: 多账号内核的账号槽位；只在「官方默认」链路生效（自定义网关不依赖内核登录态）
+    account_id: str | None = None
     model: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
     credentials: list[AgentCredentialInput] | None = None
@@ -174,6 +176,8 @@ class AgentProfileUpdate(BaseModel):
     description: str | None = None
     system_prompt: str | None = None
     gateway_id: str | None = None
+    #: 多账号内核的账号槽位；传 null 表示跟随内核当前登录的账号
+    account_id: str | None = None
     model: str | None = None
     options: dict[str, Any] | None = None
     credentials: list[AgentCredentialInput] | None = None
@@ -219,6 +223,8 @@ class AgentProfileRead(BaseModel):
     system_prompt: str
     type_id: str
     gateway_id: str | None = None
+    #: 指定使用的内核账号槽位；空 = 跟随内核当前登录的账号
+    account_id: str | None = None
     model: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
     enabled: bool
@@ -381,18 +387,16 @@ class SkillCopyAllResult(BaseModel):
 
 
 class SkillHubInstallIn(BaseModel):
-    """把一个市场技能装进当前用户的技能库，并挂载到指定内核。"""
+    """把一个市场技能装进当前用户的技能中心（默认全部支持技能的内核共用）。"""
 
     #: 市场里的技能标识（slug）
     slug: str
-    #: 目标内核 id（如 claude-code / codex）；安装后挂载到该内核
-    type_id: str
     #: 指定版本；留空装最新版
     version: str | None = None
 
 
 class SkillHubUninstallIn(BaseModel):
-    """卸载一个由市场装入的技能（``skill_id`` 形如 ``claude-code:foo``）。"""
+    """从技能中心整体卸载一个市场技能（``skill_id`` 是任一内核的编目行 id）。"""
 
     skill_id: str
 

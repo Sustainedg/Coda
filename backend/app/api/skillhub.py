@@ -1,8 +1,8 @@
 """技能市场（SkillHub）：浏览、安装、卸载。
 
-把 https://skillhub.cn 的技能接进「技能」页：浏览 / 搜索 / 安装到**当前用户的技能库**
-（按用户隔离），并卸载由平台装入的（``source_kind=market``）技能。**装完仍需在智能体
-配置里分配**，运行时才会生效（与内核自带技能同一套规则）。
+把 https://skillhub.cn 的技能接进「技能」页：浏览 / 搜索 / 安装到**当前用户的技能中心**
+（按用户隔离，一份实体全部支持技能的内核共用），并卸载由平台装入的（``source_kind=market``）
+技能。**装完仍需在智能体配置里分配**，运行时才会生效（与内核自带技能同一套规则）。
 
 本层保持薄：只做参数校验、调用 :mod:`app.skillhub` 与 :mod:`app.runtime.skills`、
 并把结果翻成 HTTP 状态码。
@@ -28,7 +28,7 @@ from .auth import current_user, owner_id_for
 
 logger = logging.getLogger("coda")
 
-#: 整个路由器都要求登录：浏览市场、安装到自己的技能库都需要当前用户。
+#: 整个路由器都要求登录：浏览市场、安装到自己的技能中心都需要当前用户。
 router = APIRouter(prefix="/skillhub", tags=["skillhub"], dependencies=[Depends(current_user)])
 
 
@@ -61,10 +61,11 @@ async def market_skills(
 async def market_kernels(
     user: Annotated[User, Depends(current_user)] = None,
 ) -> dict:
-    """哪些内核可以装技能（声明了技能目录的适配器），供安装 / 导入时的目标选择。
+    """哪些内核可以装技能（声明了技能目录的适配器），供导入 / 复制时的目标选择。
 
-    ``path`` 是**当前用户**的技能库目录 —— 技能按 slug 只存一份，所有内核共用；
-    这里的 ``type_id`` 只是「安装后挂载到哪个内核」。
+    市场**安装**不再需要指定内核（技能中心全内核共用）；但这个列表仍服务于
+    「导入技能」与「复制技能到其它内核」——它们的目标是单个内核的编目行。
+    ``path`` 是**当前用户**的技能库目录 —— 技能按 slug 只存一份，所有内核共用。
     """
     items: list[dict[str, str | None]] = []
     for definition in all_agents():
@@ -100,15 +101,10 @@ async def install_market_skill(
     session: AsyncSession = Depends(get_session),
     user: Annotated[User, Depends(current_user)] = None,
 ) -> dict:
-    """把一个市场技能下载并安装到**当前用户**在指定内核下的技能库。"""
+    """把一个市场技能下载并安装到**当前用户的技能中心**（全部支持技能的内核共用）。"""
     slug = (payload.slug or "").strip()
     if not slug:
         raise HTTPException(status_code=422, detail="缺少技能标识（slug）")
-    try:
-        # 先确认内核存在且支持技能，避免为一个注定失败的安装白跑一趟下载。
-        skill_service.skill_roots_for_type(payload.type_id)
-    except skill_service.SkillError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
 
     version = payload.version
     requires_api_key = False
@@ -128,7 +124,6 @@ async def install_market_skill(
     try:
         result = await skill_service.install_market_skill(
             session,
-            type_id=payload.type_id,
             slug=slug,
             version=version,
             archive=archive,
@@ -142,7 +137,6 @@ async def install_market_skill(
     return {
         **result,
         "slug": slug,
-        "type_id": payload.type_id,
         "version": version,
         "requires_api_key": requires_api_key,
     }
@@ -154,7 +148,7 @@ async def uninstall_market_skill(
     session: AsyncSession = Depends(get_session),
     user: Annotated[User, Depends(current_user)] = None,
 ) -> dict:
-    """卸载一个由市场装入的技能（只删自己技能库里平台装进去的目录）。"""
+    """从技能中心整体卸载一个由市场装入的技能（移除唯一实体与全部编目行）。"""
     row = await skill_service.get_row(session, payload.skill_id)
     mine = bool(
         row

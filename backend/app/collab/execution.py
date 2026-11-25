@@ -28,6 +28,7 @@ from ..runtime.gateway import bind_gateway
 from ..runtime.manager import ActiveRun
 from ..runtime.mcp import prepare_mcp_home
 from ..runtime.runner import stream_run
+from ..runtime.service import activate_account_for_kernel
 from ..runtime.skills import prepare_skill_home
 from ..settings import get_settings
 from .graph import budget_from_storable, effective_workspace_scope
@@ -235,6 +236,8 @@ class ResolvedProfile:
     options: dict[str, Any]
     model: str | None
     gateway: str | None
+    #: 网关类型：``official`` / ``custom`` / ``None``（没选）。账号槽位只在官方链路生效。
+    gateway_kind: str | None
     api_key: str | None
     auth_style: str | None
     #: 智能体凭据（解密后的「环境变量名 → 明文」）
@@ -273,6 +276,7 @@ async def _resolve_profile(
         options=options,
         model=model,
         gateway=binding.url,
+        gateway_kind=gateway_row.kind if gateway_row else None,
         api_key=binding.api_key,
         auth_style=binding.auth_style,
         credentials=await decrypt_for_profile(session, profile.id),
@@ -324,9 +328,15 @@ async def _build_context(
         history=list(history or []),
         prompt=text,
     )
+    # 指定内核账号（官方链路）：与对话链路同一条规则，失败只告警、不阻断这一步。
+    warnings = await activate_account_for_kernel(
+        profile,
+        definition,
+        official_route=resolved.gateway_kind in (None, "official"),
+    )
     # 技能与 MCP 共用一个「家」：先物化技能定下 home_dir，MCP 再复用它（顺序不能反）。
     # 协作专属分配（node.skill_ids / node.mcp_ids 非 None）在这条路径上覆盖默认来源。
-    warnings = await prepare_skill_home(
+    warnings += await prepare_skill_home(
         session, definition, profile, None, ctx,
         scope_id=home_scope, override_ids=node.skill_ids if node else None,
     )

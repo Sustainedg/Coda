@@ -386,7 +386,7 @@ export const api = {
   deleteMcpServer: (id: string) => request<void>(`/api/mcp-servers/${id}`, { method: 'DELETE' }),
   rescanMcpServers: () => request<McpRescanResult>('/api/mcp-servers/rescan', { method: 'POST' }),
 
-  /** 技能市场（SkillHub）：浏览 / 安装 / 卸载。安装需指定目标内核（type_id）。 */
+  /** 技能市场（SkillHub）：浏览 / 安装到技能中心 / 整体卸载。 */
   listMarketSkills: (params?: {
     page?: number
     page_size?: number

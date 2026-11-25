@@ -26,7 +26,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from ..agents import AgentContext, get_agent
+from ..agents import AgentContext, AgentDefinition, get_agent
 from ..db import SessionLocal
 from ..models import AgentProfile, Conversation, Gateway, PlatformSetting
 from ..settings import get_settings
@@ -230,6 +230,7 @@ async def _resolve(
     """挑出这次用来起标题的智能体 / 网关 / 模型。
 
     配置里指定的智能体被删了 / 停用了，就退回「默认智能体」；一个都没有则放弃。
+    智能体钉了「非当前登录」的内核账号时也返回 ``None``：后台起标题不切号，宁可跳过。
     """
     from .service import pick_default_profile  # 局部导入：避免与 service 形成模块级循环
 
@@ -249,15 +250,61 @@ async def _resolve(
         return None
     gateway = await session.get(Gateway, profile.gateway_id) if profile.gateway_id else None
     try:
-        get_agent(profile.type_id)
+        definition = get_agent(profile.type_id)
     except KeyError:
         # 适配器没注册就没法起标题：说清楚是哪一颗内核跳过了，不静默（铁律 11）。
         logger.info(
             "标题智能体「%s」的内核 %s 没有注册，跳过自动起标题", profile.name, profile.type_id
         )
         return None
+    # 只有「指定了账号 + 内核支持多账号」才值得探一次当前登录账号。
+    active_account = (
+        await _probe_active_account(definition)
+        if profile.account_id and definition.supports_accounts()
+        else None
+    )
+    if _pinned_account_is_inactive(active_account, profile, gateway):
+        logger.info(
+            "标题智能体「%s」指定的内核账号不是当前登录账号，跳过自动起标题"
+            "（后台任务不切号，避免与前台对话串号或误扣别的账号额度）",
+            profile.name,
+        )
+        return None
     model = settings.model or profile.model or None
     return profile, gateway, model
+
+
+async def _probe_active_account(definition: AgentDefinition) -> str | None:
+    """探测内核当前登录的账号 id；探测不到（不支持 / 失败）返回 None。
+
+    ``auth_status`` 是同步实现、可能起子进程，放进线程池，别冻住事件循环。
+    """
+    try:
+        status = await asyncio.to_thread(definition.auth_status)
+    except Exception as exc:  # noqa: BLE001 - 标题是后台增强，探测失败不能拿去弄崩对话
+        # 契约要求 auth_status 尽力而为、不抛错；真抛了是适配器 bug，必须留痕（铁律 11）。
+        logger.warning(
+            "探测内核 %s 的登录账号失败，起标题时按「无法判断」处理：%s", definition.id, exc
+        )
+        return None
+    accounts = status.accounts if status is not None else None
+    return next((account.id for account in accounts or [] if account.active), None)
+
+
+def _pinned_account_is_inactive(
+    active_account: str | None, profile: AgentProfile, gateway: Gateway | None
+) -> bool:
+    """智能体钉的账号确实不是当前登录账号时返回 True（此时跳过自动起标题）。
+
+    只在**能确认**真实登录账号、且与指定槽位不同的时候跳过：探测失败 / 内核没暴露
+    当前账号时无从判断，照常起标题（仍沿用当前登录账号，不会改动机器登录态）。
+    自定义网关自带地址与密钥，不看内核登录态，自然也不受账号槽位影响。
+    """
+    if not profile.account_id:
+        return False
+    if gateway is not None and gateway.kind != "official":
+        return False
+    return bool(active_account and active_account != profile.account_id)
 
 
 async def _build_context(

@@ -62,6 +62,8 @@ class _FakeProfile:
     id = "a1"
     name = "测试智能体"
     system_prompt = None
+    #: 多账号槽位：不指定（_build_context 会读它决定是否切换内核登录态）。
+    account_id = None
 
 
 @pytest.mark.asyncio
@@ -93,6 +95,7 @@ async def test_build_context_passes_node_overrides_to_materialization(monkeypatc
             options={},
             model=None,
             gateway=None,
+            gateway_kind=None,
             api_key=None,
             auth_style=None,
             credentials={},
@@ -117,6 +120,7 @@ async def test_build_context_passes_node_overrides_to_materialization(monkeypatc
             options={},
             model=None,
             gateway=None,
+            gateway_kind=None,
             api_key=None,
             auth_style=None,
             credentials={},

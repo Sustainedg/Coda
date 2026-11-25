@@ -7,6 +7,7 @@ import {
   validateCredentials,
 } from '../../components/CredentialEditor'
 import { DynamicForm } from '../../components/DynamicForm'
+import { AgentAccountField } from '../../components/AgentAccountField'
 import { AgentAvatar } from '../../components/AgentAvatar'
 import { AVATAR_PRESET_GROUPS, avatarPresetUrl, randomAvatarPreset } from '../../lib/agentAvatar'
 import { AgentImSettings } from '../../components/AgentImSettings'
@@ -183,6 +184,8 @@ function AgentCreatePanel({ onCreated }: { onCreated: (agent: AgentProfile) => v
   const [tagline, setTagline] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
   const [gatewayId, setGatewayId] = useState('')
+  // 多账号内核：官方链路下指定用哪个登录账号；空串 = 跟随内核当前登录的账号。
+  const [accountId, setAccountId] = useState('')
   const [model, setModel] = useState('')
   const [options, setOptions] = useState<Record<string, unknown>>({})
   const [saving, setSaving] = useState(false)
@@ -194,6 +197,7 @@ function AgentCreatePanel({ onCreated }: { onCreated: (agent: AgentProfile) => v
     setOptions(Object.fromEntries(selected.config_fields.map((field) => [field.key, field.default])))
     setName((prev) => prev || selected.name)
     setGatewayId('')
+    setAccountId('')
     setModel('')
   }, [selected, typeId])
 
@@ -216,6 +220,7 @@ function AgentCreatePanel({ onCreated }: { onCreated: (agent: AgentProfile) => v
         description: null,
         system_prompt: systemPrompt,
         gateway_id: gatewayId || null,
+        account_id: gatewayId ? null : accountId || null,
         model: model.trim() || null,
         options,
         credentials: [],
@@ -244,6 +249,7 @@ function AgentCreatePanel({ onCreated }: { onCreated: (agent: AgentProfile) => v
               setTypeId(next.id)
               setOptions(Object.fromEntries(next.config_fields.map((f) => [f.key, f.default])))
               setGatewayId('')
+              setAccountId('')
               setModel('')
               setName((prev) => prev || next.name)
             }
@@ -287,7 +293,15 @@ function AgentCreatePanel({ onCreated }: { onCreated: (agent: AgentProfile) => v
 
       <div className="field">
         <label className="field-label">网关</label>
-        <select className="select" value={gatewayId} onChange={(event) => setGatewayId(event.target.value)}>
+        <select
+          className="select"
+          value={gatewayId}
+          onChange={(event) => {
+            setGatewayId(event.target.value)
+            // 自定义网关不看内核登录态：账号槽位只属于官方链路。
+            if (event.target.value) setAccountId('')
+          }}
+        >
           <option value="">官方默认（平台不接管路由）</option>
           {gatewayChoices.map((item) => (
             <option key={item.id} value={item.id}>
@@ -297,6 +311,15 @@ function AgentCreatePanel({ onCreated }: { onCreated: (agent: AgentProfile) => v
           ))}
         </select>
       </div>
+
+      {!gatewayId && selected && (
+        <AgentAccountField
+          typeId={selected.id}
+          supportsAccounts={selected.supports_accounts}
+          value={accountId}
+          onChange={setAccountId}
+        />
+      )}
 
       <div className="field">
         <label className="field-label">模型</label>
@@ -383,20 +406,59 @@ function AgentBasicPanel({ agent, onSaved }: { agent: AgentProfile; onSaved: () 
   const [gatewayId, setGatewayId] = useState(
     agent.gateway_kind !== 'official' ? agent.gateway_id ?? '' : '',
   )
+  // 多账号内核：官方链路下指定用哪个登录账号；空串 = 跟随内核当前登录的账号。
+  const [accountId, setAccountId] = useState(agent.account_id ?? '')
   const [model, setModel] = useState(agent.model ?? '')
   const [options, setOptions] = useState<Record<string, unknown>>(agent.options ?? {})
+  // 内核可换：每个内核的适配器选项分开缓存，来回切不丢。
+  const [typeId, setTypeId] = useState(agent.type_id)
+  const [optionCache, setOptionCache] = useState<Record<string, Record<string, unknown>>>(() => ({
+    [agent.type_id]: agent.options ?? {},
+  }))
   const [credentialDrafts, setCredentialDrafts] = useState(() => credentialsToDraft(agent.credentials))
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   /** 头像包画廊的开合：60 张缩略图没必要常驻 */
   const [galleryOpen, setGalleryOpen] = useState(false)
 
-  const selected = types.find((type) => type.id === agent.type_id) ?? null
+  const selected = types.find((type) => type.id === typeId) ?? null
+
+  // 内核可以换：换内核 = 换一整套适配器选项，所以顺手记住每个内核自己的选项，来回切不丢。
+  const typeChoices = useMemo(() => {
+    const selectable = types.filter((type) => type.selectable !== false)
+    const current = types.find((type) => type.id === agent.type_id)
+    if (current && !selectable.some((type) => type.id === current.id)) {
+      return [current, ...selectable]
+    }
+    return selectable
+  }, [types, agent.type_id])
+
+  /** 换内核：适配器选项换成新内核的（优先取缓存），网关与模型回落到默认。 */
+  const changeType = (next: AgentType) => {
+    if (next.id === typeId) return
+    if (
+      !confirm(
+        `换成「${next.name}」内核？网关与模型会回到默认，不属于新内核的技能 / MCP 分配会被丢弃。`,
+      )
+    )
+      return
+    setOptionCache((cache) => ({ ...cache, [typeId]: options }))
+    setTypeId(next.id)
+    setOptions(
+      optionCache[next.id] ??
+        Object.fromEntries(next.config_fields.map((field) => [field.key, field.default])),
+    )
+    setGatewayId('')
+    setAccountId('')
+    setModel('')
+  }
+
   const gatewayChoices = useMemo(() => gatewaysFor(selected, gateways), [selected, gateways])
   const gateway = gateways.find((item) => item.id === gatewayId) ?? null
   const modelChoices = gateway?.selected_models ?? []
 
   const save = async () => {
+    if (!typeId) return setSaveError('请选择内核类型')
     if (!name.trim()) return setSaveError('请填写名称')
     const credentialError = validateCredentials(credentialDrafts, credentials)
     if (credentialError) return setSaveError(credentialError)
@@ -406,13 +468,14 @@ function AgentBasicPanel({ agent, onSaved }: { agent: AgentProfile; onSaved: () 
       await api.updateAgent(agent.id, {
         name: name.trim(),
         group_name: groupName.trim(),
-        type_id: agent.type_id,
+        type_id: typeId,
         avatar,
         avatar_preset: avatarPreset,
         tagline: tagline.trim() || null,
         description: description.trim() || null,
         system_prompt: systemPrompt,
         gateway_id: gatewayId || null,
+        account_id: gatewayId ? null : accountId || null,
         model: model.trim() || null,
         options,
         credentials: draftsToPayload(credentialDrafts),
@@ -499,8 +562,32 @@ function AgentBasicPanel({ agent, onSaved }: { agent: AgentProfile; onSaved: () 
 
       <div className="field">
         <label className="field-label">内核类型</label>
-        <input className="input" value={agent.type_name ?? agent.type_id} readOnly />
-        <span className="field-help">换内核请到智能体列表「复制」后新建。</span>
+        <select
+          className="select"
+          value={typeId}
+          onChange={(event) => {
+            const next = types.find((type) => type.id === event.target.value)
+            if (next) changeType(next)
+          }}
+        >
+          {/* 内核清单还没拉回来、或这个智能体用的是已下线的内核时，至少把当前值显示出来 */}
+          {!typeChoices.some((type) => type.id === typeId) && (
+            <option value={typeId}>{agent.type_name ?? typeId}</option>
+          )}
+          {typeChoices.map((type) => (
+            <option key={type.id} value={type.id}>
+              {type.name} · {type.vendor}
+              {type.availability.installed ? '' : '（未安装）'}
+            </option>
+          ))}
+        </select>
+        <span className="field-help">
+          {selected?.description}
+          {selected && !selected.availability.installed
+            ? ' ⚠️ 该内核的运行时还没安装，可到「内核管理」页安装。'
+            : ''}
+          换内核会重置网关与模型，不属于新内核的技能 / MCP 分配会被丢弃（保存后生效）。
+        </span>
       </div>
 
       <div className="field">
@@ -525,7 +612,15 @@ function AgentBasicPanel({ agent, onSaved }: { agent: AgentProfile; onSaved: () 
 
       <div className="field">
         <label className="field-label">网关</label>
-        <select className="select" value={gatewayId} onChange={(event) => setGatewayId(event.target.value)}>
+        <select
+          className="select"
+          value={gatewayId}
+          onChange={(event) => {
+            setGatewayId(event.target.value)
+            // 自定义网关不看内核登录态：账号槽位只属于官方链路。
+            if (event.target.value) setAccountId('')
+          }}
+        >
           <option value="">官方默认（平台不接管路由）</option>
           {gatewayChoices.map((item) => (
             <option key={item.id} value={item.id}>
@@ -539,6 +634,15 @@ function AgentBasicPanel({ agent, onSaved }: { agent: AgentProfile; onSaved: () 
           {gateway && !gateway.api_key_set ? ' ⚠️ 该网关还没配置密钥。' : ''}
         </span>
       </div>
+
+      {!gatewayId && selected && (
+        <AgentAccountField
+          typeId={selected.id}
+          supportsAccounts={selected.supports_accounts}
+          value={accountId}
+          onChange={setAccountId}
+        />
+      )}
 
       <div className="field">
         <label className="field-label">模型</label>

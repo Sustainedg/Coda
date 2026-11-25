@@ -36,6 +36,58 @@ DEFAULT_TITLE = "新对话"
 
 logger = logging.getLogger(__name__)
 
+#: 账号切换是内核级动作（同一台机器只有一份登录态）：按内核串行化「切换」这个动作本身，
+#: 避免两个请求同时写 session 文件把它写成半截。
+#: ⚠️ 它**不串行化整个运行**，也**不保证**「子进程启动那一瞬间登录态仍是目标账号」：
+#: 切换完到这里真正起进程之间，另一个并发请求完全可以又切了号。这是本功能的固有限制，
+#: 要彻底避免只能把锁一直持有到进程启动（会明显牺牲并发），这里不做。
+_account_locks: dict[str, asyncio.Lock] = {}
+
+
+def _account_lock(type_id: str) -> asyncio.Lock:
+    lock = _account_locks.get(type_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _account_locks[type_id] = lock
+    return lock
+
+
+async def activate_selected_account(
+    profile: AgentProfile,
+    gateway: Gateway | None,
+    definition: AgentDefinition,
+) -> list[str]:
+    """把本轮要用的内核账号切到智能体选定的槽位，返回告警文案。
+
+    只对「官方默认」链路的账号型内核生效：自定义网关自带地址与密钥，不看内核登录态。
+    切换失败（槽位被删 / 文件损坏）不阻断运行 —— 沿用当前登录的账号并告警，
+    否则删掉一个账号就会让整个智能体不可用。
+    """
+    return await activate_account_for_kernel(
+        profile,
+        definition,
+        official_route=gateway is None or gateway.kind == "official",
+    )
+
+
+async def activate_account_for_kernel(
+    profile: AgentProfile,
+    definition: AgentDefinition,
+    *,
+    official_route: bool,
+) -> list[str]:
+    """按「这条运行走不走官方链路」切换账号；协作域等拿不到 Gateway 行的调用方用它。"""
+    if not (profile.account_id and definition.supports_accounts() and official_route):
+        return []
+    try:
+        async with _account_lock(definition.id):
+            await asyncio.to_thread(definition.activate_account, profile.account_id)
+    except KeyError:
+        return ["指定的内核账号已不存在，本轮沿用当前登录的账号"]
+    except RuntimeError as exc:
+        return [f"切换到指定内核账号失败：{exc}（沿用当前登录的账号）"]
+    return []
+
 
 @dataclass
 class PreparedRun:
@@ -51,6 +103,8 @@ class PreparedRun:
     skill_warnings: list[str] = field(default_factory=list)
     #: MCP 物化过程中的说明/告警，同为 log 事件
     mcp_warnings: list[str] = field(default_factory=list)
+    #: 指定内核账号切换失败的说明；成功时为空
+    account_warnings: list[str] = field(default_factory=list)
     #: 上下文自动压缩的说明（成功 / 失败 / 正在压缩），以 log 事件推给界面
     context_notices: list[str] = field(default_factory=list)
     #: 这条对话是不是「刚开头」（标题还是兜底值）：是就交给调用方安排一次自动起标题
@@ -364,6 +418,8 @@ async def prepare_run(
         persist_session = True
         home_scope = None
 
+    account_warnings = await activate_selected_account(profile, gateway, definition)
+
     workspace = payload.workspace_dir or resolve_workspace(conversation)
     if payload.reset_session:
         conversation.session_id = None
@@ -485,6 +541,7 @@ async def prepare_run(
         assistant_message=assistant_message,
         skill_warnings=skill_warnings,
         mcp_warnings=mcp_warnings,
+        account_warnings=account_warnings,
         context_notices=context_notices,
         title_pending=title_pending,
         persist_session=persist_session,
@@ -641,6 +698,8 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
         yield log(f"技能：{warning}", "warn")
     for warning in prepared.mcp_warnings:
         yield log(f"MCP：{warning}", "warn")
+    for warning in prepared.account_warnings:
+        yield log(f"账号：{warning}", "warn")
     for notice in prepared.context_notices:
         # 上下文自动压缩的说明：成功 / 失败都要让用户看得到（按钮与详情面板也会展示）。
         yield log(notice, "info")
@@ -779,6 +838,7 @@ async def regenerate_last(
     await session.commit()
 
     profile, gateway, definition = await load_profile(session, conversation.agent_profile_id)
+    account_warnings = await activate_selected_account(profile, gateway, definition)
     workspace = resolve_workspace(conversation)
     history_rows = (
         await session.execute(
@@ -857,6 +917,7 @@ async def regenerate_last(
         assistant_message=assistant_message,
         skill_warnings=skill_warnings,
         mcp_warnings=mcp_warnings,
+        account_warnings=account_warnings,
         context_notices=context_notices,
         trace=trace,
     )

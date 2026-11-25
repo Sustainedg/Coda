@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 
@@ -38,6 +39,41 @@ def test_clean_normalizes_model_output():
     assert titles._clean("") == ""
     assert titles._clean("   ") == ""
     assert len(titles._clean("一" * 80)) == titles.MAX_TITLE_CHARS
+
+
+async def test_probe_active_account_reads_the_active_slot():
+    """探测当前登录账号：取 accounts 里 active 的那一个；没有 active 就当无法判断。"""
+
+    class FakeDefinition:
+        id = "fake-kernel"
+
+        def auth_status(self):
+            return SimpleNamespace(
+                accounts=[
+                    SimpleNamespace(id="slot-a", active=False),
+                    SimpleNamespace(id="slot-b", active=True),
+                ]
+            )
+
+    assert await titles._probe_active_account(FakeDefinition()) == "slot-b"
+
+
+def test_pinned_account_skips_title_only_when_confirmed_different():
+    """只有「确认不是当前登录账号」才跳过起标题；探测失败 / 自定义网关都照常跑。"""
+    profile = SimpleNamespace(account_id="slot-b", type_id="codebuddy-cli")
+    official = SimpleNamespace(kind="official")
+    custom = SimpleNamespace(kind="custom")
+
+    assert titles._pinned_account_is_inactive("slot-a", profile, official) is True
+    assert titles._pinned_account_is_inactive("slot-b", profile, official) is False
+    # 探测不到当前账号：无从判断，不跳过（仍沿用当前登录账号，不会改动机器登录态）。
+    assert titles._pinned_account_is_inactive(None, profile, official) is False
+    # 自定义网关不看内核登录态。
+    assert titles._pinned_account_is_inactive("slot-a", profile, custom) is False
+    # 没指定账号时什么都不用判断。
+    assert titles._pinned_account_is_inactive(
+        "slot-a", SimpleNamespace(account_id=None, type_id="codebuddy-cli"), official
+    ) is False
 
 
 async def test_title_settings_default_and_roundtrip(client: httpx.AsyncClient):

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from .. import avatars
-from ..agents import AgentContext, get_agent as get_definition
+from ..agents import AgentContext, AgentDefinition, get_agent as get_definition
 from ..agents.base import Availability
 from ..credentials import CredentialError
 from ..credentials import reads as credential_reads
@@ -171,6 +171,7 @@ async def _to_read(
         system_prompt=profile.system_prompt,
         type_id=profile.type_id,
         gateway_id=profile.gateway_id,
+        account_id=profile.account_id,
         model=profile.model,
         options=profile.options or {},
         enabled=profile.enabled,
@@ -251,6 +252,16 @@ async def _require_gateway(
     return gateway
 
 
+def _validate_account(definition: AgentDefinition, account_id: str | None) -> str | None:
+    """账号槽位是可选项：只有实现了多账号切换的内核才允许指定。"""
+    account = (account_id or "").strip() or None
+    if account and not definition.supports_accounts():
+        raise HTTPException(
+            status_code=422, detail=f"{definition.name} 不支持指定内核账号"
+        )
+    return account
+
+
 def _owned_query(stmt, user: User):
     """列表只看自己的智能体；管理员看全部。"""
     if user.role == "admin":
@@ -293,7 +304,16 @@ async def create_agent(
         definition = get_definition(payload.type_id)
     except KeyError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    await _require_gateway(payload.gateway_id, session, user)
+    gateway = await _require_gateway(payload.gateway_id, session, user)
+    # 账号槽位只对「官方默认」链路有意义：自定义网关自带地址与密钥，不看内核登录态。
+    account_id = (
+        None
+        if gateway is not None and gateway.kind != "official"
+        else _validate_account(definition, payload.account_id)
+    )
+    # 账号槽位是机器级资产（清单只对管理员可见），指定它等于替全机选登录态：只允许管理员。
+    if account_id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="只有管理员能指定内核账号")
     target_owner = owner_id_for(user)
     # 不传 = 不用内置头像包（回退 emoji），只有真的带了编号才校验形状。
     if payload.avatar_preset is not None and not avatars.is_valid_preset(payload.avatar_preset):
@@ -307,6 +327,7 @@ async def create_agent(
         description=payload.description,
         system_prompt=payload.system_prompt or "",
         gateway_id=payload.gateway_id,
+        account_id=account_id,
         model=payload.model,
         options=definition.coerce_options(payload.options or {}),
         enabled=payload.enabled,
@@ -353,13 +374,45 @@ async def update_agent(
     profile = await _active_profile(profile_id, session)
     require_owned(profile, user)
     data = payload.model_dump(exclude_unset=True)
+    type_changed = bool(data.get("type_id")) and data["type_id"] != profile.type_id
     if data.get("type_id"):
         try:
             get_definition(data["type_id"])
         except KeyError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
-    if "gateway_id" in data:
+    # 最终生效的网关：请求里换了就用新的，没换就沿用当前绑定的那个。
+    gateway = (
         await _require_gateway(data["gateway_id"], session, user)
+        if "gateway_id" in data
+        else await _gateway_for(profile, session)
+    )
+    official_route = gateway is None or gateway.kind == "official"
+
+    # 换内核时旧账号槽位不再适用：没有显式指定就回到「跟随当前登录」。
+    if type_changed and "account_id" not in data:
+        data["account_id"] = None
+    if not official_route:
+        # 自定义网关不看内核登录态：清掉账号槽位，不往库里写残留值
+        # （否则下次切回官方链路会意外用上一个没人再选的账号）。
+        data["account_id"] = None
+    elif "account_id" in data:
+        try:
+            account_definition = get_definition(data.get("type_id") or profile.type_id)
+        except KeyError:
+            if data["account_id"]:
+                raise HTTPException(
+                    status_code=422, detail="该内核已下线，无法指定内核账号"
+                ) from None
+        else:
+            data["account_id"] = _validate_account(account_definition, data["account_id"])
+    # 指到别的账号 = 替全机换登录态，只有管理员可以；保持原值 / 清空不拦（普通成员编辑时
+    # 前端会把已有的 account_id 原样带回）。
+    if (
+        data.get("account_id")
+        and data["account_id"] != profile.account_id
+        and user.role != "admin"
+    ):
+        raise HTTPException(status_code=403, detail="只有管理员能指定内核账号")
     if data.get("avatar_preset") is not None and not avatars.is_valid_preset(data["avatar_preset"]):
         raise HTTPException(status_code=422, detail="头像包编号不合法")
     credentials: list = data.pop("credentials", None) or []
@@ -376,7 +429,14 @@ async def update_agent(
         except KeyError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
     for field, value in data.items():
-        if value is not None or field in {"gateway_id", "model", "tagline", "description", "avatar_preset"}:
+        if value is not None or field in {
+            "gateway_id",
+            "account_id",
+            "model",
+            "tagline",
+            "description",
+            "avatar_preset",
+        }:
             setattr(profile, field, value)
     if data.get("type_id"):
         # 换内核后，原来分配的技能 / 内核专属 MCP 可能不属于新型号，直接丢弃并在响应里体现。
@@ -575,6 +635,8 @@ async def duplicate_agent(
             or (gateway.kind != "official" and gateway.owner_id != user.id)
         ):
             gateway_id = None
+    # 刻意不复制 account_id：账号槽位是机器级资产，普通成员复制管理员的智能体时不能
+    # 顺带继承「替全机选登录态」的能力（否则管理员设的绑定就被复制绕过了）。
     clone = AgentProfile(
         name=f"{profile.name} 副本",
         type_id=profile.type_id,
@@ -655,7 +717,11 @@ async def test_agent(
     session: AsyncSession = Depends(get_session),
     user: Annotated[User, Depends(current_user)] = None,
 ) -> dict:
-    """连通性测试：实时探测运行环境与网关（用户主动触发，走线程池，不冻住事件循环）。"""
+    """连通性测试：实时探测运行环境与网关（用户主动触发，走线程池，不冻住事件循环）。
+
+    注意：连通性探测按内核**当前登录的账号**发起，不会切换到智能体指定的账号 ——
+    探测本身不该改动机器登录态；指定账号是否可用请到「设置 → 内核管理」查看。
+    """
     profile = await _active_profile(profile_id, session)
     require_owned(profile, user)
     try:

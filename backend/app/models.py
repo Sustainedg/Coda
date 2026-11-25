@@ -40,6 +40,8 @@ ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "avatar_file": "VARCHAR(120)",
         # 「内置头像包编号」是后加的：老行留空，界面回退到 emoji 头像。
         "avatar_preset": "VARCHAR(32)",
+        # 「指定内核账号槽位」是后加的：老行留空 = 跟随内核当前登录的账号。
+        "account_id": "VARCHAR(64)",
     },
     # 「技能市场页地址」这一列是后加的：老行一律按空串补上（来源仍复用已有的 source_kind）。
     # owner_id 是「按用户隔离技能库」后加的：老行留空 = 全平台共享（内核自带 / 宿主机技能）；
@@ -211,6 +213,10 @@ class AgentProfile(SQLModel, table=True):
         sa_column=Column(String(64), ForeignKey("gateways.id", ondelete="RESTRICT"), index=True),
     )
     model: str | None = Field(default=None, sa_column=Column(String(160)))
+    #: 多账号内核的账号槽位 id（见 ``AgentDefinition.activate_account``）。
+    #: 为空 = 跟随内核当前登录的账号；「官方默认」链路上运行时按它切换一次登录态。
+    #: 自定义网关不依赖内核登录态，这一列只在官方链路下取值。
+    account_id: str | None = Field(default=None, sa_column=Column(String(64)))
     #: 适配器声明的可配置项（键值对，形状由 ConfigField 决定）
     options: dict[str, Any] = Field(
         default_factory=dict, sa_column=Column(JSON, nullable=False, default=dict)

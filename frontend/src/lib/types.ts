@@ -187,6 +187,8 @@ export interface AgentType {
   executable?: string | null
   /** 是否出现在「新建智能体」的内核下拉里；false 的模板只保留给存量智能体 */
   selectable?: boolean
+  /** 是否支持多账号切换（官方链路上可按智能体指定用哪个登录账号） */
+  supports_accounts?: boolean
   /** 运行时的安装 / 更新方式（`/api/agent-types` 也带上，与「运行时」页同源） */
   provisioning?: RuntimeProvisioning
   availability: Availability
@@ -311,6 +313,8 @@ export interface AgentProfile {
   system_prompt: string
   type_id: string
   gateway_id?: string | null
+  /** 指定的内核账号槽位（多账号内核、官方链路）；空 = 跟随内核当前登录的账号 */
+  account_id?: string | null
   /** 新对话默认使用的模型（具体对话可以在对话里改） */
   model?: string | null
   options: Record<string, unknown>
@@ -545,19 +549,18 @@ export interface MarketKernel {
   path?: string | null
 }
 
-/** 安装市场技能的请求体。 */
+/** 安装市场技能的请求体（装进技能中心，不指定内核）。 */
 export interface MarketInstallInput {
   slug: string
-  type_id: string
   version?: string | null
 }
 
 /** 安装市场技能的结果。 */
 export interface MarketInstallResult {
   skill_id: string
+  skill_ids: string[]
   name: string
   slug: string
-  type_id: string
   version?: string | null
   requires_api_key: boolean
   warnings: string[]

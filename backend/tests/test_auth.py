@@ -238,6 +238,49 @@ async def test_member_cannot_read_provision_jobs(auth_client):
     assert (await auth_client.get("/api/runtimes/provision/jobs", headers=admin)).status_code == 200
 
 
+async def test_member_cannot_pin_kernel_account(auth_client):
+    """账号槽位是机器级资产：普通成员不能新建时指定，也不能改指到别的槽位。"""
+    alice = await _register(auth_client, "alice")  # admin
+    bob = await _register(auth_client, "bob")  # member
+    admin = _auth(alice["access_token"])
+    member = _auth(bob["access_token"])
+
+    # 普通成员新建时指定 → 403
+    denied = await auth_client.post(
+        "/api/agents",
+        json={"name": "x", "type_id": "codebuddy-cli", "account_id": "slot-a"},
+        headers=member,
+    )
+    assert denied.status_code == 403
+    assert "管理员" in denied.json()["detail"]
+
+    # 成员自己的智能体：管理员先替它指定账号，成员编辑时原样带回不算「改」。
+    own = await auth_client.post(
+        "/api/agents", json={"name": "我的", "type_id": "codebuddy-cli"}, headers=member
+    )
+    assert own.status_code == 201, own.text
+    agent = own.json()
+    pinned = await auth_client.patch(
+        f"/api/agents/{agent['id']}", json={"account_id": "slot-a"}, headers=admin
+    )
+    assert pinned.status_code == 200, pinned.text
+    assert pinned.json()["account_id"] == "slot-a"
+
+    kept = await auth_client.patch(
+        f"/api/agents/{agent['id']}",
+        json={"name": "改名", "account_id": "slot-a"},
+        headers=member,
+    )
+    assert kept.status_code == 200, kept.text
+
+    # 想换到另一个槽位 → 403
+    switched = await auth_client.patch(
+        f"/api/agents/{agent['id']}", json={"account_id": "slot-b"}, headers=member
+    )
+    assert switched.status_code == 403
+    assert "管理员" in switched.json()["detail"]
+
+
 async def test_registration_can_be_closed(auth_client, monkeypatch):
     """关闭注册后，注册接口 403，但管理员仍能建用户。"""
     from app.settings import get_settings

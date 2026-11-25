@@ -385,6 +385,9 @@ class AgentDefinition(ABC):
             "logo_style": self.logo_style,
             "executable": self.executable,
             "selectable": self.selectable,
+            #: 是否支持「登录多个账号、按智能体指定用哪个」（多账号槽位）。
+            #: 为 True 时智能体设定页会在「官方默认」链路下多出一个账号下拉框。
+            "supports_accounts": self.supports_accounts(),
             "availability": availability.to_dict(),
             "provisioning": self.provisioning(availability),
         }

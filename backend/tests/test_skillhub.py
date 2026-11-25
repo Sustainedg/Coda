@@ -140,6 +140,10 @@ def skills_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     monkeypatch.setattr(skill_service, "skill_roots_for_type", lambda type_id: roots)
     monkeypatch.setattr(skill_service, "discover_catalog", fake_catalog)
+    # 市场安装默认挂到全部支持技能的内核；测试里固定这两个，避免依赖真实适配器枚举。
+    monkeypatch.setattr(
+        skill_service, "_skill_capable_type_ids", lambda: ["claude-code", "codex"]
+    )
     # 市场技能装进「当前用户技能库」（鉴权关闭时是 local，按 slug 只存一份），返回根目录方便断言。
     return skill_service.get_settings().skill_libraries_root / "local"
 
@@ -162,18 +166,22 @@ async def test_market_list_endpoint(client, market):
 
 
 async def test_kernels_endpoint_lists_skill_capable_kernels(client):
+    """导入 / 复制技能仍要选目标内核，所以这个列表必须保留。"""
     items = (await client.get("/api/skillhub/kernels")).json()["items"]
     ids = {item["type_id"] for item in items}
     assert {"claude-code", "codex"} <= ids
 
 
 async def test_install_then_appears_and_uninstall(client, market, skills_home: Path):
-    response = await client.post(
-        "/api/skillhub/install", json={"slug": "market-skill", "type_id": "claude-code"}
-    )
+    # 安装不再指定内核：技能落进技能中心，默认挂到全部支持技能的内核。
+    response = await client.post("/api/skillhub/install", json={"slug": "market-skill"})
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["skill_id"] == "claude-code:lib:local:market-skill"
+    assert set(body["skill_ids"]) == {
+        "claude-code:lib:local:market-skill",
+        "codex:lib:local:market-skill",
+    }
     assert body["requires_api_key"] is True
 
     # 落盘位置正确，且带上了市场安装标记
@@ -181,36 +189,29 @@ async def test_install_then_appears_and_uninstall(client, market, skills_home: P
     assert (installed / "SKILL.md").is_file()
     assert (installed / ".skillhub.json").is_file()
 
-    # 已进入统一编目，来源是市场技能
+    # 编目里每个内核一行，但共享同一实体；没有按内核分目录。
     items = (await client.get("/api/skills", params={"source_kind": "market"})).json()["items"]
-    assert [item["slug"] for item in items] == ["market-skill"]
+    assert {item["slug"] for item in items} == {"market-skill"}
+    assert {item["type_id"] for item in items} == {"claude-code", "codex"}
     assert items[0]["source_label"] == "腾讯 SkillHub"
     assert items[0]["is_market"] is True
 
-    # 卸载：目录消失、编目里也不再保留这条技能
+    # 卸载：一次移除整份实体，两个内核的编目行都消失。
     removed = await client.post(
         "/api/skillhub/uninstall", json={"skill_id": "claude-code:lib:local:market-skill"}
     )
     assert removed.status_code == 200, removed.text
+    assert removed.json()["remaining_kernels"] == []
     assert not installed.exists()
-    assert (await client.get("/api/skills/claude-code:market-skill")).status_code == 404
+    assert (await client.get("/api/skills/claude-code:lib:local:market-skill")).status_code == 404
+    assert (await client.get("/api/skills/codex:lib:local:market-skill")).status_code == 404
     left = (await client.get("/api/skills", params={"source_kind": "market"})).json()["items"]
     assert left == []
 
 
-async def test_install_unknown_kernel_rejected(client, market):
-    response = await client.post(
-        "/api/skillhub/install", json={"slug": "market-skill", "type_id": "不存在的内核"}
-    )
-    assert response.status_code == 422
-    assert "未知" in response.json()["detail"] or "不支持" in response.json()["detail"]
-
-
 async def test_installed_market_skill_can_be_assigned(client, market, skills_home: Path):
     """装进来的技能走的是既有链路：安装 → 分配 → 被运行层取到。"""
-    installed = await client.post(
-        "/api/skillhub/install", json={"slug": "market-skill", "type_id": "claude-code"}
-    )
+    installed = await client.post("/api/skillhub/install", json={"slug": "market-skill"})
     assert installed.status_code == 200, installed.text
 
     gateway = await make_gateway(client)
@@ -286,10 +287,10 @@ async def test_uninstall_refuses_non_market_skill(client, skills_home: Path, mon
     assert "不是市场技能" in response.json()["detail"]
 
 
-async def test_market_skill_shared_across_kernels_and_updated_once(
+async def test_market_skill_installed_globally_and_uninstalled_as_one(
     client, market, skills_home: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """一份实体 + 多内核引用：重新安装（更新）后两个内核同时生效，卸载只摘本内核引用。"""
+    """一次安装挂到全部内核：更新覆盖唯一实体，卸载一次移除全部编目与实体。"""
     state = {"version": "1.0.0"}
 
     async def fake_detail(slug: str, **kwargs) -> dict:
@@ -302,16 +303,9 @@ async def test_market_skill_shared_across_kernels_and_updated_once(
     monkeypatch.setattr(skillhub_api, "fetch_skill_detail", fake_detail)
     monkeypatch.setattr(skillhub_api, "fetch_skill_archive", fake_download)
 
-    first = await client.post(
-        "/api/skillhub/install", json={"slug": "market-skill", "type_id": "claude-code"}
-    )
+    first = await client.post("/api/skillhub/install", json={"slug": "market-skill"})
     assert first.status_code == 200, first.text
-    second = await client.post(
-        "/api/skillhub/install", json={"slug": "market-skill", "type_id": "codex"}
-    )
-    assert second.status_code == 200, second.text
-    assert second.json()["skill_id"] == "codex:lib:local:market-skill"
-    # 技能库里只有一份实体，不再按内核各存一份。
+    # 一份实体 + 全部内核引用，不再按内核各装一次。
     assert (skills_home / "market-skill" / "SKILL.md").is_file()
     assert not (skills_home / "claude-code").exists()
     assert not (skills_home / "codex").exists()
@@ -325,31 +319,67 @@ async def test_market_skill_shared_across_kernels_and_updated_once(
     }
     assert paths == {str(skills_home / "market-skill")}
 
-    # 市场更新：重新安装一次，覆盖唯一实体，两个内核的编目同时更新。
+    # 市场更新：重新安装覆盖唯一实体，两个内核同时更新。
     state["version"] = "2.0.0"
-    updated = await client.post(
-        "/api/skillhub/install", json={"slug": "market-skill", "type_id": "claude-code"}
-    )
+    updated = await client.post("/api/skillhub/install", json={"slug": "market-skill"})
     assert updated.status_code == 200, updated.text
     rows = (
         await client.get("/api/skills", params={"source_kind": "market"})
     ).json()["items"]
     assert {row["version"] for row in rows} == {"2.0.0"}
 
-    # 只从 claude-code 卸载：实体保留，codex 的引用还在。
+    # 一次卸载：实体与全部内核的编目一起消失。
     removed = await client.post(
-        "/api/skillhub/uninstall", json={"skill_id": "claude-code:lib:local:market-skill"}
-    )
-    assert removed.status_code == 200, removed.text
-    assert removed.json()["remaining_kernels"] == ["codex"]
-    assert (skills_home / "market-skill").is_dir()
-    left = (await client.get("/api/skills", params={"source_kind": "market"})).json()["items"]
-    assert [row["type_id"] for row in left] == ["codex"]
-
-    # 最后一个引用消失：实体目录一起删掉。
-    final = await client.post(
         "/api/skillhub/uninstall", json={"skill_id": "codex:lib:local:market-skill"}
     )
-    assert final.status_code == 200, final.text
-    assert final.json()["remaining_kernels"] == []
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["remaining_kernels"] == []
     assert not (skills_home / "market-skill").exists()
+    left = (await client.get("/api/skills", params={"source_kind": "market"})).json()["items"]
+    assert left == []
+
+
+async def test_install_keeps_mounts_of_kernels_not_scanned(
+    client, market, skills_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """本轮没扫到的内核保留原挂载，不因一次扫描落空就被永久抹掉。"""
+    first = await client.post("/api/skillhub/install", json={"slug": "market-skill"})
+    assert first.status_code == 200, first.text
+    assert set(skill_service.read_library_mounts(skills_home)["market-skill"]) == {
+        "claude-code",
+        "codex",
+    }
+
+    # 模拟 codex 本轮临时扫不到（适配器异常 / 内核没装好）。
+    monkeypatch.setattr(skill_service, "_skill_capable_type_ids", lambda: ["claude-code"])
+    again = await client.post("/api/skillhub/install", json={"slug": "market-skill"})
+    assert again.status_code == 200, again.text
+    # 更新时不能把 codex 的引用一起抹掉，否则它恢复后也永远拿不到这份技能。
+    assert set(skill_service.read_library_mounts(skills_home)["market-skill"]) == {
+        "claude-code",
+        "codex",
+    }
+
+
+async def test_install_skips_kernel_with_conflicting_skill(
+    client, market, skills_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """某个内核已有同名技能时跳过它，其余内核照常安装，并给用户告警。"""
+    real = skill_service._same_slug_conflict
+
+    async def fake_conflict(session, *, type_id, slug, owner_id, new_id):
+        if type_id == "codex":
+            return True
+        return await real(
+            session, type_id=type_id, slug=slug, owner_id=owner_id, new_id=new_id
+        )
+
+    monkeypatch.setattr(skill_service, "_same_slug_conflict", fake_conflict)
+    response = await client.post("/api/skillhub/install", json={"slug": "market-skill"})
+    assert response.status_code == 200, response.text
+    warnings = response.json()["warnings"]
+    assert len(warnings) == 1 and "跳过" in warnings[0]
+    rows = (
+        await client.get("/api/skills", params={"source_kind": "market"})
+    ).json()["items"]
+    assert {row["type_id"] for row in rows} == {"claude-code"}

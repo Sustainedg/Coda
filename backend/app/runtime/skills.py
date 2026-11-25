@@ -1395,7 +1395,6 @@ async def wait_for_market_registration(
 async def install_market_skill(
     session: AsyncSession,
     *,
-    type_id: str,
     slug: str,
     version: str | None,
     archive: bytes,
@@ -1403,17 +1402,16 @@ async def install_market_skill(
     source_url: str | None = None,
     display_slug: str | None = None,
 ) -> dict[str, Any]:
-    """把一个市场技能的 zip 落盘到**当前用户**的技能库，并挂载到指定内核。
+    """把一个市场技能的 zip 装进**当前用户**的技能中心，默认挂载全部支持技能的内核。
 
-    技能实体按 slug 只存一份：如果它已经存在（装到过别的内核），这里就是**更新**，
-    覆盖唯一实体后所有已挂载的内核同时生效；否则解压一份新实体。
-    步骤：``<技能库>/<slug>`` 落盘 → 市场标记 → 引用登记里加上本次内核 → 重扫。
-    返回 ``{"skill_id", "name", "warnings"}``；失败抛 :class:`SkillError`。
+    技能实体按 slug 只存一份：已经存在就是**更新**，覆盖唯一实体后所有内核同时生效；
+    某个内核已有同 slug 的其它技能时跳过它（物化会撞名），并在 ``warnings`` 里说明。
+    没有任何内核可挂时报错。步骤：``<技能库>/<slug>`` 落盘 → 市场标记 → 引用登记 → 重扫。
+    返回 ``{"skill_id", "skill_ids", "name", "warnings"}``；失败抛 :class:`SkillError`。
     """
     safe = safe_skill_dirname(slug)
     if safe is None:
         raise SkillError(f"技能标识不合法：{slug}")
-    skill_roots_for_type(type_id)  # 未知内核 / 不支持技能的内核先挡住
     root = library_root(owner_id)
     target = root / safe
     if target.exists() and read_market_marker(target) is None:
@@ -1421,12 +1419,24 @@ async def install_market_skill(
         raise SkillError(
             f"技能库里已有同名技能「{safe}」（不是市场技能），请先删除或改名后再安装"
         )
-    new_id = library_skill_id(type_id, safe, owner_id)
-    if await _same_slug_conflict(
-        session, type_id=type_id, slug=safe, owner_id=owner_id, new_id=new_id
-    ):
-        # 目标内核里已有同名共享技能：物化到隔离目录会撞名，先挡住。
-        raise _name_taken(type_id, safe, "安装")
+    capable = _skill_capable_type_ids()
+    if not capable:
+        raise SkillError("当前没有支持技能的内核，无法安装市场技能")
+    new_ids = {type_id: library_skill_id(type_id, safe, owner_id) for type_id in capable}
+    mountable: list[str] = []
+    skipped: list[str] = []
+    for type_id in capable:
+        if await _same_slug_conflict(
+            session, type_id=type_id, slug=safe, owner_id=owner_id, new_id=new_ids[type_id]
+        ):
+            skipped.append(type_id)
+        else:
+            mountable.append(type_id)
+    if not mountable:
+        raise SkillError(
+            f"技能「{safe}」在所有支持技能的内核里都遇到同名技能，"
+            "请先删除同名技能或换个目录名后再安装"
+        )
     try:
         root.mkdir(parents=True, exist_ok=True)
         extract_skill_archive(archive, target)
@@ -1442,47 +1452,74 @@ async def install_market_skill(
             installed_at=datetime.now(timezone.utc).isoformat(),
         ),
     )
-    # 保留原来挂载的内核（更新时它们也要生效），再加上本次目标内核。
+    # 显式登记可挂载的内核：跳过冲突的内核，避免物化时同名覆盖。
+    # 本轮没扫到的内核（适配器临时异常 / 内核没装好）保留原登记 —— 一次扫描落空就抹掉
+    # 挂载，会让它恢复后也永远拿不到这份技能；只有「确认能挂但撞名」的内核才移除。
     mounts = read_library_mounts(root)
-    kernels = mounts.get(safe) or []
-    if type_id not in kernels:
-        kernels.append(type_id)
-    mounts[safe] = kernels
+    previous = mounts.get(safe) or []
+    mounts[safe] = list(
+        dict.fromkeys([*mountable, *(type_id for type_id in previous if type_id not in capable)])
+    )
     write_library_mounts(root, mounts)
 
     await rescan(session)
-    skill_id = library_skill_id(type_id, safe, owner_id)
-    row = await wait_for_market_registration(session, skill_id)
+    row = await wait_for_market_registration(session, new_ids[mountable[0]])
     if row is None:
         # 目录已落盘，但编目还没收录（通常是该目录被别的技能根重复覆盖）——给出可操作提示。
         raise SkillError(
             f"技能已解压到 {target}，但编目未收录；"
             "请到「技能」页点一次「重新扫描」"
         )
-    return {"skill_id": row.id, "name": row.name, "warnings": []}
+    siblings = await _library_siblings(session, row)
+    skill_ids = [
+        item.id
+        for item in siblings
+        if item.available and item.id in new_ids.values()
+    ]
+    warnings = [f"已跳过 {_type_label(type_id)}：已有同名技能" for type_id in skipped]
+    return {
+        "skill_id": row.id,
+        "skill_ids": skill_ids or [row.id],
+        "name": row.name,
+        "warnings": warnings,
+    }
 
 
 async def uninstall_market_skill(
     session: AsyncSession, skill_id: str
 ) -> dict[str, Any]:
-    """卸载一个市场技能：摘掉本内核引用、断开分配；最后一个引用消失才删实体目录。
+    """从技能中心整体卸载一个市场技能。
 
-    返回 ``{"name", "remaining_kernels"}``：``remaining_kernels`` 非空表示技能仍被
-    其它内核共享（实体保留），调用方可以据此给出更准确的提示。
+    市场安装是「一份实体、全部内核共用」，所以卸载不再按单个内核摘引用：断开所有
+    分配、删除全部编目行，并移除唯一实体目录。升级前装进内核原生目录的老市场技能
+    仍按兼容路径处理。返回 ``{"name", "remaining_kernels"}``（后者恒为空，保留字段
+    供界面复用）。
     """
     row = await get_row(session, skill_id)
     if row is None:
         raise SkillNotFound(f"技能不存在：{skill_id}")
+    if row.source_kind != MARKET_SOURCE:
+        raise SkillError(f"「{row.name}」不是市场技能，不能卸载")
     name = row.name
-    remaining = _remove_installed_skill(row.type_id, row)
-    if remaining:
+    if not is_library_row(row):
+        # 升级前装进内核原生目录的老市场技能：没有引用登记，仍按老路径删目录。
+        _remove_installed_skill(row.type_id, row)
         await _drop_skill_row(session, row)
-    else:
-        # 卸载 = 从平台移除：先断开「智能体 → 技能」的分配（外键是 RESTRICT），
-        # 再删编目行。否则技能会以「目录已消失」的形式继续留在技能页与市场已装列表里。
-        rows = await _library_siblings(session, row) if is_library_row(row) else [row]
-        await _drop_skill_rows(session, rows)
-    return {"name": name, "remaining_kernels": remaining}
+        return {"name": name, "remaining_kernels": []}
+
+    rows = await _library_siblings(session, row)
+    for item in rows:
+        if item.source_kind != MARKET_SOURCE:
+            raise SkillError(f"「{name}」的技能实体混有非市场技能，拒绝整体卸载")
+    # 实体按 slug 存一份，路径由服务端拼出，不采信可能被改坏的库里的 path。
+    target = library_skill_dir(row.owner_id, row.slug)
+    if target.exists():
+        _delete_tree(target, name)
+    mounts = read_library_mounts(library_root(row.owner_id))
+    if mounts.pop(row.slug, None) is not None:
+        write_library_mounts(library_root(row.owner_id), mounts)
+    await _drop_skill_rows(session, rows)
+    return {"name": name, "remaining_kernels": []}
 
 
 # --- 导出 / 导入 / 挂载到其它内核 -------------------------------------------------

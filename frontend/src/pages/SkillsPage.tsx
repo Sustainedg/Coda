@@ -656,9 +656,11 @@ function groupByType(skills: Skill[]): { typeId: string; typeName: string; items
 }
 
 /**
- * 平铺视图的聚合：用户库技能（`is_own` 的库行）同 slug 的多内核行折叠成一张卡；
- * 共享技能与其余行原样一条。同一实体按「挂载的内核数降序」排——挂得多的技能
- * 更接近用户当下的关注点。卡内行序：库行在前，共享行（同 slug 的内核原生技能）在后。
+ * 平铺视图的聚合：用户库技能（标识含 `:lib:` 的行，即挂载引用展开的库行——
+ * 与 `is_own` 不同，管理员看别人的库行时 `is_own` 为 false 但仍是库实体）同 slug
+ * 的多内核行折叠成一张卡；共享技能与其余行原样一条。同一实体按「挂载的内核数
+ * 降序」排——挂得多的技能更接近用户当下的关注点。卡内行序：库行在前，
+ * 共享行（同 slug 的内核原生技能）在后。
  */
 function flattenSkills(skills: Skill[]): { key: string; rows: Skill[] }[] {
   const bySlug = new Map<string, Skill[]>()

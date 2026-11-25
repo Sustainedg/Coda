@@ -15,6 +15,7 @@ import type {
   MessagePart,
   SkillDetail,
   SkillRescanResult,
+  SkillCopyAllResult,
   SkillTransferResult, TestResult,
   TitleSettings,
   TracePage,
@@ -351,6 +352,11 @@ export const api = {
     request<SkillTransferResult>(`/api/skills/${encodeURIComponent(id)}/copy`, {
       method: 'POST',
       body: JSON.stringify({ type_id: typeId }),
+    }),
+  /** 把技能挂载到全部支持技能的内核（冲突的内核只跳过并汇报）。 */
+  copySkillToAll: (id: string) =>
+    request<SkillCopyAllResult>(`/api/skills/${encodeURIComponent(id)}/copy-all`, {
+      method: 'POST',
     }),
 
   // --- MCP 服务器（统一编目 + 通过智能体分配生效）-----------------------------

@@ -21,7 +21,14 @@ from ..agents import get_agent
 from ..db import get_session
 from ..models import Skill, User
 from ..runtime import skills as skill_service
-from ..schemas import SkillCopyIn, SkillDetail, SkillImportIn, SkillRead, SkillRescanResult
+from ..schemas import (
+    SkillCopyAllResult,
+    SkillCopyIn,
+    SkillDetail,
+    SkillImportIn,
+    SkillRead,
+    SkillRescanResult,
+)
 from .auth import current_user, owner_id_for
 
 router = APIRouter(prefix="/skills", tags=["skills"])
@@ -286,6 +293,25 @@ async def copy_skill(
     except skill_service.SkillError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     return result
+
+
+@router.post("/{skill_id}/copy-all")
+async def copy_skill_to_all(
+    skill_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: Annotated[User, Depends(current_user)] = None,
+) -> dict:
+    """把一份技能挂载到全部支持技能的内核（尽力而为，冲突的内核只跳过并汇报）。"""
+    row = await skill_service.get_row(session, skill_id)
+    if row is None or not _visible(row, user):
+        raise HTTPException(status_code=404, detail=f"技能不存在：{skill_id}")
+    try:
+        result = await skill_service.copy_skill_to_all_kernels(
+            session, skill_id=skill_id, owner_id=owner_id_for(user)
+        )
+    except skill_service.SkillNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    return SkillCopyAllResult(**result).model_dump()
 
 
 @router.delete("/{skill_id}")

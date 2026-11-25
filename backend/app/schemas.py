@@ -366,6 +366,17 @@ class SkillCopyIn(BaseModel):
     type_id: str
 
 
+class SkillCopyAllResult(BaseModel):
+    """「挂载到全部内核」的结果：成功与被跳过的内核分开汇报。"""
+
+    name: str
+    #: 本次成功挂载的内核 id 列表
+    mounted: list[str] = Field(default_factory=list)
+    #: 被跳过的内核（冲突 / 失败），每项带原因
+    skipped: list[dict[str, str]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 # --- 技能市场（SkillHub）-----------------------------------------------------
 
 

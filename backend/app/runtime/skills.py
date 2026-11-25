@@ -779,20 +779,36 @@ async def prepare_skill_home(
 
 
 def materialize(home: Path, mount: SkillMount, specs: Iterable[SkillSpec]) -> list[str]:
-    """按物化计划把技能目录与内核配置写进隔离目录；返回告警列表。"""
+    """按物化计划把技能目录与内核配置写进隔离目录；返回告警列表。
+
+    技能集合与源内容都没变化时走**快速路径**：直接复用上一轮物化出的技能目录，
+    跳过整棵重建（见 :data:`SKILLS_MANIFEST_FILE`）。取消分配、技能更新、
+    清单损坏都会让比对失败，回到全量重建——「取消分配立即消失」的强一致语义不变。
+    ``carry`` / ``patch`` 不走快速路径：内核配置文件可能在两轮之间被用户改动，每轮照做。
+    """
     warnings = ensure_home(home)
     if warnings:
         return warnings
+    specs = list(specs)
+
+    if _reusable_skill_tree(home, mount, specs):
+        for source_path, dest_rel in mount.carry:
+            _carry_file(home, source_path, dest_rel, warnings)
+        for dest_rel, patch in mount.patch.items():
+            _patch_json(home / dest_rel, patch, warnings)
+        return warnings
 
     skills_root = home / mount.skills_subdir
-    # 每次运行都重建受管技能目录：取消分配后技能必须立刻消失。
-    if skills_root.exists():
+    # 每次重建受管技能目录：取消分配后技能必须立刻消失。
+    had_stale_root = skills_root.exists()
+    if had_stale_root:
         shutil.rmtree(skills_root, ignore_errors=True)
     try:
         skills_root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         return [f"无法创建技能目录 {skills_root}：{exc}"]
 
+    written: dict[str, dict[str, Any]] = {}
     for spec in specs:
         name = safe_skill_dirname(spec.slug)
         source = Path(spec.path) if spec.path else None
@@ -807,16 +823,30 @@ def materialize(home: Path, mount: SkillMount, specs: Iterable[SkillSpec]) -> li
                 f"技能「{spec.name}」约 {spec.total_bytes // 1024} KB，超过单技能上限，已跳过"
             )
             continue
+        # 签名必须在复制**之前**采集：复制与统计之间源目录若被改动，
+        # 清单里会是新签名而副本是旧内容，下一轮就会误复用旧副本。
+        signature = _source_signature(source)
         target = skills_root / name
         try:
             shutil.copytree(source, target, symlinks=False, dirs_exist_ok=True)
         except OSError as exc:
             warnings.append(f"技能「{spec.name}」复制失败：{exc}")
             continue
+        # 复制成功且签名拿得到才登记进清单；拿不到（stat 失败）就空着这一条，
+        # 下一轮比对必然失败、走全量重建，兜底永远安全。
+        if signature is not None:
+            written[name] = {"source": str(source), "files": signature}
         # 只在「名字被改过」时同步 frontmatter：加了命名空间的技能 slug 与源目录名不同，
         # 其余情况（市场技能常见的 `目录 kdocs-skill / name: kdocs`）必须原样保留。
         if name != source.name:
             _sync_frontmatter_name(target / SKILL_FILE, name, warnings)
+
+    # 旧目录删不干净（权限等）时残留文件会与新一轮集合混杂，此时不写清单：
+    # 宁可下轮再做一次全量重建，也不能把「脏目录」标记成可复用。
+    if not _tree_is_clean(skills_root, set(written)):
+        logger.warning("技能目录 %s 重建后仍残留旧内容，跳过物化清单写入", skills_root)
+    else:
+        _write_skills_manifest(home, mount, written)
 
     for source_path, dest_rel in mount.carry:
         _carry_file(home, source_path, dest_rel, warnings)
@@ -825,6 +855,146 @@ def materialize(home: Path, mount: SkillMount, specs: Iterable[SkillSpec]) -> li
         _patch_json(home / dest_rel, patch, warnings)
 
     return warnings
+
+
+#: 隔离家目录里的「物化清单」：记录上一轮成功物化的技能及其源文件签名。
+#: 下一轮物化先比对它：集合与源都没变化时跳过重建，直接复用上一轮的结果。
+SKILLS_MANIFEST_FILE = ".skills-manifest.json"
+_SKILLS_MANIFEST_VERSION = 1
+
+
+def _source_signature(source: Path) -> dict[str, list[int]] | None:
+    """收集技能源目录的文件签名（相对路径 → ``[大小, mtime_ns]``）。
+
+    与 :func:`shutil.copytree` 的复制范围保持一致（不跳目录、符号链接按其指向统计）；
+    任何一个文件 stat 失败都返回 ``None``，调用方按「有变化」处理，走全量重建。
+    比对逐文件的 (大小, mtime)——与 rsync 的默认判定同款：内容原地改写即使
+    大小不变，mtime 也会变，市场更新（整目录替换）更是必然触发重建。
+    """
+    signature: dict[str, list[int]] = {}
+    visited: set[str] = set()
+    try:
+        base = source.resolve()
+    except OSError:
+        return None
+    for dirpath, dirnames, filenames in os.walk(source, followlinks=True):
+        current = Path(dirpath)
+        try:
+            real = current.resolve()
+        except OSError:
+            return None
+        if real in visited:  # 符号链接成环时停止递归
+            dirnames[:] = []
+            continue
+        visited.add(real)
+        dirnames.sort()
+        for filename in sorted(filenames):
+            path = current / filename
+            try:
+                stat = path.stat()
+                signature[path.relative_to(source).as_posix()] = [stat.st_size, stat.st_mtime_ns]
+            except OSError:
+                return None
+    return signature
+
+
+def _read_skills_manifest(home: Path) -> dict[str, Any] | None:
+    """读物化清单；文件不存在 / 损坏 / 结构不对都返回 ``None``（当「变了」处理）。"""
+    try:
+        data = json.loads((home / SKILLS_MANIFEST_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("version") != _SKILLS_MANIFEST_VERSION:
+        return None
+    if not isinstance(data.get("entries"), dict) or not isinstance(data.get("skills_subdir"), str):
+        return None
+    return data
+
+
+def _write_skills_manifest(home: Path, mount: SkillMount, written: dict[str, dict[str, Any]]) -> None:
+    """原子写入物化清单（先写临时文件再替换）。
+
+    写失败只留日志不打扰用户：清单是纯性能优化，坏掉的清单在下一轮会按
+    「有变化」处理，走全量重建，行为正确只是慢一点。
+    """
+    payload = json.dumps(
+        {
+            "version": _SKILLS_MANIFEST_VERSION,
+            "skills_subdir": mount.skills_subdir,
+            "entries": written,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    try:
+        fd, tmp_name = tempfile.mkstemp(prefix=f"{SKILLS_MANIFEST_FILE}.", dir=home)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+            os.replace(tmp_name, home / SKILLS_MANIFEST_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        logger.warning("写入物化清单 %s 失败：%s", home / SKILLS_MANIFEST_FILE, exc)
+
+
+def _expected_manifest_entries(specs: list[SkillSpec]) -> dict[str, dict[str, Any]] | None:
+    """按本轮要物化的技能算出「期望清单条目」；有任何问题技能时返回 ``None``。
+
+    目录名不安全 / 源目录不存在 / 超过体积上限的技能必须走全量重建——
+    快速路径不会产出它们的告警，而用户每轮都该看到。
+    """
+    expected: dict[str, dict[str, Any]] = {}
+    for spec in specs:
+        name = safe_skill_dirname(spec.slug)
+        source = Path(spec.path) if spec.path else None
+        if name is None or source is None or not source.is_dir():
+            return None
+        if spec.total_bytes > MAX_SKILL_BYTES:
+            return None
+        signature = _source_signature(source)
+        if signature is None:
+            return None
+        # 同名技能在慢路径里后写覆盖（copytree dirs_exist_ok），期望条目保持同样语义。
+        expected[name] = {"source": str(source), "files": signature}
+    return expected
+
+
+def _reusable_skill_tree(home: Path, mount: SkillMount, specs: list[SkillSpec]) -> bool:
+    """上一轮物化出的技能目录能否直接复用（集合、源内容、磁盘状态三重一致）。"""
+    manifest = _read_skills_manifest(home)
+    if manifest is None:
+        return False
+    if manifest["skills_subdir"] != mount.skills_subdir:
+        return False
+    expected = _expected_manifest_entries(specs)
+    if expected is None or expected != manifest["entries"]:
+        return False
+    # 磁盘侧兜底：上一轮写入的技能目录都还在（防外部删除 / 半途而废的清理）。
+    skills_root = home / mount.skills_subdir
+    if not skills_root.is_dir():
+        return False
+    return all((skills_root / name).is_dir() for name in expected)
+
+
+def _tree_is_clean(skills_root: Path, written: set[str]) -> bool:
+    """重建后的技能目录是否恰好只含刚写入的技能（没有 rmtree 没删掉的残留）。
+
+    注意允许出现文件（例如 Codex 内核启动后自己写入 ``skills/.system``）——
+    判定只关心「顶层子目录 ⊆ 本轮写入的技能名」：多出来的目录意味着 rmtree
+    没删干净，新旧技能会混在一起。``written`` 为空时目录必须没有任何子目录。
+    """
+    try:
+        names = {child.name for child in skills_root.iterdir() if child.is_dir()}
+    except OSError:
+        return False
+    return names <= written
 
 
 def _sync_frontmatter_name(path: Path, name: str, warnings: list[str]) -> None:
@@ -1568,4 +1738,42 @@ async def copy_skill_to_kernel(
         "name": new_row.name,
         "slug": new_row.slug,
         "type_id": type_id,
+    }
+
+
+async def copy_skill_to_all_kernels(
+    session: AsyncSession, *, skill_id: str, owner_id: str | None = None
+) -> dict[str, Any]:
+    """把一份技能挂载到**全部**支持技能的内核（批量版 :func:`copy_skill_to_kernel`）。
+
+    尽力而为：逐个内核调用单个挂载，冲突（同名技能等）只跳过并记进
+    ``skipped``，不让一个内核挡住其余内核；返回
+    ``{"name", "mounted", "skipped", "warnings"}`` 供界面汇总展示。
+    """
+    row = await get_row(session, skill_id)
+    if row is None:
+        raise SkillNotFound(f"技能不存在：{skill_id}")
+    if is_library_row(row):
+        already = set(mounts_for_row(row))
+    else:
+        already = {row.type_id}
+    mounted: list[str] = []
+    skipped: list[dict[str, str]] = []
+    warnings: list[str] = []
+    for type_id in sorted(_skill_capable_type_ids()):
+        if type_id in already:
+            continue
+        try:
+            await copy_skill_to_kernel(
+                session, skill_id=skill_id, type_id=type_id, owner_id=owner_id
+            )
+            mounted.append(type_id)
+        except SkillError as exc:
+            skipped.append({"type_id": type_id, "reason": str(exc)})
+            warnings.append(f"挂载到 {_type_label(type_id)} 失败：{exc}")
+    return {
+        "name": row.name,
+        "mounted": mounted,
+        "skipped": skipped,
+        "warnings": warnings,
     }

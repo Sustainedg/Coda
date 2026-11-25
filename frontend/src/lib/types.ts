@@ -419,6 +419,16 @@ export interface SkillTransferResult {
   type_id: string
 }
 
+/** 「挂载到全部内核」的结果：成功与被跳过的内核分开汇报。 */
+export interface SkillCopyAllResult {
+  name: string
+  /** 本次成功挂载的内核 id 列表 */
+  mounted: string[]
+  /** 被跳过的内核（冲突 / 失败），每项带原因 */
+  skipped: { type_id: string; reason: string }[]
+  warnings: string[]
+}
+
 /** 内置 MCP 的一个业务参数（平台地址、令牌、网关地址、模型名…）；值只回掩码。 */
 export interface McpBuiltinParam {
   key: string

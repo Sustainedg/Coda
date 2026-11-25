@@ -333,7 +333,7 @@ export function SkillsPage() {
       )}
 
       {copying && (
-        <Modal title={`把「${copying.name}」挂载到别的内核`} onClose={() => setCopying(null)}>
+        <Modal title={`把「${copying.name}」挂载到别的内核（可多选）`} onClose={() => setCopying(null)}>
           <SkillCopyForm
             skill={copying}
             onCancel={() => setCopying(null)}
@@ -395,7 +395,7 @@ function SkillDetailPane({
               className="btn sm"
               onClick={onCopy}
               disabled={!skill.available}
-              title="把同一份技能挂载到自己另一个内核（不复制文件）"
+              title="把同一份技能挂载到自己的其它内核（可多选 / 一键全部，不复制文件）"
             >
               挂载到内核
             </button>
@@ -419,6 +419,11 @@ function SkillDetailPane({
           </span>
           {(skill.mounted_kernels?.length ?? 0) > 0 && (
             <span className="skill-chip">挂载到 {skill.mounted_kernels!.length} 个内核</span>
+          )}
+          {(skill.mounted_kernels?.length ?? 0) > 0 && (
+            <span className="skill-chip">
+              {skill.mounted_kernels!.map((id) => kernelLabel(id)).join(' · ')}
+            </span>
           )}
           <span className="skill-chip">
             {skill.agents.length > 0 ? `被 ${skill.agents.length} 个智能体使用` : '尚未分配'}
@@ -571,6 +576,11 @@ function groupByType(skills: Skill[]): { typeId: string; typeName: string; items
     groups.set(skill.type_id, group)
   }
   return [...groups.values()]
+}
+
+/** 把挂载清单里的内核 id 翻成可读名字；没见过的内核保持原样。 */
+function kernelLabel(typeId: string, typeNames: Record<string, string> = {}): string {
+  return typeNames[typeId] ?? typeId
 }
 
 function formatBytes(size: number): string {

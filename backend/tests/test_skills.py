@@ -228,6 +228,143 @@ def test_materialize_rejects_carry_path_traversal(tmp_path: Path):
     assert not (tmp_path / "逃逸.json").exists()
 
 
+def test_materialize_skips_rebuild_when_nothing_changed(tmp_path: Path):
+    """快速路径：分配与源内容都没变化时，不再整棵重建（mtime 保持不变）。"""
+    source = tmp_path / "source"
+    write_skill(source, "alpha")
+    write_skill(source, "beta")
+    specs = [spec_for(source / "alpha"), spec_for(source / "beta")]
+    mount = SkillMount(home_name="claude-home")
+
+    home = tmp_path / "home"
+    assert skill_service.materialize(home, mount, specs) == []
+    marker = (home / "skills" / "alpha" / "SKILL.md")
+    first_copy = marker.read_text(encoding="utf-8")
+    before = marker.stat().st_mtime_ns
+    # 隔离目录里已经有别的内容（内核会话记录等）：快速路径不能把整个家拆掉。
+    (home / "session.jsonl").write_text("[]\n", encoding="utf-8")
+
+    assert skill_service.materialize(home, mount, specs) == []
+    assert marker.stat().st_mtime_ns == before, "无变化时不应重抄文件"
+    assert marker.read_text(encoding="utf-8") == first_copy
+    assert (home / "session.jsonl").is_file(), "快速路径不得动家目录里的其它内容"
+    # 清单文件存在且结构正确。
+    manifest = json.loads((home / ".skills-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["version"] == 1
+    assert sorted(manifest["entries"]) == ["alpha", "beta"]
+
+
+def test_materialize_rebuilds_when_assignment_or_content_changes(tmp_path: Path):
+    """变更后必须重建：取消分配的技能立刻消失、更新的技能立刻生效。"""
+    source = tmp_path / "source"
+    write_skill(source, "alpha")
+    write_skill(source, "beta")
+    mount = SkillMount(home_name="claude-home")
+    home = tmp_path / "home"
+
+    # 取消分配：集合变了 → 重建，beta 必须立刻消失。
+    assert skill_service.materialize(home, mount, [spec_for(source / "beta")]) == []
+    assert (home / "skills" / "beta" / "SKILL.md").is_file()
+    assert skill_service.materialize(home, mount, [spec_for(source / "alpha")]) == []
+    assert not (home / "skills" / "beta").exists()
+    assert (home / "skills" / "alpha" / "SKILL.md").is_file()
+
+    # 重新分配回去但内容更新（原地改写，size 不变）：mtime 变化必须触发重建。
+    assert skill_service.materialize(home, mount, [spec_for(source / "alpha")]) == []
+    target = home / "skills" / "alpha" / "SKILL.md"
+    old_text = target.read_text(encoding="utf-8")
+    (source / "alpha" / "SKILL.md").write_text(old_text, encoding="utf-8")
+    specs = [spec_for(source / "alpha")]
+    assert skill_service.materialize(home, mount, specs) == []
+    # 源被原地改写后 mtime 更新，下一轮必然走全量重建路径。
+    assert skill_service.materialize(home, mount, specs) == []
+    assert target.is_file()
+
+
+def test_materialize_rebuilds_when_manifest_is_broken(tmp_path: Path):
+    """清单损坏（读不出 / 结构不对）时当「变了」处理，走全量重建兜底。"""
+    source = tmp_path / "source"
+    write_skill(source, "alpha")
+    specs = [spec_for(source / "alpha")]
+    mount = SkillMount(home_name="claude-home")
+    home = tmp_path / "home"
+
+    assert skill_service.materialize(home, mount, specs) == []
+    # 在物化结果里塞一个源目录没有的文件：只有全量重建（rmtree + copytree）
+    # 才会把它清掉——用它观测「这一轮到底走没走重建」。mtime 观测不可靠：
+    # 重建后 mtime 可能与重建前相同（本机文件系统时间粒度粗）。
+    stale = home / "skills" / "alpha" / "stale.txt"
+    stale.write_text("残留\n", encoding="utf-8")
+
+    # 坏 JSON：必须当作「变了」处理，走全量重建（残留文件被清掉）。
+    (home / ".skills-manifest.json").write_text("{ not json", encoding="utf-8")
+    assert skill_service.materialize(home, mount, specs) == []
+    assert not stale.exists()
+
+    # 清单被删 + 目标目录被外部删除：也必须重建。
+    (home / ".skills-manifest.json").unlink()
+    skill_service.shutil.rmtree(home / "skills")
+    assert skill_service.materialize(home, mount, specs) == []
+    assert (home / "skills" / "alpha" / "SKILL.md").is_file()
+
+    # 清单结构对但版本号不认识：同样必须重建。
+    payload = json.loads((home / ".skills-manifest.json").read_text(encoding="utf-8"))
+    payload["version"] = 99
+    (home / ".skills-manifest.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+    stale.write_text("残留\n", encoding="utf-8")
+    assert skill_service.materialize(home, mount, specs) == []
+    assert not stale.exists()
+
+
+def test_materialize_fast_path_still_runs_carry_and_patch(tmp_path: Path):
+    """快速路径复用技能目录，但 carry / patch 每轮照做（内核配置可能在轮外被改）。"""
+    source = tmp_path / "source"
+    write_skill(source, "alpha")
+    specs = [spec_for(source / "alpha")]
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text("{}", encoding="utf-8")
+    mount = SkillMount(
+        home_name="claude-home",
+        carry=[(str(settings_file), "settings.json")],
+        patch={"settings.json": {"disableBundledSkills": True}},
+    )
+    home = tmp_path / "home"
+
+    assert skill_service.materialize(home, mount, specs) == []
+    # 轮外改了源 settings / 删了目标：下一轮即使走快速路径也要重写配置。
+    (home / "settings.json").unlink()
+    settings_file.write_text('{"env": {}}', encoding="utf-8")
+
+    assert skill_service.materialize(home, mount, specs) == []
+    data = json.loads((home / "settings.json").read_text(encoding="utf-8"))
+    assert data["env"] == {}
+    assert data["disableBundledSkills"] is True
+
+
+def test_materialize_rewrites_frontmatter_after_rebuild(tmp_path: Path):
+    """重建后的副本仍然同步 frontmatter name（快速路径不掺和，行为与慢路径一致）。"""
+    source = write_skill(tmp_path / "src", "access")
+    spec = spec_for(source, source_kind="plugin")
+    spec.slug = "telegram-access"
+    mount = SkillMount(home_name="h")
+    home = tmp_path / "home"
+
+    assert skill_service.materialize(home, mount, [spec]) == []
+    copied = home / "skills" / "telegram-access" / "SKILL.md"
+    assert "name: telegram-access" in copied.read_text(encoding="utf-8")
+
+    # 触发一次全量重建（改源内容）：frontmatter 同步必须照常执行。
+    (source / "SKILL.md").write_text(
+        copied.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    spec = spec_for(source, source_kind="plugin")
+    spec.slug = "telegram-access"
+    assert skill_service.materialize(home, mount, [spec]) == []
+    assert "name: telegram-access" in copied.read_text(encoding="utf-8")
+
+
 # --- 适配器声明 --------------------------------------------------------------
 
 
@@ -1251,6 +1388,46 @@ async def test_copy_skill_to_another_kernel_mounts_the_same_copy(
     )
     assert repeat.status_code == 200, repeat.text
     assert repeat.json()["skill_id"] == "claude-code:lib:local:alpha"
+
+
+async def test_copy_all_kernels_mounts_everywhere_and_reports_conflicts(
+    client: httpx.AsyncClient, transfer_home: Path
+):
+    """「挂载到全部内核」：逐个登记引用，冲突的内核只跳过并汇报，不挡住其它内核。"""
+    write_skill(transfer_home / "custom" / "skills", "alpha")
+    await client.post("/api/skills/rescan")
+
+    response = await client.post("/api/skills/custom-cli:alpha/copy-all")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # transfer_home 只声明了 custom-cli 与 claude-code 两个支持技能的内核
+    #（fake_roots 只覆盖这两个），所以批量挂载也只会命中它们。
+    # 源是共享技能：收进技能库时只登记目标内核的引用（源内核用的是自己的原生目录）。
+    assert body["mounted"] == ["claude-code"]
+    assert body["skipped"] == []
+    library = skill_service.get_settings().skill_libraries_root / "local"
+    mounts = skill_service.read_library_mounts(library)
+    assert set(mounts["alpha"]) == {"claude-code"}
+
+    # 幂等：从库里的行再挂一次，源内核有同名共享技能会被跳过，但没有新目标可挂。
+    again = await client.post("/api/skills/claude-code:lib:local:alpha/copy-all")
+    assert again.status_code == 200, again.text
+    assert again.json()["mounted"] == []
+    assert [item["type_id"] for item in again.json()["skipped"]] == ["custom-cli"]
+    assert "同名技能" in again.json()["skipped"][0]["reason"]
+
+    # 同名冲突的内核被跳过：目标内核根下有内容不同的同名共享技能。
+    write_skill(transfer_home / "claude" / "skills", "beta", name="claude 版")
+    write_skill(transfer_home / "custom" / "skills", "beta")
+    await client.post("/api/skills/rescan")
+    conflict = await client.post("/api/skills/custom-cli:beta/copy-all")
+    assert conflict.status_code == 200, conflict.text
+    skipped = conflict.json()["skipped"]
+    assert [item["type_id"] for item in skipped] == ["claude-code"]
+    assert "同名技能" in skipped[0]["reason"]
+
+    missing = await client.post("/api/skills/custom-cli:missing/copy-all")
+    assert missing.status_code == 404
 
 
 async def test_copy_shared_skill_refuses_existing_personal_with_same_slug(

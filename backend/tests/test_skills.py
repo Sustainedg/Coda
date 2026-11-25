@@ -7,6 +7,8 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -363,6 +365,85 @@ def test_materialize_rewrites_frontmatter_after_rebuild(tmp_path: Path):
     spec.slug = "telegram-access"
     assert skill_service.materialize(home, mount, [spec]) == []
     assert "name: telegram-access" in copied.read_text(encoding="utf-8")
+
+
+def test_materialize_hard_links_and_breaks_link_before_rewrite(tmp_path: Path):
+    """P3 硬链接物化：同盘时副本与源共享 inode；改写副本前断链，源目录只读。"""
+    source = tmp_path / "source"
+    directory = write_skill(source, "alpha")
+    original = (directory / "SKILL.md").read_text(encoding="utf-8")
+    mount = SkillMount(home_name="claude-home")
+    home = tmp_path / "home"
+
+    assert skill_service.materialize(home, mount, [spec_for(directory)]) == []
+    copied = home / "skills" / "alpha" / "SKILL.md"
+
+    if hasattr(os, "link"):
+        # 同一盘（tmp_path 内）硬链接应当成立：两个路径指向同一 inode。
+        assert copied.stat().st_ino == (directory / "SKILL.md").stat().st_ino
+        assert (directory / "SKILL.md").stat().st_nlink == 2
+
+    # frontmatter 名字一致时不会改写：源内容保持原样（链接也保持共享）。
+    assert (directory / "SKILL.md").read_text(encoding="utf-8") == original
+
+    # 触发 frontmatter 同步（命名空间前缀）：改写副本必须先断链，
+    # 否则共享 inode 会把「只读的源目录」一起改掉。
+    spec = spec_for(directory)
+    spec.slug = "renamed-alpha"
+    assert skill_service.materialize(home, mount, [spec]) == []
+    rewritten = home / "skills" / "renamed-alpha" / "SKILL.md"
+    assert "name: renamed-alpha" in rewritten.read_text(encoding="utf-8")
+    # 源目录绝不能被顺带改写。
+    assert (directory / "SKILL.md").read_text(encoding="utf-8") == original
+    if hasattr(os, "link"):
+        # 断链后副本拥有独立 inode；源文件的引用计数回到 1。
+        assert rewritten.stat().st_ino != (directory / "SKILL.md").stat().st_ino
+        assert (directory / "SKILL.md").stat().st_nlink == 1
+
+
+def test_materialize_hard_link_falls_back_to_copy_when_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """os.link 不可用（跨盘 / Windows 拒绝）时降级普通复制，产物内容一致。"""
+    source = tmp_path / "source"
+    directory = write_skill(source, "alpha")
+    mount = SkillMount(home_name="claude-home")
+    home = tmp_path / "home"
+
+    def refuse(src, dst, *, follow_symlinks=False):
+        raise OSError("模拟跨盘 / 平台不支持硬链接")
+
+    monkeypatch.setattr(skill_service.os, "link", refuse)
+    assert skill_service.materialize(home, mount, [spec_for(directory)]) == []
+    copied = home / "skills" / "alpha" / "SKILL.md"
+    assert copied.read_text(encoding="utf-8") == (directory / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert (home / "skills" / "alpha" / "scripts" / "run.sh").read_text(
+        encoding="utf-8"
+    ) == (directory / "scripts" / "run.sh").read_text(encoding="utf-8")
+
+
+def test_materialize_hard_link_survives_market_update(tmp_path: Path):
+    """市场更新（rmtree 源 + 重写）后：旧 inode 被副本链接持有而不消失，
+    下一轮签名比对发现 mtime 变化，走全量重建拿到新内容。"""
+    source = tmp_path / "source"
+    directory = write_skill(source, "alpha")
+    mount = SkillMount(home_name="claude-home")
+    home = tmp_path / "home"
+
+    assert skill_service.materialize(home, mount, [spec_for(directory)]) == []
+    copied = home / "skills" / "alpha" / "SKILL.md"
+    old_text = copied.read_text(encoding="utf-8")
+
+    # 模拟市场更新：删掉源目录重写（extract_skill_archive 的做法）。
+    shutil.rmtree(directory)
+    write_skill(source, "alpha", body_extra="\n新版本内容。\n")
+    assert skill_service.materialize(home, mount, [spec_for(directory)]) == []
+    # 旧 inode 被 rmtree 删掉名字，但副本的硬链接让它仍可读（不会崩溃）。
+    assert old_text  # rmtree 之前读到的内容
+    # 新一轮物化后副本拿到的是新内容。
+    assert "新版本内容" in copied.read_text(encoding="utf-8")
 
 
 # --- 适配器声明 --------------------------------------------------------------

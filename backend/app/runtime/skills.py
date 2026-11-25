@@ -785,6 +785,10 @@ def materialize(home: Path, mount: SkillMount, specs: Iterable[SkillSpec]) -> li
     跳过整棵重建（见 :data:`SKILLS_MANIFEST_FILE`）。取消分配、技能更新、
     清单损坏都会让比对失败，回到全量重建——「取消分配立即消失」的强一致语义不变。
     ``carry`` / ``patch`` 不走快速路径：内核配置文件可能在两轮之间被用户改动，每轮照做。
+    慢路径的文件复制优先用**硬链接**（技能库与隔离目录同在数据目录下、同盘）：
+    inode 共享、零拷贝；链接不可用（跨盘 / 文件系统或平台不支持）时自动降级为
+    普通复制，产物内容完全一致。会被框架改写的副本文件（frontmatter 同步的
+    ``SKILL.md``）在改写前先断开链接（:func:`_break_hard_link`），源目录始终只读。
     """
     warnings = ensure_home(home)
     if warnings:
@@ -828,7 +832,7 @@ def materialize(home: Path, mount: SkillMount, specs: Iterable[SkillSpec]) -> li
         signature = _source_signature(source)
         target = skills_root / name
         try:
-            shutil.copytree(source, target, symlinks=False, dirs_exist_ok=True)
+            _link_or_copy_tree(source, target)
         except OSError as exc:
             warnings.append(f"技能「{spec.name}」复制失败：{exc}")
             continue
@@ -861,6 +865,70 @@ def materialize(home: Path, mount: SkillMount, specs: Iterable[SkillSpec]) -> li
 #: 下一轮物化先比对它：集合与源都没变化时跳过重建，直接复用上一轮的结果。
 SKILLS_MANIFEST_FILE = ".skills-manifest.json"
 _SKILLS_MANIFEST_VERSION = 1
+
+
+def _link_or_copy_file(source: Path, target: Path) -> None:
+    """把单个文件落到 ``target``：能硬链接就链接，否则退回普通复制。
+
+    硬链接条件苛刻时（跨文件系统 / Windows 未提权 / 权限不足）``os.link``
+    会抛 :class:`OSError`，捕获后降级 :func:`shutil.copy2`——产物内容一致，
+    只是多花一次拷贝。市场更新（先 ``rmtree`` 源目录再重写）不会影响已物化
+    的旧 inode；旧内容偏旧的问题由物化清单的 mtime 签名捕捉，触发下一轮重建。
+    """
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target, follow_symlinks=True)
+
+
+def _link_or_copy_tree(source: Path, target: Path) -> None:
+    """整棵技能目录的「链接优先」复制（目录逐个 mkdir，文件链接/复制）。
+
+    与 ``shutil.copytree(symlinks=False)`` 语义对齐：符号链接按其**指向**落
+    （链接的是解析后的真实文件）；目标已存在时沿用 ``dirs_exist_ok=True``
+    的行为。任何一个文件失败都抛 :class:`OSError`，由调用方记告警。
+    """
+    for dirpath, dirnames, filenames in os.walk(source, followlinks=False):
+        current = Path(dirpath)
+        rel = current.relative_to(source)
+        out = target / rel if str(rel) != "." else target
+        out.mkdir(parents=True, exist_ok=True)
+        dirnames.sort()
+        for filename in sorted(filenames):
+            origin = current / filename
+            # 符号链接按指向复制（symlinks=False 的语义）：先解析再链接。
+            _link_or_copy_file(origin.resolve() if origin.is_symlink() else origin, out / filename)
+
+
+def _break_hard_link(path: Path) -> None:
+    """把 ``path`` 与同名硬链接断开（改写硬链接副本前的必经步骤）。
+
+    硬链接共享 inode：直接改 ``path`` 会把「只读的源目录」一起改掉。这里把
+    原文件挪到旁边、再复制回原位，让 ``path`` 拿到独立 inode。不是硬链接
+    （或挪动失败）时不动——前者不需要，后者保持旧行为（改写失败只记告警），
+    且源目录的只读性由 ``_link_or_copy_file`` 的链接-或-复制语义保证。
+    """
+    try:
+        stats = path.stat()
+        linked = stats.st_nlink > 1
+    except OSError:
+        return
+    if not linked:
+        return
+    try:
+        beside = path.with_name(f"{path.name}.coda-tmp")
+        os.replace(path, beside)
+        shutil.copy2(beside, path)
+        beside.unlink()
+    except OSError:
+        # 挪走后复制失败时尽量把内容放回去，保持「文件仍在」的状态。
+        try:
+            if not path.exists():
+                beside = path.with_name(f"{path.name}.coda-tmp")
+                if beside.exists():
+                    os.replace(beside, path)
+        except OSError:
+            pass
 
 
 def _source_signature(source: Path) -> dict[str, list[int]] | None:
@@ -1005,8 +1073,10 @@ def _sync_frontmatter_name(path: Path, name: str, warnings: list[str]) -> None:
     ``name: access``，Hermes 就找不到它、Claude Code 也会报「名字对不上」。
 
     只改物化出来的**副本**，源目录始终只读。改写失败不影响复制结果（技能照旧可用），
-    但会在告警里说明，避免「明明分配了却调不到」。
+    但会在告警里说明，避免「明明分配了却调不到」。物化副本可能是硬链接（零拷贝），
+    改写前必须先断开链接，否则共享 inode 会把源目录一起改掉。
     """
+    _break_hard_link(path)
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:

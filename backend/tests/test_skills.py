@@ -401,6 +401,34 @@ def test_materialize_hard_links_and_breaks_link_before_rewrite(tmp_path: Path):
         assert (directory / "SKILL.md").stat().st_nlink == 1
 
 
+def test_materialize_follows_directory_symlinks_like_copytree(tmp_path: Path):
+    """目录符号链接按指向复制（copytree symlinks=False 的语义），不能整棵丢弃。
+
+    回归：链接优先复制曾用 followlinks=False 走目录树，目录符号链接下的
+    文件全部丢失；而签名统计（followlinks=True）把它们算在内——签名与
+    产物不一致，还悄悄改变原语义。
+    """
+    source = tmp_path / "source"
+    write_skill(source, "alpha")
+    linked_tree = tmp_path / "linked-tree"
+    try:
+        linked_tree.symlink_to(source / "alpha", target_is_directory=True)
+    except OSError:  # 某些文件系统不支持符号链接
+        pytest.skip("文件系统不支持符号链接")
+    # specs 是同一个技能的两个名字：一个真目录、一个目录符号链接。
+    specs = [spec_for(source / "alpha"), spec_for(linked_tree)]
+    mount = SkillMount(home_name="claude-home")
+    home = tmp_path / "home"
+
+    assert skill_service.materialize(home, mount, specs) == []
+    copied = home / "skills" / "linked-tree" / "SKILL.md"
+    assert copied.is_file(), "目录符号链接下的内容必须按指向复制，不能整棵丢弃"
+    assert copied.read_text(encoding="utf-8") == (source / "alpha" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert (home / "skills" / "linked-tree" / "scripts" / "run.sh").is_file()
+
+
 def test_materialize_hard_link_falls_back_to_copy_when_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -438,10 +466,12 @@ def test_materialize_hard_link_survives_market_update(tmp_path: Path):
 
     # 模拟市场更新：删掉源目录重写（extract_skill_archive 的做法）。
     shutil.rmtree(directory)
+    # 源目录已经没了，但副本是硬链接：旧 inode 仍被持有、仍可读（不会崩溃）。
+    assert not directory.exists()
+    assert copied.read_text(encoding="utf-8") == old_text
+
     write_skill(source, "alpha", body_extra="\n新版本内容。\n")
     assert skill_service.materialize(home, mount, [spec_for(directory)]) == []
-    # 旧 inode 被 rmtree 删掉名字，但副本的硬链接让它仍可读（不会崩溃）。
-    assert old_text  # rmtree 之前读到的内容
     # 新一轮物化后副本拿到的是新内容。
     assert "新版本内容" in copied.read_text(encoding="utf-8")
 

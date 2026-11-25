@@ -285,6 +285,7 @@ export function SkillsPage() {
           {detail ? (
             <SkillDetailPane
               skill={detail}
+              kernelNames={kernelNameMap(skills)}
               deleting={deleting}
               exporting={exporting}
               onExport={() => void exportSkill(detail)}
@@ -349,6 +350,7 @@ export function SkillsPage() {
 
 function SkillDetailPane({
   skill,
+  kernelNames,
   deleting,
   exporting,
   onExport,
@@ -357,6 +359,8 @@ function SkillDetailPane({
   onDelete,
 }: {
   skill: SkillDetail
+  /** type_id → 内核显示名（从列表分组里收集；列表之外的内核回落到 id） */
+  kernelNames: Record<string, string>
   deleting: boolean
   exporting: boolean
   onExport: () => void
@@ -422,7 +426,7 @@ function SkillDetailPane({
           )}
           {(skill.mounted_kernels?.length ?? 0) > 0 && (
             <span className="skill-chip">
-              {skill.mounted_kernels!.map((id) => kernelLabel(id)).join(' · ')}
+              {skill.mounted_kernels!.map((id) => kernelLabel(id, kernelNames)).join(' · ')}
             </span>
           )}
           <span className="skill-chip">
@@ -579,8 +583,17 @@ function groupByType(skills: Skill[]): { typeId: string; typeName: string; items
 }
 
 /** 把挂载清单里的内核 id 翻成可读名字；没见过的内核保持原样。 */
-function kernelLabel(typeId: string, typeNames: Record<string, string> = {}): string {
+function kernelLabel(typeId: string, typeNames: Record<string, string>): string {
   return typeNames[typeId] ?? typeId
+}
+
+/** 从列表行收集 type_id → 内核显示名（详情徽章用；列表外的内核回落到 id）。 */
+function kernelNameMap(skills: Skill[]): Record<string, string> {
+  const names: Record<string, string> = {}
+  for (const skill of skills) {
+    names[skill.type_id] = skill.type_name ?? skill.type_id
+  }
+  return names
 }
 
 function formatBytes(size: number): string {

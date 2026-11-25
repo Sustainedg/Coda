@@ -885,11 +885,19 @@ def _link_or_copy_tree(source: Path, target: Path) -> None:
     """整棵技能目录的「链接优先」复制（目录逐个 mkdir，文件链接/复制）。
 
     与 ``shutil.copytree(symlinks=False)`` 语义对齐：符号链接按其**指向**落
-    （链接的是解析后的真实文件）；目标已存在时沿用 ``dirs_exist_ok=True``
-    的行为。任何一个文件失败都抛 :class:`OSError`，由调用方记告警。
+    （目录链接会跟随、把内容复制到目标的真实目录下；文件链接解析后再链接），
+    目标已存在时沿用 ``dirs_exist_ok=True`` 的行为；用已访问集合挡住符号链接
+    成环（copytree 在环形链接上会无限递归，这里必须防御）。任何一个文件失败
+    都抛 :class:`OSError`，由调用方记告警。
     """
-    for dirpath, dirnames, filenames in os.walk(source, followlinks=False):
+    visited: set[Path] = set()
+    for dirpath, dirnames, filenames in os.walk(source, followlinks=True):
         current = Path(dirpath)
+        real = _resolved_or_none(current)
+        if real is None or real in visited:  # 解析失败或符号链接成环：不再往下走
+            dirnames[:] = []
+            continue
+        visited.add(real)
         rel = current.relative_to(source)
         out = target / rel if str(rel) != "." else target
         out.mkdir(parents=True, exist_ok=True)
@@ -898,6 +906,14 @@ def _link_or_copy_tree(source: Path, target: Path) -> None:
             origin = current / filename
             # 符号链接按指向复制（symlinks=False 的语义）：先解析再链接。
             _link_or_copy_file(origin.resolve() if origin.is_symlink() else origin, out / filename)
+
+
+def _resolved_or_none(path: Path) -> Path | None:
+    """解析路径；失败返回 ``None``（调用方按「不往下走」处理）。"""
+    try:
+        return path.resolve()
+    except OSError:
+        return None
 
 
 def _break_hard_link(path: Path) -> None:
@@ -981,7 +997,9 @@ def _read_skills_manifest(home: Path) -> dict[str, Any] | None:
     return data
 
 
-def _write_skills_manifest(home: Path, mount: SkillMount, written: dict[str, dict[str, Any]]) -> None:
+def _write_skills_manifest(
+    home: Path, mount: SkillMount, written: dict[str, dict[str, Any]]
+) -> None:
     """原子写入物化清单（先写临时文件再替换）。
 
     写失败只留日志不打扰用户：清单是纯性能优化，坏掉的清单在下一轮会按

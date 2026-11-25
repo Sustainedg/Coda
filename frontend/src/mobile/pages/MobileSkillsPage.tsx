@@ -6,6 +6,7 @@ import { SkillCopyForm } from '../../components/SkillCopyForm'
 import { SkillImportForm } from '../../components/SkillImportForm'
 import { useExpandMap } from '../../lib/collapse'
 import { downloadBlob } from '../../lib/download'
+import { skillViewMode, toggleSkillViewMode, type SkillViewMode } from '../../lib/skillView'
 import type { AgentProfile, Skill, SkillDetail, SkillTransferResult } from '../../lib/types'
 import { SkillsMarket } from '../../components/SkillsMarket'
 import { MarkdownView } from '../../components/MarkdownView'
@@ -50,7 +51,7 @@ export function MobileSkillsPage() {
   )
 }
 
-/** 本地技能：各内核自带技能的统一编目视图（原来的实现）。 */
+/** 本地技能：各内核技能的统一编目视图（平铺 / 按内核分组两种视图切换）。 */
 function MobileSkillsLocal() {
   const [skills, setSkills] = useState<Skill[]>([])
   const [query, setQuery] = useState('')
@@ -67,7 +68,9 @@ function MobileSkillsLocal() {
   const [assigning, setAssigning] = useState<SkillDetail | null>(null)
   const [copying, setCopying] = useState<SkillDetail | null>(null)
   const [agents, setAgents] = useState<AgentProfile[]>([])
-  /** 按内核分组默认折叠：先给一份目录，要看哪个内核点开哪个。 */
+  /** 列表视图：平铺（默认，库技能按实体聚合）/ 按内核分组；与桌面端共用偏好。 */
+  const [viewMode, setViewMode] = useState<SkillViewMode>(() => skillViewMode())
+  /** 分组视图的展开状态（默认折叠：先给目录，要看哪个内核点开哪个）。 */
   const { isExpanded, toggle } = useExpandMap()
 
   const reload = useCallback(async (params?: { source_kind?: string; q?: string }) => {
@@ -198,14 +201,25 @@ function MobileSkillsLocal() {
     return [...map.entries()]
   }, [skills])
 
+  // 平铺视图的聚合行：用户库技能同 slug 多内核折叠成一张卡（徽章切行）。
+  const flat = useMemo(() => flattenSkills(skills), [skills])
+  const switchView = () => setViewMode((current) => toggleSkillViewMode(current))
+
   return (
     <div className="stack">
       <div className="row" style={{ gap: 8 }}>
         <span className="dim small" style={{ flex: 1 }}>
-          各内核自带技能的统一编目
+          {viewMode === 'flat' ? '全部技能一张清单（库技能按实体聚合）' : '各内核技能的统一编目'}
         </span>
         <button className="btn" onClick={() => void rescan()} disabled={scanning}>
-          {scanning ? '扫描中…' : '重新扫描'}
+          {scanning ? '扫描中…' : '扫描'}
+        </button>
+        <button
+          className="btn"
+          onClick={switchView}
+          title="平铺：所有技能一张清单；分组：按内核归类核对"
+        >
+          {viewMode === 'flat' ? '分组' : '平铺'}
         </button>
         <button className="btn primary" onClick={() => setImporting(true)}>
           导入
@@ -247,6 +261,45 @@ function MobileSkillsLocal() {
               <p>没有扫描到技能</p>
               <p className="dim small">点上方「重新扫描」刷新各内核的技能目录。</p>
             </div>
+          ) : viewMode === 'flat' ? (
+            flat.map((entry) =>
+              entry.rows.length > 1 ? (
+                <button
+                  key={entry.key}
+                  className="m-item"
+                  onClick={() => void openDetail(entry.rows[0])}
+                >
+                  <span className="m-item-main">
+                    <span className="m-item-title">{entry.rows[0].name}</span>
+                    <span className="m-item-sub">{entry.rows[0].description || '（无描述）'}</span>
+                  </span>
+                  {entry.rows.map((row) => (
+                    <span key={row.id} className="pill" title={`${row.type_name ?? row.type_id} 里的这一行`}>
+                      {row.type_name ?? row.type_id}
+                    </span>
+                  ))}
+                  <span className="m-item-chevron">›</span>
+                </button>
+              ) : (
+                <button
+                  key={entry.rows[0].id}
+                  className="m-item"
+                  onClick={() => void openDetail(entry.rows[0])}
+                >
+                  <span className="m-item-main">
+                    <span className="m-item-title">{entry.rows[0].name}</span>
+                    <span className="m-item-sub">{entry.rows[0].description || '（无描述）'}</span>
+                  </span>
+                  <span className="pill">
+                    {entry.rows[0].available ? entry.rows[0].source_label : '未扫描到'}
+                  </span>
+                  {entry.rows[0].owner_name && !entry.rows[0].is_own && (
+                    <span className="pill">用户 {entry.rows[0].owner_name}</span>
+                  )}
+                  <span className="m-item-chevron">›</span>
+                </button>
+              ),
+            )
           ) : (
             groups.map(([typeId, group]) => (
               <CollapsibleGroup
@@ -476,4 +529,29 @@ function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
   return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+/**
+ * 平铺视图的聚合：用户库技能（标识含 ``:lib:`` 的行）同 slug 的多内核行折叠成
+ * 一张卡；共享技能与其余行原样一条。挂得多的实体排前面。逻辑与桌面端
+ * ``SkillsPage.flattenSkills`` 一致（移动端不得引用桌面端页面，故各写一份）。
+ */
+function flattenSkills(skills: Skill[]): { key: string; rows: Skill[] }[] {
+  const bySlug = new Map<string, Skill[]>()
+  for (const skill of skills) {
+    const list = bySlug.get(skill.slug) ?? []
+    list.push(skill)
+    bySlug.set(skill.slug, list)
+  }
+  const entries: { key: string; rows: Skill[] }[] = []
+  for (const [slug, rows] of bySlug) {
+    const libraryRows = rows.filter((row) => row.id.includes(':lib:'))
+    if (libraryRows.length > 1) {
+      const shared = rows.filter((row) => !row.id.includes(':lib:'))
+      entries.push({ key: `lib:${slug}`, rows: [...libraryRows, ...shared] })
+    } else {
+      for (const row of rows) entries.push({ key: row.id, rows: [row] })
+    }
+  }
+  return entries.sort((left, right) => right.rows.length - left.rows.length)
 }

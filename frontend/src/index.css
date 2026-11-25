@@ -1434,6 +1434,10 @@ code, pre, .mono { font-family: var(--mono); }
 .icon-btn.on { color: #fff; background: var(--brand); border-color: transparent; }
 
 .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; padding: 2px 9px; border-radius: 20px; background: var(--bg-hover); color: var(--text-muted); font-weight: 550; }
+/* 平铺视图里「同一份库技能挂到多个内核」的跳转徽章：可点，点了切到那一行的详情。 */
+.pill.kernel-jump { border: 1px solid var(--border); cursor: pointer; font-family: inherit; }
+.pill.kernel-jump:hover { color: var(--text); border-color: var(--text-muted); }
+.pill.kernel-jump.brand { background: var(--brand-soft); color: #f0a9ea; border-color: transparent; }
 .pill.ok { background: rgba(74, 222, 128, 0.13); color: var(--ok); }
 .pill.warn { background: rgba(251, 191, 36, 0.13); color: var(--warn); }
 .pill.err { background: rgba(248, 113, 113, 0.13); color: var(--danger); }

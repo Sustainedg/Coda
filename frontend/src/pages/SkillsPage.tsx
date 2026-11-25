@@ -7,6 +7,7 @@ import { SkillCopyForm } from '../components/SkillCopyForm'
 import { SkillImportForm } from '../components/SkillImportForm'
 import { useExpandMap } from '../lib/collapse'
 import { downloadBlob } from '../lib/download'
+import { skillViewMode, toggleSkillViewMode, type SkillViewMode } from '../lib/skillView'
 import type { AgentProfile, Skill, SkillDetail, SkillTransferResult } from '../lib/types'
 import { AgentAvatar } from '../components/AgentAvatar'
 import { SkillsMarket } from '../components/SkillsMarket'
@@ -17,6 +18,11 @@ import { stripFrontmatter } from '../lib/skillBody'
  * 技能页：把各智能体内核的技能目录统一编目后集中展示。
  * 技能只能通过「智能体 → 技能」的分配被某个智能体使用，这里负责查看、导入 / 导出、
  * 挂载到别的内核与重新扫描。技能库按 slug 只存一份，多个内核共用同一份文件。
+ *
+ * 列表有两种视图（右上角切换，记忆在 localStorage）：
+ * - 平铺（默认）：技能中心化之后的自然形态；用户库技能按「实体」聚合——
+ *   同 slug 多内核的行折叠成一张卡，内核名做成小徽章，点徽章切到那一行；
+ * - 按内核分组：分配时「同内核核对」与排错定位用，默认折叠、点开看。
  */
 export function SkillsPage() {
   const [tab, setTab] = useState<'local' | 'market'>('local')
@@ -35,7 +41,9 @@ export function SkillsPage() {
   const [assigning, setAssigning] = useState<SkillDetail | null>(null)
   const [copying, setCopying] = useState<SkillDetail | null>(null)
   const [agents, setAgents] = useState<AgentProfile[]>([])
-  /** 按内核分组默认折叠：技能多的时候先给一份目录，要看谁点开谁。 */
+  /** 列表视图：平铺 / 按内核分组（记忆在 localStorage，默认平铺）。 */
+  const [viewMode, setViewMode] = useState<SkillViewMode>(() => skillViewMode())
+  /** 按内核分组视图的展开状态（默认折叠：先给目录，要看谁点开谁）。 */
   const { isExpanded, toggle } = useExpandMap()
 
   const reload = async (params?: { source_kind?: string; q?: string }) => {
@@ -162,6 +170,12 @@ export function SkillsPage() {
   }
 
   const groups = groupByType(skills)
+  /** 平铺视图的聚合行：用户库技能同实体多内核折叠成一张卡（点击内核徽章切换行）。 */
+  const flat = flattenSkills(skills)
+  const switchView = () => {
+    setViewMode((current) => toggleSkillViewMode(current))
+    setSelected(null)
+  }
 
   return (
     <>
@@ -221,6 +235,13 @@ export function SkillsPage() {
             {scanning ? '扫描中…' : '重新扫描'}
           </button>
           <button
+            className="btn"
+            onClick={switchView}
+            title="平铺：所有技能一张清单（库技能按实体聚合）；分组：按内核归类核对"
+          >
+            {viewMode === 'flat' ? '按内核分组' : '平铺显示'}
+          </button>
+          <button
             className="btn primary"
             onClick={() => setImporting(true)}
             title="把自己的技能压缩包导入技能库"
@@ -249,7 +270,58 @@ export function SkillsPage() {
               <p>没有扫描到技能。点右上角「重新扫描」试试。</p>
             </div>
           )}
-          {groups.map((group) => (
+          {viewMode === 'flat' ? (
+            flat.map((entry) =>
+              entry.rows.length > 1 ? (
+                <div
+                  key={entry.key}
+                  className={`chat-item${entry.rows.some((row) => row.id === selected) ? ' active' : ''}`}
+                  onClick={() => setSelected(entry.rows[0].id)}
+                >
+                  <div className="chat-item-title">{entry.rows[0].name}</div>
+                  <div className="chat-item-meta">
+                    <span className="pill">{entry.rows[0].source_label}</span>
+                    {entry.rows.map((row) => (
+                      <button
+                        key={row.id}
+                        className={`pill kernel-jump${row.id === selected ? ' brand' : ''}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setSelected(row.id)
+                        }}
+                        title={`查看 ${row.type_name ?? row.type_id} 里的这一行`}
+                      >
+                        {row.type_name ?? row.type_id}
+                      </button>
+                    ))}
+                    {entry.rows[0].used_by_agents > 0 && (
+                      <span className="pill brand">被 {entry.rows[0].used_by_agents} 个智能体使用</span>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div
+                  key={entry.rows[0].id}
+                  className={`chat-item${entry.rows[0].id === selected ? ' active' : ''}`}
+                  onClick={() => setSelected(entry.rows[0].id)}
+                >
+                  <div className="chat-item-title">{entry.rows[0].name}</div>
+                  <div className="chat-item-meta">
+                    <span className={`pill${entry.rows[0].available ? '' : ' err'}`}>
+                      {entry.rows[0].available ? entry.rows[0].source_label : '未扫描到'}
+                    </span>
+                    {entry.rows[0].owner_name && !entry.rows[0].is_own && (
+                      <span className="pill">用户 {entry.rows[0].owner_name}</span>
+                    )}
+                    {entry.rows[0].used_by_agents > 0 && (
+                      <span className="pill brand">被 {entry.rows[0].used_by_agents} 个智能体使用</span>
+                    )}
+                  </div>
+                </div>
+              ),
+            )
+          ) : (
+          groups.map((group) => (
             <CollapsibleGroup
               key={group.typeId}
               title={group.typeName}
@@ -278,7 +350,8 @@ export function SkillsPage() {
                 </div>
               ))}
             </CollapsibleGroup>
-          ))}
+          ))
+          )}
         </div>
 
         <div className="skill-pane">
@@ -580,6 +653,32 @@ function groupByType(skills: Skill[]): { typeId: string; typeName: string; items
     groups.set(skill.type_id, group)
   }
   return [...groups.values()]
+}
+
+/**
+ * 平铺视图的聚合：用户库技能（`is_own` 的库行）同 slug 的多内核行折叠成一张卡；
+ * 共享技能与其余行原样一条。同一实体按「挂载的内核数降序」排——挂得多的技能
+ * 更接近用户当下的关注点。卡内行序：库行在前，共享行（同 slug 的内核原生技能）在后。
+ */
+function flattenSkills(skills: Skill[]): { key: string; rows: Skill[] }[] {
+  const bySlug = new Map<string, Skill[]>()
+  for (const skill of skills) {
+    const list = bySlug.get(skill.slug) ?? []
+    list.push(skill)
+    bySlug.set(skill.slug, list)
+  }
+  const entries: { key: string; rows: Skill[] }[] = []
+  for (const [slug, rows] of bySlug) {
+    // 同 slug 才可能聚成实体：库行（挂载引用展开的多行）共享同一份文件。
+    const libraryRows = rows.filter((row) => row.id.includes(':lib:'))
+    if (libraryRows.length > 1) {
+      const shared = rows.filter((row) => !row.id.includes(':lib:'))
+      entries.push({ key: `lib:${slug}`, rows: [...libraryRows, ...shared] })
+    } else {
+      for (const row of rows) entries.push({ key: row.id, rows: [row] })
+    }
+  }
+  return entries.sort((left, right) => right.rows.length - left.rows.length)
 }
 
 /** 把挂载清单里的内核 id 翻成可读名字；没见过的内核保持原样。 */

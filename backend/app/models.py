@@ -86,7 +86,12 @@ ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     "mcp_servers": {"owner_id": "VARCHAR(64)", "builtin_key": "VARCHAR(64)"},
     # 「这条回复由哪个智能体产出」是后加的：为空 = 对话归属的智能体（主场）；
     # 非空 = 用户 @ 召唤的智能体。老行留空即可，不需要回填。
-    "messages": {"agent_profile_id": "VARCHAR(64)"},
+    # 「最近一次请求的上下文 token 数」是后加的：会话型内核自己维护上下文，平台看不到
+    # 其内部历史，只能由适配器上报。老行留空 = 没有快照，回退到按内容估算。
+    "messages": {
+        "agent_profile_id": "VARCHAR(64)",
+        "context_tokens": "INTEGER",
+    },
 }
 
 
@@ -461,6 +466,9 @@ class Message(SQLModel, table=True):
     #: 这条回复实际由哪个智能体产出。为空 = 对话归属的智能体（主场）；
     #: 非空 = 用户在对话里 @ 召唤的智能体（只回答这一轮，不改变对话归属）。
     agent_profile_id: str | None = Field(default=None, sa_column=Column(String(64)))
+    #: 本轮**最后一次模型请求**的输入 token 数（上下文窗口真实占用）。
+    #: 由适配器通过 ``context.usage`` 事件上报；为空 = 没有快照，按内容估算。
+    context_tokens: int | None = Field(default=None, sa_column=Column(Integer))
 
 
 class TaskCard(SQLModel, table=True):

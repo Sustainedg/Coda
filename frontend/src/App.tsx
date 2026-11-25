@@ -20,6 +20,7 @@ import {
 import { useAuth } from './components/AuthGate'
 import { ChatPage } from './pages/ChatPage'
 import { CollabPage } from './pages/CollabPage'
+import { AgentEditPage } from './pages/AgentEditPage'
 import { AgentsPage } from './pages/AgentsPage'
 import { McpPage } from './pages/McpPage'
 import { SkillsPage } from './pages/SkillsPage'
@@ -205,6 +206,10 @@ export default function App() {
           <Route path="/skills" element={<SkillsPage />} />
           <Route path="/mcp" element={<McpPage />} />
           <Route path="/agents" element={<AgentsPage />} />
+          {/* 智能体设定：整页 + 页内标签（基础信息 / 技能 / MCP / IM / 统计）。
+              「新建」的内核选择表单也走这一页（new 只是占位 id，页面内完成创建）。 */}
+          <Route path="/agents/new" element={<AgentEditPage />} />
+          <Route path="/agents/:agentId" element={<AgentEditPage />} />
           {/* 内核管理已经收进「设置 → 内核管理」（以前这里有独立一页，还从设置里再链一次，
               等于同一个东西有两个入口）。老地址保留重定向，书签不会失效。 */}
           <Route path="/runtimes" element={<Navigate to="/settings?tab=kernels" replace />} />

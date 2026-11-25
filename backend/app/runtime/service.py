@@ -32,8 +32,6 @@ from .runner import stream_run
 from .skills import prepare_skill_home
 from .trace import TraceRecorder
 
-MAX_HISTORY_MESSAGES = 24
-MAX_HISTORY_CHARS = 40_000
 DEFAULT_TITLE = "新对话"
 
 logger = logging.getLogger(__name__)
@@ -124,6 +122,7 @@ async def build_context(
     *,
     model_override: str | None = None,
     session_id: str | None = None,
+    credentials: dict[str, str] | None = None,
 ) -> AgentContext:
     """组装一次运行的 :class:`AgentContext`。
 
@@ -131,6 +130,9 @@ async def build_context(
     单独指定的模型（那是为主场智能体的网关挑的），传 :data:`SUMMON_IGNORE_MODEL`
     表示显式忽略之（落回召唤者自己的默认模型）；也绝不续接主场内核的会话。
     主场运行不传 ``model_override``，沿用对话级模型 → 智能体默认 → 内核默认的优先级。
+
+    ``credentials`` 可由调用方提前解密传入：上下文估算要在压缩前就把凭据说明块
+    算进去，避免同一次运行解密两遍。
     """
     # 召唤轮的哨兵 = 显式忽略对话级模型（见 SUMMON_IGNORE_MODEL）。
     if model_override == SUMMON_IGNORE_MODEL:
@@ -144,7 +146,8 @@ async def build_context(
     if model:
         options.setdefault("model", model)
     # 凭据：本地加密保存、运行时解密后按环境变量注入（见 app.credentials），永远不进提示词。
-    credentials = await decrypt_for_profile(session, profile.id)
+    if credentials is None:
+        credentials = await decrypt_for_profile(session, profile.id)
     return AgentContext(
         agent_id=profile.id,
         agent_name=profile.name,
@@ -169,19 +172,6 @@ def supports_sessions(definition: AgentDefinition, ctx: AgentContext) -> bool:
     return bool(probe(ctx)) if callable(probe) else True
 
 
-def _clip_history(rows: list[Message]) -> list[dict[str, str]]:
-    picked: list[dict[str, str]] = []
-    budget = MAX_HISTORY_CHARS
-    for row in reversed(rows[-MAX_HISTORY_MESSAGES:]):
-        if row.role not in ("user", "assistant") or not row.content:
-            continue
-        budget -= len(row.content)
-        if budget < 0:
-            break
-        picked.append({"role": row.role, "content": row.content})
-    return list(reversed(picked))
-
-
 async def _auto_compact_context(
     conversation: Conversation,
     rows: list[Message],
@@ -200,11 +190,12 @@ async def _auto_compact_context(
     （以及正在推送的 SSE）堵住。
     """
     active = context_service.active_messages(rows, conversation)
-    used = await run_in_threadpool(
-        context_service.estimate_usage,
+    # 与面板展示同一个入口：有内核上报的快照就用快照，没有才按内容估算。
+    used, _ = await run_in_threadpool(
+        context_service.estimate_conversation,
+        rows,
+        conversation,
         system_prompt,
-        conversation.context_summary,
-        active,
         prompt,
     )
     if used < settings.threshold_tokens:
@@ -219,6 +210,8 @@ async def _auto_compact_context(
             system_prompt=system_prompt,
             prompt=prompt,
             settings=settings,
+            include_parts=bool(conversation.session_id),
+            before_tokens=used,
         )
         conversation.context_summary = outcome.summary
         conversation.context_compacted_count += outcome.dropped
@@ -289,7 +282,7 @@ def prior_context_prompt(history: list[dict[str, str]], prompt: str) -> str:
     """session 型内核没有可续接会话时，把库里的最近几轮最终回复作为前置上下文。
 
     触发场景：刚换了智能体 / 工作目录（会话记忆被有意清掉）、手动重置记忆、
-    隔离目录重建。历史只含每轮的最终回复（``_clip_history`` 的产物），
+    隔离目录重建。历史只含每轮的最终回复（``context.clip_history`` 的产物），
     工具调用与推理过程不进上下文。一旦本轮跑出新的 session_id，下一轮就恢复
     内核原生续接，此注入自动退场。
     """
@@ -388,6 +381,17 @@ async def prepare_run(
     content = compose_user_content(
         payload.content, getattr(payload, "attachments", None), workspace
     )
+    # 任务卡协议与凭据说明块都要在估算之前并进提示词：它们同样占窗口。
+    notice = (
+        await _task_card_notice(session, conversation.id, payload.content)
+        if persist_session
+        else ""
+    )
+    prompt_text = f"{content}\n\n{notice}" if notice else content
+    credentials = await decrypt_for_profile(session, profile.id)
+    effective_system_prompt = with_notice(profile.system_prompt or None, credentials)
+
+    # 落库的仍是用户原文 + 附件说明；任务卡协议只进本轮请求，不污染对话记录。
     user_message = Message(conversation_id=conversation.id, role="user", content=content)
     session.add(user_message)
 
@@ -397,20 +401,23 @@ async def prepare_run(
     context_notices = await _auto_compact_context(
         conversation,
         existing_rows,
-        system_prompt=profile.system_prompt,
-        prompt=content,
+        system_prompt=effective_system_prompt,
+        prompt=prompt_text,
         settings=context_settings,
     )
-    history = context_service.build_history(existing_rows, conversation, _clip_history)
+    history = context_service.build_history(existing_rows, conversation)
     if summon_profile_id:
         # 召唤轮：无可续接会话是常态，共享对话历史（只含最终回复）作为前置上下文。
         ctx = await build_context(
-            session, definition, profile, gateway, conversation, content, history, workspace,
-            model_override=SUMMON_IGNORE_MODEL, session_id=None,
+            session, definition, profile, gateway, conversation, prompt_text, history, workspace,
+            model_override=SUMMON_IGNORE_MODEL, session_id=None, credentials=credentials,
         )
         ctx.prompt = prior_context_prompt(history, ctx.prompt)
     else:
-        ctx = await build_context(session, definition, profile, gateway, conversation, content, history, workspace)
+        ctx = await build_context(
+            session, definition, profile, gateway, conversation, prompt_text, history, workspace,
+            credentials=credentials,
+        )
     skill_warnings = await prepare_skill_home(
         session, definition, profile, conversation, ctx, scope_id=home_scope
     )
@@ -420,17 +427,13 @@ async def prepare_run(
     if not summon_profile_id and not supports_sessions(definition, ctx):
         ctx.session_id = None
         if not definition.capabilities.native_system_prompt:
-            ctx.prompt = transcript_prompt(ctx.system_prompt, history, content)
+            ctx.prompt = transcript_prompt(ctx.system_prompt, history, prompt_text)
             ctx.system_prompt = None
     elif not summon_profile_id and ctx.session_id is None:
         # session 型内核但没有可续接的会话（刚换智能体 / 换目录 / 重置记忆 / 隔离目录重建）：
         # 把库里的最近几轮最终回复作为前置上下文兜底，杜绝换智能体后彻底失忆。
         # 一旦本轮建立新的内核会话，下一轮自动恢复原生续接。
         ctx.prompt = prior_context_prompt(history, ctx.prompt)
-
-    # 任务进度卡片协议：只对主场运行注入（召唤轮不改这条对话的进度）。
-    if persist_session:
-        await _inject_task_card_notice(session, conversation.id, payload.content, ctx)
 
     assistant_message = Message(
         conversation_id=conversation.id,
@@ -535,25 +538,25 @@ def _merge_part(parts: list[dict[str, Any]], kind: str, text: str) -> None:
         parts.append({"kind": kind, "text": text})
 
 
-async def _inject_task_card_notice(
-    session: AsyncSession, conversation_id: str, user_text: str, ctx: AgentContext
-) -> None:
-    """按设计 §6.2 把任务卡协议追加进本轮提示词。
+async def _task_card_notice(
+    session: AsyncSession, conversation_id: str, user_text: str
+) -> str:
+    """按设计 §6.2 生成任务卡协议的提示词追加段（没有就返回空串）。
 
     条件：已有卡 → 每轮都注入（模型要能补报勾选）；无卡且用户正文像多步任务 →
     注入建卡协议；其余不注入，闲聊不产生额外 token。
+
+    必须在上下文估算**之前**调用：这段协议本身也占窗口，后追加会让面板少算。
     """
     try:
         card = await task_card_service.load_card(session, conversation_id)
     except Exception:  # noqa: BLE001 - 读卡失败不影响本轮正常作答
         logger.warning("读取任务进度卡片失败，本轮不注入协议", exc_info=True)
-        return
+        return ""
     if card is None and not task_card_service.looks_like_task_request(user_text or ""):
-        return
+        return ""
     notice = task_card_service.render_notice(card, allow_create=card is None)
-    if not notice:
-        return
-    ctx.prompt = f"{ctx.prompt}\n\n{notice}" if ctx.prompt else notice
+    return notice or ""
 
 
 async def _execute_prepared(prepared: PreparedRun) -> None:
@@ -631,6 +634,8 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
     extra: dict[str, Any] = {}
     status = "complete"
     error_text: str | None = None
+    #: 本轮最后一次模型请求的输入 token（上下文窗口真实占用）；没有上报就留空。
+    context_tokens: int | None = None
 
     for warning in prepared.skill_warnings:
         yield log(f"技能：{warning}", "warn")
@@ -665,6 +670,15 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
                 )
             elif event.type is EventType.USAGE:
                 usage_totals.update({k: v for k, v in (event.payload or {}).items() if v is not None})
+            elif event.type is EventType.CONTEXT_USAGE:
+                # 只记最后一次（最接近当前窗口的占用）；非法值不能污染落库。
+                tokens = (event.payload or {}).get("tokens")
+                if (
+                    isinstance(tokens, (int, float))
+                    and not isinstance(tokens, bool)
+                    and tokens > 0
+                ):
+                    context_tokens = int(tokens)
             elif event.type is EventType.SESSION:
                 # 只有主场运行才把内核回报的会话 id 写回对话；@ 召唤轮回报的
                 # session_id 属于召唤者自己的一次性会话，写回去会让主场内核下一轮
@@ -709,6 +723,7 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
         message.content = content
         message.parts = parts
         message.usage = usage_totals
+        message.context_tokens = context_tokens
         message.error = error_text
         message.status = "error" if status == "error" else ("interrupted" if status == "cancelled" else "complete")
         prepared.conversation.updated_at = datetime.now(timezone.utc)
@@ -773,34 +788,37 @@ async def regenerate_last(
         )
     ).scalars().all()
     history_rows = list(history_rows)
+    # 重生成同样把任务卡协议并入本轮提示词，再参与估算（与正常发送一致）。
+    notice = await _task_card_notice(session, conversation.id, last_user.content)
+    prompt_text = f"{last_user.content}\n\n{notice}" if notice else last_user.content
+    credentials = await decrypt_for_profile(session, profile.id)
+    effective_system_prompt = with_notice(profile.system_prompt or None, credentials)
     #: 与正常发送同一套上下文压缩判定（重跑一轮也要守住上限）。
     context_settings = await context_service.read_settings(session, conversation.owner_id)
     context_notices = await _auto_compact_context(
         conversation,
         history_rows,
-        system_prompt=profile.system_prompt,
-        prompt=last_user.content,
+        system_prompt=effective_system_prompt,
+        prompt=prompt_text,
         settings=context_settings,
     )
-    history = context_service.build_history(history_rows, conversation, _clip_history)
+    history = context_service.build_history(history_rows, conversation)
     #: 重生成复用「被重跑那条用户消息」的序号（0 起），与下一次正常发送的 turn_index 对齐。
     turn_index = sum(1 for row in history_rows if row.role == "user")
     ctx = await build_context(
-        session, definition, profile, gateway, conversation, last_user.content, history, workspace
+        session, definition, profile, gateway, conversation, prompt_text, history, workspace,
+        credentials=credentials,
     )
     skill_warnings = await prepare_skill_home(session, definition, profile, conversation, ctx)
     mcp_warnings = await prepare_mcp_home(session, definition, profile, conversation, ctx)
     if not supports_sessions(definition, ctx):
         ctx.session_id = None
         if not definition.capabilities.native_system_prompt:
-            ctx.prompt = transcript_prompt(ctx.system_prompt, history, last_user.content)
+            ctx.prompt = transcript_prompt(ctx.system_prompt, history, prompt_text)
             ctx.system_prompt = None
     elif ctx.session_id is None:
         # 与 prepare_run 同一条兜底：无可续接会话时用最终回复做前置上下文，防止重生成失忆。
         ctx.prompt = prior_context_prompt(history, ctx.prompt)
-
-    # 重生成同样走主场协议注入：已有卡每轮都允许 update，无卡时按用户正文判定。
-    await _inject_task_card_notice(session, conversation.id, last_user.content, ctx)
 
     assistant_message = Message(
         conversation_id=conversation.id, role="assistant", content="", status="streaming"

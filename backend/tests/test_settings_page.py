@@ -24,7 +24,11 @@ SETTINGS = FRONTEND / "src" / "pages" / "SettingsPage.tsx"
 
 @needs_frontend
 def test_desktop_settings_is_grouped_into_tabs_by_type():
-    """设置页把每一类设置放进自己的标签页（标签栏复用全站的 `.tabs` / `.tab`）。"""
+    """设置页把每一类设置放进自己的标签页（标签栏复用全站的 `.tabs` / `.tab`）。
+
+    IM 不在设置页里：它是按智能体绑定的通道，收在每个智能体设定页的「IM」标签
+    （见 `test_im_lives_in_the_agent_settings_page`）。
+    """
     page = SETTINGS.read_text(encoding="utf-8")
     assert "const TABS" in page, "设置页缺少标签页定义"
     assert "className={`tab" in page, "标签栏应当复用全站的 `.tab` 样式"
@@ -34,7 +38,6 @@ def test_desktop_settings_is_grouped_into_tabs_by_type():
         ("chat", "对话", "<TitleSettingsSection />"),
         ("gateways", "网关", "<GatewayManager />"),
         ("credentials", "凭据", "<CredentialVault />"),
-        ("im", "IM", "<ImSettings />"),
         ("network", "网络", "<ProxySettings />"),
         ("kernels", "内核管理", "<KernelManager />"),
         ("about", "关于", "版本记录"),
@@ -42,6 +45,38 @@ def test_desktop_settings_is_grouped_into_tabs_by_type():
         assert f"id: '{key}', label: '{label}'" in page, f"设置页少了「{label}」这个标签"
         assert f"tab === '{key}'" in page, f"少了「{label}」标签页的分支"
         assert component in page, f"「{label}」标签页里没有对应的内容（{component}）"
+
+    # IM 标签已经移进智能体设定页，设置页不得再出现。
+    assert "id: 'im'" not in page, "IM 已移到智能体设定页，设置页不该再有「IM」标签"
+    assert "ImSettings" not in page, "设置页不该再引用 ImSettings（已并入 AgentImSettings）"
+
+
+@needs_frontend
+def test_im_lives_in_the_agent_settings_page():
+    """IM 绑定收在每个智能体设定页的「IM」标签里（不再挂在平台设置页）。"""
+    edit = FRONTEND / "src" / "pages" / "AgentEditPage.tsx"
+    assert edit.is_file(), "缺少智能体设定页 AgentEditPage.tsx"
+    page = edit.read_text(encoding="utf-8")
+    for marker in ("id: 'im', label: 'IM'", "AgentImSettings", "AgentUsagePanel"):
+        assert marker in page, f"智能体设定页少了 {marker}"
+    # 五个标签齐全：基础信息 / 技能 / MCP / IM / 统计。
+    for tab_id, label in (
+        ("basic", "基础信息"),
+        ("skills", "技能"),
+        ("mcp", "MCP"),
+        ("im", "IM"),
+        ("usage", "统计"),
+    ):
+        assert f"id: '{tab_id}', label: '{label}'" in page, f"智能体设定页少了「{label}」标签"
+
+    app = (FRONTEND / "src" / "App.tsx").read_text(encoding="utf-8")
+    assert 'path="/agents/:agentId"' in app, "桌面端要挂上智能体设定页路由"
+    assert 'path="/agents/new"' in app, "「新建智能体」也走设定页"
+
+    # 编辑入口是跳转路由，不再有编辑弹窗。
+    agents = (FRONTEND / "src" / "pages" / "AgentsPage.tsx").read_text(encoding="utf-8")
+    assert "AgentModal" not in agents, "编辑弹窗 AgentModal 应已删除（改为整页路由）"
+    assert "/agents/${agent.id}" in agents, "智能体卡片的「设定」要跳转整页"
 
 
 @needs_frontend

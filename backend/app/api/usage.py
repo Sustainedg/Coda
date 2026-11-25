@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from ..agents import get_agent
+from ..auth_deps import require_owned
 from ..db import get_session
 from ..models import AgentProfile, Conversation, Message, Skill, User
 from ..runtime import skills as skill_service
@@ -125,6 +126,19 @@ def _instant(value: Any) -> datetime | None:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+async def _check_agent(session: AsyncSession, agent_id: str, user: User) -> AgentProfile:
+    """校验按智能体过滤的目标存在且属于当前用户。
+
+    不存在 / 已软删除 → 422（这是查询参数里的取值问题，不是路由资源）
+    不属于当前用户 → 404（`require_owned` 与其他资产接口口径一致）
+    """
+    profile = await session.get(AgentProfile, agent_id)
+    if profile is None or profile.deleted_at is not None:
+        raise HTTPException(status_code=422, detail="指定的智能体不存在")
+    require_owned(profile, user)
+    return profile
+
+
 def _parse_instant(value: str | None, label: str) -> datetime | None:
     """解析前端传来的 ISO 8601 时间点（范围过滤用）；非法输入直接 400。"""
     if not value:
@@ -203,14 +217,17 @@ async def usage_overview(
     start: str | None = None,
     end: str | None = None,
     tz_offset: int = 0,
+    agent_id: str | None = None,
     session: AsyncSession = Depends(get_session),
     user: Annotated[User, Depends(current_user)] = None,
 ) -> dict:
-    """汇总 token 消耗与技能调用（「用量」页的数据源）。
+    """汇总 token 消耗与技能调用（「用量」页与智能体设定页「统计」标签的数据源）。
 
     ``start`` / ``end`` 是 ISO 8601 时间点（``end`` 为开区间），只统计这个窗口内的消息；
     都不传则统计全部历史。``tz_offset`` 是「按天」分桶用的本地时区偏移（分钟，东为正）——
     过滤用绝对时刻，分桶按用户所在时区，两者才不会在跨零点的日子里打架。
+    ``agent_id`` 传了就只统计这一个智能体（智能体设定页的「统计」标签用）；
+    不存在的返回 422，不属于当前用户的返回 404（见 `_check_agent`）。
     非管理员只统计自己的对话；管理员统计平台总量，但「按对话」榜单仍只列自己的
     （对话标题取自用户正文，属于隐私，不能因为管理员角色就露出去）。
     """
@@ -221,6 +238,9 @@ async def usage_overview(
     conv_stmt = select(Conversation)
     if user.role != "admin":
         conv_stmt = conv_stmt.where(Conversation.owner_id == user.id)
+    if agent_id is not None:
+        target = await _check_agent(session, agent_id, user)
+        conv_stmt = conv_stmt.where(Conversation.agent_profile_id == target.id)
     rows = (
         await session.execute(
             select(

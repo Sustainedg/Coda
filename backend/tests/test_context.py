@@ -6,13 +6,18 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
 
+from app.agents.builtin.util import context_tokens as request_context_tokens
+from app.agents.events import context_usage, text_delta
 from app.db import SessionLocal
 from app.models import Conversation, Message
 from app.runtime import context as context_service
+from app.runtime import service as runtime_service
+from app.runtime.manager import ActiveRun
 
 from helpers import make_gateway, make_profile
 
@@ -37,6 +42,192 @@ def test_estimate_tokens_is_the_shared_metric():
     assert context_service.estimate_tokens("hello world") == 3  # ceil(11 / 4)
     assert context_service.estimate_tokens("你好世界") == 4
     assert context_service.estimate_tokens("你好 hello") == 4  # 2 字 + ceil(6 / 4)
+
+
+def test_estimate_message_tokens_counts_tool_parts():
+    """工具调用入参、工具结果与推理内容都要计入；text 片段与 content 只算一次。"""
+    message = Message(
+        conversation_id="c",
+        role="assistant",
+        content="完成",
+        parts=[
+            {"kind": "text", "text": "完成"},
+            {"kind": "tool_call", "id": "c1", "name": "Read", "input": {"path": "a" * 400}},
+            {"kind": "tool_result", "id": "c1", "output": "b" * 4000},
+            {"kind": "thinking", "text": "c" * 800},
+        ],
+    )
+    base = context_service.estimate_message_tokens(message)
+    with_parts = context_service.estimate_message_tokens(message, include_parts=True)
+    assert base == context_service.estimate_tokens("完成") + context_service.MESSAGE_OVERHEAD_TOKENS
+    # 4000 个 ASCII ≈ 1000 tokens，工具/思考的量级必须体现出来
+    assert with_parts - base > 1000
+
+
+def test_context_tokens_helper_normalizes_both_notations():
+    """Anthropic 风格缓存与 input 分离；OpenAI 风格 cached 是 prompt_tokens 的子集。"""
+    assert request_context_tokens(
+        {"input_tokens": 100, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 50}
+    ) == 1050
+    assert request_context_tokens({"prompt_tokens": 1000, "cached_tokens": 900}) == 1000
+    assert request_context_tokens({}) == 0
+    assert request_context_tokens(None) == 0
+
+
+async def test_context_usage_counts_tool_parts_for_session_kernels(
+    client: httpx.AsyncClient,
+):
+    """会话型内核的转录里装着工具调用与结果，面板不能只数最终正文。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+    async with SessionLocal() as session:
+        row = await session.get(Conversation, conversation["id"])
+        row.session_id = "sess-parts"  # 会话型内核：平台看不到内部历史，按全量 + 片段估算
+        session.add(row)
+        session.add(
+            Message(
+                conversation_id=conversation["id"],
+                role="assistant",
+                content="完成",
+                parts=[
+                    {"kind": "tool_call", "id": "c1", "name": "Read", "input": {"path": "a" * 400}},
+                    {"kind": "tool_result", "id": "c1", "output": "b" * 4000},
+                    {"kind": "thinking", "text": "c" * 800},
+                ],
+            )
+        )
+        await session.commit()
+
+    view = (await client.get(f"/api/conversations/{conversation['id']}/context")).json()
+    assert view["measured"] is False
+    assert view["used_tokens"] > 1000, "工具结果 / 推理没有计入上下文"
+
+
+async def test_context_usage_uses_kernel_snapshot_when_available(
+    client: httpx.AsyncClient,
+):
+    """有内核上报的单次请求 token 时，以它为基准，不再按正文重新估。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+    async with SessionLocal() as session:
+        row = await session.get(Conversation, conversation["id"])
+        row.session_id = "sess-snapshot"
+        session.add(row)
+        session.add(
+            Message(
+                conversation_id=conversation["id"],
+                role="assistant",
+                content="好的",
+                context_tokens=5000,
+            )
+        )
+        await session.commit()
+
+    view = (await client.get(f"/api/conversations/{conversation['id']}/context")).json()
+    assert view["measured"] is True
+    # 快照是最后一次请求的输入；它自己的回复正文还没进去，要补 2 字 + 4 开销。
+    assert view["used_tokens"] == 5000 + context_service.estimate_tokens("好的") + 4
+    assert "内核最近一次上报" in view["estimation"]
+
+
+async def test_context_usage_ignores_stale_snapshot_after_compaction(
+    client: httpx.AsyncClient,
+):
+    """压缩会清掉 session_id、旧快照随之失效，否则面板会一直停在压缩前的大数。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+    now = datetime.now(timezone.utc)
+    async with SessionLocal() as session:
+        row = await session.get(Conversation, conversation["id"])
+        row.session_id = "sess-old"
+        row.context_compacted_at = now
+        session.add(row)
+        session.add(
+            Message(
+                conversation_id=conversation["id"],
+                role="assistant",
+                content="好的",
+                context_tokens=50_000,
+                created_at=now - timedelta(hours=1),
+            )
+        )
+        await session.commit()
+
+    view = (await client.get(f"/api/conversations/{conversation['id']}/context")).json()
+    assert view["measured"] is False
+    assert view["used_tokens"] < 1000
+
+
+async def test_context_usage_ignores_tool_parts_when_history_is_replayed(
+    client: httpx.AsyncClient,
+):
+    """非会话型内核只回放最终回复：工具片段根本没发送，不能算进已用。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+    async with SessionLocal() as session:
+        session.add(
+            Message(
+                conversation_id=conversation["id"],
+                role="assistant",
+                content="好的",
+                parts=[
+                    {"kind": "tool_result", "id": "c1", "output": "b" * 40_000},
+                ],
+            )
+        )
+        await session.commit()
+
+    view = (await client.get(f"/api/conversations/{conversation['id']}/context")).json()
+    assert view["measured"] is False
+    assert view["used_tokens"] < 1000
+
+
+async def test_context_usage_event_persists_snapshot(client: httpx.AsyncClient, monkeypatch):
+    """运行层必须把 ``context.usage`` 落到消息上，面板才能读到真实快照。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+
+    async with SessionLocal() as session:
+        conv = await session.get(Conversation, conversation["id"])
+        user = Message(conversation_id=conv.id, role="user", content="你好")
+        assistant = Message(conversation_id=conv.id, role="assistant", content="")
+        session.add_all([user, assistant])
+        await session.commit()
+        await session.refresh(assistant)
+
+        run = ActiveRun(id="run-ctx", conversation_id=conv.id, agent_name="假智能体")
+        prepared = runtime_service.PreparedRun(
+            conversation=conv,
+            profile=None,  # type: ignore[arg-type] - 本用例只验证事件落库
+            gateway=None,
+            definition=None,  # type: ignore[arg-type]
+            ctx=None,  # type: ignore[arg-type]
+            run=run,
+            user_message=user,
+            assistant_message=assistant,
+        )
+
+        async def fake_stream(definition, ctx, active_run):
+            yield context_usage(4321)
+            yield text_delta("好")
+
+        monkeypatch.setattr(runtime_service, "stream_run", fake_stream)
+        async for _ in runtime_service.consume_run(session, prepared):
+            pass
+
+        await session.refresh(assistant)
+        assert assistant.context_tokens == 4321
+        assert assistant.content == "好"
 
 
 async def test_context_settings_defaults_and_roundtrip(client: httpx.AsyncClient):

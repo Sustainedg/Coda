@@ -95,6 +95,74 @@ def test_strip_task_card_removes_closed_and_unclosed_blocks():
     assert tc.strip_task_card(unclosed).strip() == "正文"
 
 
+def test_strip_task_card_accepts_json_fence_and_bare_json_at_tail():
+    """模型把块写成 ```json / 裸 JSON 时也要剥掉（实测踩过的坑）。"""
+    payload = {
+        "action": "create",
+        "title": "实现进度卡",
+        "items": [{"id": "t1", "text": "后端"}, {"id": "t2", "text": "前端"}],
+    }
+    body = json.dumps(payload, ensure_ascii=False)
+
+    json_fenced = f"正文\n\n```json\n{body}\n```\n"
+    cleaned = tc.strip_task_card(json_fenced)
+    assert cleaned == "正文"
+    assert '"action"' not in cleaned
+
+    bare = f"正文\n\n{body}"
+    assert tc.strip_task_card(bare) == "正文"
+
+    # 收尾块后面只剩空行也算收尾
+    assert tc.strip_task_card(f"正文\n\n```json\n{body}\n```\n\n").strip() == "正文"
+
+
+def test_strip_task_card_keeps_mid_document_json_example():
+    """正文中段举例用的 JSON 代码块不能被误吞（只有收尾处才认）。"""
+    payload = json.dumps(
+        {"action": "create", "title": "示例", "items": [{"id": "t1", "text": "甲"}]},
+        ensure_ascii=False,
+    )
+    text = f"协议长这样：\n\n```json\n{payload}\n```\n\n以上只是示例，本轮不建卡。"
+    assert tc.strip_task_card(text) == text
+    # 中段裸 JSON 同理
+    bare_mid = f'示例 {payload} 仅作说明。'
+    assert tc.strip_task_card(bare_mid) == bare_mid
+
+
+def test_strip_task_card_from_parts_strips_json_fence_tail():
+    parts = [
+        {"kind": "thinking", "text": "思考"},
+        {"kind": "text", "text": '结论在这里。\n\n```json\n{"action":"create","items":[{"id":"t1","text":"甲"}]}\n```'},
+    ]
+    cleaned = tc.strip_task_card_from_parts(parts)
+    texts = [part.get("text") or "" for part in cleaned if part.get("kind") == "text"]
+    assert texts == ["结论在这里。"]
+    assert any(part.get("kind") == "thinking" for part in cleaned)
+
+
+def test_strip_task_card_keeps_tail_json_that_is_not_a_card():
+    """收尾处的普通 JSON（items 不是结构化任务项）不能被当成协议块吞掉。"""
+    config = '配置示例：\n\n```json\n{"items": ["a", "b"]}\n```'
+    assert tc.parse_task_card(config) == (None, None)
+    assert tc.strip_task_card(config).strip() == config.strip()
+
+    named = '配置示例：\n\n{"items": [{"name": "x"}, {"name": "y"}]}'
+    assert tc.parse_task_card(named) == (None, None)
+    assert tc.strip_task_card(named).strip() == named.strip()
+
+
+def test_strip_task_card_from_parts_only_strips_final_text_part():
+    """时间线以工具结果收尾时，前一段 text 不是回复结尾，不能被剥。"""
+    text = '示例：\n\n{"action":"create","items":[{"id":"t1","text":"甲"}]}'
+    parts = [
+        {"kind": "text", "text": text},
+        {"kind": "tool_result", "id": "c1", "output": "ok"},
+    ]
+    cleaned = tc.strip_task_card_from_parts(parts)
+    assert cleaned[0]["text"] == text
+    assert cleaned[1]["kind"] == "tool_result"
+
+
 def test_strip_task_card_from_parts_handles_cross_part_fence():
     parts = [
         {"kind": "text", "text": 'hello\n```task_card\n{"action":'},
@@ -133,6 +201,28 @@ def test_parse_task_card_valid_create_and_update():
     )
     assert error is None
     assert block == {"action": "update", "title": "", "items": [{"id": "t1", "done": True}]}
+
+
+def test_parse_task_card_accepts_json_fence_and_bare_json_at_tail():
+    """```json / 裸 JSON 收尾块同样要能解析出卡片（模型不按协议写标签的现实容错）。"""
+    payload = {
+        "action": "create",
+        "title": "实现进度卡",
+        "items": [{"id": "t1", "text": "后端"}, {"id": "t2", "text": "前端"}],
+    }
+    body = json.dumps(payload, ensure_ascii=False)
+
+    block, error = tc.parse_task_card(f"正文\n\n```json\n{body}\n```\n")
+    assert error is None
+    assert block is not None and block["title"] == "实现进度卡"
+
+    block, error = tc.parse_task_card(f"正文\n\n{body}")
+    assert error is None
+    assert block is not None and [item["id"] for item in block["items"]] == ["t1", "t2"]
+
+    # 中段示例不算协议块
+    mid = f"示例：\n\n```json\n{body}\n```\n\n以上只是示例。"
+    assert tc.parse_task_card(mid) == (None, None)
 
 
 def test_parse_task_card_without_block_is_not_an_error():
@@ -285,6 +375,7 @@ async def test_create_then_update_and_protocol_is_stripped(client: httpx.AsyncCl
     # 协议块不能出现在落库的消息正文 / parts 里
     assert "task_card" not in detail["messages"][-1]["content"]
     assert "task_card" not in json.dumps(detail["messages"][-1]["parts"], ensure_ascii=False)
+    create_anchor = card["anchor_message_id"]
 
     # 第二轮：已有卡，模型只报状态变化 → 勾选 t1，版本递增，仍然只有一行
     await send(client, conversation_id, "继续")
@@ -295,9 +386,56 @@ async def test_create_then_update_and_protocol_is_stripped(client: httpx.AsyncCl
     assert card["items"][0]["done"] is True
     assert card["items"][0]["done_at"]
     assert card["items"][1]["done"] is False
+    # 普通 update 不能移动锚点：否则每轮报进度都把卡片往对话末尾拖（设计 §6.5）
+    assert card["anchor_message_id"] == create_anchor
+    assert card["anchor_message_id"] != detail["messages"][-1]["id"]
     async with SessionLocal() as session:
         rows = (await session.execute(select(TaskCard))).scalars().all()
     assert len(rows) == 1
+
+
+async def test_json_fenced_block_creates_card_and_is_stripped(client: httpx.AsyncClient):
+    """模型把块写成 ```json 也要建卡，并且协议 JSON 不能漏进气泡（实测踩过的坑）。"""
+    agent = await make_task_agent(client, "json")
+    conversation_id = await new_conversation(client, agent)
+
+    await send(client, conversation_id, TASK_TEXT)
+    detail = (await client.get(f"/api/conversations/{conversation_id}")).json()
+    card = detail["task_card"]
+    assert card is not None
+    assert card["title"] == "实现进度卡"
+    assert [item["id"] for item in card["items"]] == ["t1", "t2"]
+    message = detail["messages"][-1]
+    assert '"action"' not in message["content"]
+    assert "```json" not in message["content"]
+    assert '"action"' not in json.dumps(message["parts"], ensure_ascii=False)
+
+
+async def test_bare_json_block_creates_card_and_is_stripped(client: httpx.AsyncClient):
+    """连围栏都省了的裸 JSON 收尾块同样要认。"""
+    agent = await make_task_agent(client, "bare")
+    conversation_id = await new_conversation(client, agent)
+
+    await send(client, conversation_id, TASK_TEXT)
+    detail = (await client.get(f"/api/conversations/{conversation_id}")).json()
+    card = detail["task_card"]
+    assert card is not None
+    message = detail["messages"][-1]
+    assert '"action"' not in message["content"]
+    assert '"action"' not in json.dumps(message["parts"], ensure_ascii=False)
+
+
+async def test_mid_document_json_example_is_not_treated_as_card(client: httpx.AsyncClient):
+    """中段举例的 JSON 代码块既不能建卡，也不能从正文里被吞掉。"""
+    agent = await make_task_agent(client, "example")
+    conversation_id = await new_conversation(client, agent)
+
+    await send(client, conversation_id, TASK_TEXT)
+    detail = (await client.get(f"/api/conversations/{conversation_id}")).json()
+    assert detail["task_card"] is None
+    message = detail["messages"][-1]
+    assert "```json" in message["content"]
+    assert "以上只是示例" in message["content"]
 
 
 async def test_apply_block_is_idempotent_and_keeps_one_row(client: httpx.AsyncClient):

@@ -34,6 +34,7 @@ from ..base import (
 )
 from ..events import (
     AgentEvent,
+    context_usage,
     error,
     log,
     session,
@@ -46,7 +47,14 @@ from ..events import (
 from ..mcp import McpMount, McpServerSpec
 from ..registry import register_agent
 from ..skills import SkillMount, SkillRoot, SkillSpec, scan_skill_roots
-from .util import as_list, flatten_content, npm_cli, npm_install_argv, npm_prepare_argv
+from .util import (
+    as_list,
+    context_tokens,
+    flatten_content,
+    npm_cli,
+    npm_install_argv,
+    npm_prepare_argv,
+)
 
 #: 隔离目录里的两个 patch 文件：模型/技能配置由适配器自己写，MCP 由框架物化。
 _OVERLAY_FILE = "coda.patch.yml"
@@ -458,6 +466,9 @@ class DeepSeekHarnessAgent(AgentDefinition):
                 tokens = self._normalize_usage(payload.get("usage"))
                 if tokens:
                     yield usage(**tokens)
+                    window = context_tokens(tokens)
+                    if window:
+                        yield context_usage(window)
             return
 
         if kind == "text":

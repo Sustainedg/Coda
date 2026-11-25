@@ -5,21 +5,31 @@ import { api, ApiError } from '../lib/api'
 import type { AgentProfile, ImChat, ImConnection, ImPeer, ImPlatform } from '../lib/types'
 
 /**
- * IM（设置页）：把智能体连到聊天软件。
+ * 智能体设定页的「IM」标签：把**这一个智能体**连到聊天软件。
  *
- * IM 是**通道**，不是成员：一条连接 = 聊天软件里的一个机器人 + 一个绑定的智能体。
- * 私聊直接进那个智能体当前的那段对话，回复再发回来源聊天；群里只有 @ 机器人才算数，
- * 并且可以单独指定它绑哪个智能体。
+ * IM 是**通道**：一条连接 = 聊天软件里的一个机器人 + 一个绑定的智能体。
+ * 这份面板从全平台的 IM 连接里筛出「绑定到当前智能体」的那部分做管理：
+ * 新建连接时自动预绑当前智能体；别人的 / 绑别人的连接一概不出现。
+ * 连接的启停、配对、聊天绑定等操作与 IM 域的接口一一对应（每步都保存，无「总保存」按钮）。
  *
  * 安全边界与「凭据」一致：凭据值只经后端加密保存，这里只显示「已填」；
- * 没配对的账号发消息只会收到一句「已发出连接请求」，要在这里点「允许」才算配对。
+ * 没配对的账号发消息只会收到一句「已发出连接请求」，要在配对请求里点「允许」。
  */
-export function ImSettings() {
+export function AgentImSettings({
+  agent,
+  onChanged,
+}: {
+  /** 当前正在设定页的智能体 */
+  agent: AgentProfile
+  /** 任何一次 IM 写操作后回调（页面据此刷新智能体数据） */
+  onChanged: () => void | Promise<void>
+}) {
   const [platforms, setPlatforms] = useState<ImPlatform[]>([])
   const [connections, setConnections] = useState<ImConnection[]>([])
   const [peers, setPeers] = useState<ImPeer[]>([])
-  const [agents, setAgents] = useState<AgentProfile[]>([])
   const [chats, setChats] = useState<Record<string, ImChat[]>>({})
+  /** 展开非「直接绑定」连接的详情时按需拉取的聊天列表（key = 连接 id）。 */
+  const [chatByConnection, setChatByConnection] = useState<Record<string, ImChat[]>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState<ImPlatform | null>(null)
@@ -27,33 +37,42 @@ export function ImSettings() {
 
   const reload = useCallback(async () => {
     try {
-      const [nextPlatforms, nextConnections, nextPeers, nextAgents] = await Promise.all([
+      const [nextPlatforms, allConnections, allPeers] = await Promise.all([
         api.listImPlatforms(),
         api.listImConnections(),
         api.listImPeers(),
-        api.listAgents(),
       ])
       setPlatforms(nextPlatforms)
-      setConnections(nextConnections)
-      setPeers(nextPeers)
-      setAgents(nextAgents)
+      setConnections(allConnections)
+      setPeers(allPeers)
       setError(null)
+      // 聊天列表只拉绑定到这个智能体的连接（展开详情时用到）。
+      const mineIds = allConnections
+        .filter((item) => item.agent_profile_id === agent.id)
+        .map((item) => item.id)
       const detail = await Promise.all(
-        nextConnections.map(async (item) => [item.id, await api.listImChats(item.id)] as const),
+        mineIds.map(async (id) => [id, await api.listImChats(id)] as const),
       )
-      setChats(Object.fromEntries(detail))
+      setChats((prev) => {
+        // 只覆盖「我的」连接，其它已有条目（比如刚展开别人单独指定的）保留。
+        const next = { ...prev }
+        for (const id of Object.keys(next)) {
+          if (!mineIds.includes(id)) delete next[id]
+        }
+        return Object.assign(next, Object.fromEntries(detail))
+      })
     } catch (e) {
       setError(describe(e))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [agent.id])
 
   useEffect(() => {
     void reload()
   }, [reload])
 
-  // 连接状态是活的（重连、掉线），每 5 秒刷新一次状态与配对请求 —— 与「关于」页同一种做法。
+  // 连接状态是活的（重连、掉线），每 5 秒刷新一次状态与配对请求。
   // 轮询失败不弹窗（会一直闪），但第一次失败要告诉用户，否则界面像「卡住了」。
   useEffect(() => {
     let reported = false
@@ -73,13 +92,25 @@ export function ImSettings() {
     return () => clearInterval(timer)
   }, [])
 
-  const pending = peers.filter((item) => item.state === 'pending')
-  const paired = peers.filter((item) => item.state === 'allowed')
+  /** 绑定到当前智能体的连接（直接绑定 + 群聊单独指定的都算）。 */
+  const mine = useMemo(
+    () =>
+      connections.filter((item) => {
+        if (item.agent_profile_id === agent.id) return true
+        const chatList = chats[item.id] ?? chatByConnection[item.id] ?? []
+        return chatList.some((chat) => chat.agent_profile_id === agent.id)
+      }),
+    [connections, chats, chatByConnection, agent.id],
+  )
+  const pending = peers.filter(
+    (item) => item.state === 'pending' && mine.some((conn) => conn.id === item.connection_id),
+  )
 
   const run = async (task: () => Promise<unknown>) => {
     try {
       await task()
       await reload()
+      await onChanged()
     } catch (e) {
       setError(describe(e))
     }
@@ -108,9 +139,10 @@ export function ImSettings() {
       {error && <div className="banner err">{error}</div>}
 
       <div className="banner info">
-        把智能体连到聊天软件：配对账号后就能在那里直接对话、在群里 @ 机器人。连接只用平台的
-        长连接 / 长轮询，电脑不需要公网地址或开放端口；<strong>只有服务在运行时才能收发消息</strong>。
-        凭据加密保存在本机，界面只显示「已填」。
+        把「{agent.name}」连到聊天软件：配对账号后就能在那里直接对话、在群里 @ 机器人。
+        这里只显示绑定到这个智能体的连接，别的智能体的连接互不干扰；平台的完整 IM 管理收在
+        每个智能体的这个标签里。连接只用平台的长连接 / 长轮询，电脑不需要公网地址或开放端口；
+        <strong>只有服务在运行时才能收发消息</strong>。凭据加密保存在本机，界面只显示「已填」。
       </div>
 
       {pending.length > 0 && (
@@ -120,7 +152,7 @@ export function ImSettings() {
           </h3>
           <div className="stack" style={{ gap: 8 }}>
             {pending.map((peer) => {
-              const connection = connections.find((item) => item.id === peer.connection_id)
+              const connection = mine.find((item) => item.id === peer.connection_id)
               return (
                 <article className="card" key={peer.id}>
                   <div className="card-head">
@@ -158,17 +190,21 @@ export function ImSettings() {
 
       <div className="stack" style={{ gap: 8 }}>
         <h3 className="card-section-title" style={{ margin: 0 }}>
-          我的 IM 机器人
+          绑定「{agent.name}」的 IM 机器人
         </h3>
-        {connections.length === 0 && !loading ? (
+        {mine.length === 0 && !loading ? (
           <p className="dim small">还没有连接。从下面的平台里选一个开始。</p>
         ) : (
           <div className="stack" style={{ gap: 10 }}>
-            {connections.map((connection) => {
+            {mine.map((connection) => {
               const platform = platforms.find((item) => item.id === connection.platform)
               const open = expanded === connection.id
-              const own = paired.filter((item) => item.connection_id === connection.id)
-              const chatList = chats[connection.id] ?? []
+              const own = peers.filter(
+                (item) => item.connection_id === connection.id && item.state === 'allowed',
+              )
+              const chatList = chats[connection.id]
+                ?? chatByConnection[connection.id]
+                ?? []
               return (
                 <article className="card" key={connection.id}>
                   <div className="card-head">
@@ -179,7 +215,7 @@ export function ImSettings() {
                       </div>
                       <div className="card-sub">
                         {connection.platform_name} · {stateText(connection)}
-                        {connection.agent_name ? ` · 对话：${connection.agent_name}` : ' · 还没绑定智能体'}
+                        {connection.agent_profile_id === agent.id ? '' : ' · 此聊天单独指定'}
                       </div>
                     </div>
                     <span className={`pill${stateClass(connection.state)}`} style={{ marginLeft: 'auto' }}>
@@ -200,7 +236,19 @@ export function ImSettings() {
                   </div>
 
                   <div className="card-actions" style={{ marginLeft: 0 }}>
-                    <button className="btn sm" onClick={() => setExpanded(open ? null : connection.id)}>
+                    <button
+                      className="btn sm"
+                      onClick={() => {
+                        setExpanded(open ? null : connection.id)
+                        // 非直接绑定的连接（群聊单独指定的）平时没拉过聊天列表，展开时补一次。
+                        if (!open && !(connection.id in chats) && !(connection.id in chatByConnection)) {
+                          void api
+                            .listImChats(connection.id)
+                            .then((list) => setChatByConnection((prev) => ({ ...prev, [connection.id]: list })))
+                            .catch(() => undefined) // 拉不到只影响详情里的聊天行，不打扰整体
+                        }
+                      }}
+                    >
                       {open ? '收起' : '详情'}
                     </button>
                     <button className="btn sm" onClick={() => void toggle(connection)}>
@@ -231,13 +279,11 @@ export function ImSettings() {
                             )
                           }
                         >
-                          <option value="">（未绑定）</option>
-                          {agents.map((agent) => (
-                            <option key={agent.id} value={agent.id}>
-                              {agent.avatar} {agent.name}
-                            </option>
-                          ))}
+                          <option value="">{agent.avatar} {agent.name}（当前智能体）</option>
                         </select>
+                        <span className="field-help">
+                          私聊都进绑定的智能体；要换成别的智能体，去那个智能体的「IM」标签里操作。
+                        </span>
                       </label>
 
                       <div className="stack" style={{ gap: 8 }}>
@@ -273,7 +319,9 @@ export function ImSettings() {
                           配对账号
                         </span>
                         {own.length === 0 ? (
-                          <p className="dim small">还没有配对账号：在聊天软件里给机器人发一句话，这里就会出现请求。</p>
+                          <p className="dim small">
+                            还没有配对账号：在聊天软件里给机器人发一句话，这里就会出现请求。
+                          </p>
                         ) : (
                           <div className="chips">
                             {own.map((peer) => (
@@ -297,34 +345,18 @@ export function ImSettings() {
                           聊天
                         </span>
                         {chatList.length === 0 ? (
-                          <p className="dim small">还没有聊天。私聊配对后自动出现；群里 @ 一次机器人也会出现在这里。</p>
+                          <p className="dim small">
+                            还没有聊天。私聊配对后自动出现；群里 @ 一次机器人也会出现在这里。
+                          </p>
                         ) : (
                           chatList.map((chat) => (
                             <div className="row" key={chat.id} style={{ gap: 8, flexWrap: 'wrap' }}>
                               <span style={{ minWidth: 0, flex: 1 }}>
                                 {chat.kind === 'group' ? '👥' : '💬'} {chat.title || chat.chat_key}
                               </span>
-                              {chat.kind === 'group' ? (
-                                <select
-                                  className="select"
-                                  style={{ width: 'auto' }}
-                                  value={chat.agent_profile_id ?? ''}
-                                  onChange={(event) =>
-                                    void run(() =>
-                                      api.updateImChat(connection.id, chat.id, event.target.value || null),
-                                    )
-                                  }
-                                >
-                                  <option value="">跟随连接</option>
-                                  {agents.map((agent) => (
-                                    <option key={agent.id} value={agent.id}>
-                                      {agent.avatar} {agent.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              ) : (
-                                <span className="pill">私聊</span>
-                              )}
+                              <span className="pill">
+                                {chat.agent_profile_id === agent.id ? '绑当前智能体' : '跟随连接'}
+                              </span>
                               <button
                                 className="btn sm ghost"
                                 onClick={() => void run(() => api.removeImChat(connection.id, chat.id))}
@@ -346,11 +378,11 @@ export function ImSettings() {
 
       <div className="stack" style={{ gap: 8 }}>
         <h3 className="card-section-title" style={{ margin: 0 }}>
-          {connections.length > 0 ? '添加一个 IM 机器人' : '选择一个平台'}
+          {mine.length > 0 ? '再添加一个 IM 机器人' : '选择一个平台'}
         </h3>
         <div className="grid">
           {platforms.map((platform) => {
-            const count = connections.filter((item) => item.platform === platform.id).length
+            const count = mine.filter((item) => item.platform === platform.id).length
             return (
               <article className={`card${platform.available ? '' : ' muted'}`} key={platform.id}>
                 <div className="card-head">
@@ -388,13 +420,14 @@ export function ImSettings() {
       </div>
 
       {adding && (
-        <AddConnectionModal
+        <AddAgentConnectionModal
           platform={adding}
-          agents={agents}
+          agent={agent}
           onClose={() => setAdding(null)}
           onSaved={async () => {
             setAdding(null)
             await reload()
+            await onChanged()
           }}
         />
       )}
@@ -402,14 +435,15 @@ export function ImSettings() {
   )
 }
 
-function AddConnectionModal({
+/** 新建连接：智能体固定为当前智能体（不再提供下拉）。 */
+function AddAgentConnectionModal({
   platform,
-  agents,
+  agent,
   onClose,
   onSaved,
 }: {
   platform: ImPlatform
-  agents: AgentProfile[]
+  agent: AgentProfile
   onClose: () => void
   onSaved: () => Promise<void>
 }) {
@@ -420,7 +454,6 @@ function AddConnectionModal({
     }
     return initial
   })
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -430,11 +463,15 @@ function AddConnectionModal({
   )
 
   const submit = async () => {
-    if (busy || !agentId || missing) return
+    if (busy || missing) return
     setBusy(true)
     setError(null)
     try {
-      await api.createImConnection({ platform: platform.id, agent_profile_id: agentId, fields: values })
+      await api.createImConnection({
+        platform: platform.id,
+        agent_profile_id: agent.id,
+        fields: values,
+      })
       await onSaved()
     } catch (e) {
       setError(describe(e))
@@ -445,14 +482,14 @@ function AddConnectionModal({
 
   return (
     <Modal
-      title={`连接 ${platform.name}`}
+      title={`连接 ${platform.name} · ${agent.name}`}
       onClose={onClose}
       footer={
         <>
           <button className="btn ghost" onClick={onClose}>
             取消
           </button>
-          <button className="btn primary" disabled={busy || !agentId || missing} onClick={() => void submit()}>
+          <button className="btn primary" disabled={busy || missing} onClick={() => void submit()}>
             {busy ? '正在核对…' : '连接'}
           </button>
         </>
@@ -477,17 +514,11 @@ function AddConnectionModal({
           </div>
         )}
 
-        <label className="field">
-          <span className="field-label">对话的智能体</span>
-          <select className="select" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-            {agents.length === 0 && <option value="">（还没有智能体）</option>}
-            {agents.map((agent) => (
-              <option key={agent.id} value={agent.id}>
-                {agent.avatar} {agent.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="field">
+          <label className="field-label">对话的智能体</label>
+          <input className="input" value={`${agent.avatar} ${agent.name}`} readOnly />
+          <span className="field-help">这条连接将绑定到「{agent.name}」；创建后在这个标签里管理。</span>
+        </div>
 
         {platform.fields.map((field) =>
           field.options.length > 0 ? (

@@ -175,12 +175,14 @@ export const api = {
       },
     ),
   overview: () => request<Overview>('/api/system/overview'),
-  /** 用量页：token 消耗与技能调用汇总；可传时间范围（见 `lib/usage.ts:usageRangeQuery`）。 */
-  usageOverview: (params?: { start?: string; end?: string; tz_offset?: number }) => {
+  /** 用量页：token 消耗与技能调用汇总；可传时间范围（见 `lib/usage.ts:usageRangeQuery`）。
+   *  `agent_id` 只统计这一个智能体（智能体设定页「统计」标签用）。 */
+  usageOverview: (params?: { start?: string; end?: string; tz_offset?: number; agent_id?: string }) => {
     const search = new URLSearchParams()
     if (params?.start) search.set('start', params.start)
     if (params?.end) search.set('end', params.end)
     if (params?.tz_offset !== undefined) search.set('tz_offset', String(params.tz_offset))
+    if (params?.agent_id) search.set('agent_id', params.agent_id)
     const suffix = search.toString() ? `?${search.toString()}` : ''
     return request<UsageOverview>(`/api/usage/overview${suffix}`)
   },
@@ -219,9 +221,11 @@ export const api = {
     request<GatewayProbeResult>(`/api/gateways/${id}/refresh-models`, { method: 'POST' }),
 
   // --- 智能体（人格 + 内核 + 网关 + 模型 + 技能）-----------------------------
-  /** 列表 + 已有分组名（编辑表单的「分组」快捷选项）。 */
+  /** 列表（`groups` 走 `listAgentGroups`）。 */
   listAgents: () =>
     request<{ items: AgentProfile[]; groups: string[] }>('/api/agents').then((r) => r.items),
+  /** 单个智能体的完整数据（智能体设定页用）。 */
+  getAgent: (id: string) => request<AgentProfile>(`/api/agents/${encodeURIComponent(id)}`),
   listAgentGroups: () => request<{ items: AgentProfile[]; groups: string[] }>('/api/agents').then((r) => r.groups),
   createAgent: (body: unknown) => request<AgentProfile>('/api/agents', { method: 'POST', body: JSON.stringify(body) }),
   updateAgent: (id: string, body: unknown) =>
@@ -466,7 +470,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  // --- IM（设置 → IM：把智能体连到微信 / 飞书 / 钉钉 / 企业微信 / QQ / Telegram / Discord / Slack）
+  // --- IM（智能体设定页的「IM」标签：把智能体连到微信 / 飞书 / 钉钉 / 企业微信 / QQ / Telegram / Discord / Slack）
   listImPlatforms: () => request<{ items: ImPlatform[] }>('/api/im/platforms').then((r) => r.items),
   listImConnections: () =>
     request<{ items: ImConnection[] }>('/api/im/connections').then((r) => r.items),

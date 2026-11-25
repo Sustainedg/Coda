@@ -289,10 +289,10 @@ async def get_conversation_context(
     conversation = await _owned_conversation(conversation_id, session, user)
     profile = await session.get(AgentProfile, conversation.agent_profile_id)
     settings = await context_service.read_settings(session, conversation.owner_id)
-    used = await context_service.conversation_usage(
+    used, measured = await context_service.conversation_usage(
         session, conversation, profile.system_prompt if profile else None
     )
-    return context_service.usage_view(used, settings, conversation)
+    return context_service.usage_view(used, settings, conversation, measured=measured)
 
 
 @router.get("/{conversation_id}/trace")

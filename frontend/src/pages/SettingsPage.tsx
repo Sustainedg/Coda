@@ -4,7 +4,6 @@ import { AccountPanel } from '../components/AccountPanel'
 import { UserAdminPanel } from '../components/UserAdminPanel'
 import { CredentialVault } from '../components/CredentialVault'
 import { GatewayManager } from '../components/GatewayManager'
-import { ImSettings } from '../components/ImSettings'
 import { KernelManager } from '../components/KernelManager'
 import { ProxySettings } from '../components/ProxySettings'
 import { TitleSettingsSection } from '../components/TitleSettings'
@@ -22,6 +21,7 @@ import type { Overview } from '../lib/types'
  * 「关于」收的是**只读信息**（系统信息 · 版本记录）；
  * 「内核管理」管各 CLI 内核本身（装没装 / 什么版本 / 安装 · 更新 · 卸载），
  * 以及「正在运行」的智能体（对话域 + 协作域，每 8 秒刷新，见 `KernelManager`）。
+ * IM 不在这里：它是按智能体绑定的通道，收在每个智能体设定页的「IM」标签里。
  * 顺序按「日常会动的在前」排：外观 / 对话最常改，内核管理与关于基本只看。
  */
 const ALL_TABS = [
@@ -31,7 +31,6 @@ const ALL_TABS = [
   { id: 'chat', label: '对话' },
   { id: 'gateways', label: '网关' },
   { id: 'credentials', label: '凭据' },
-  { id: 'im', label: 'IM' },
   { id: 'network', label: '网络' },
   { id: 'kernels', label: '内核管理' },
   { id: 'about', label: '关于' },
@@ -96,7 +95,8 @@ export function SettingsPage() {
         <div>
           <h1 className="page-title">设置</h1>
           <p className="page-desc">
-            按类型分页：外观 · 账号{isAdmin ? ' · 用户' : ''} · 对话 · 网关 · 凭据 · IM · 网络 · 内核管理 · 关于。
+            按类型分页：外观 · 账号{isAdmin ? ' · 用户' : ''} · 对话 · 网关 · 凭据 · 网络 · 内核管理 · 关于；
+            IM 收在每个智能体设定页里。
           </p>
         </div>
       </header>
@@ -170,9 +170,6 @@ export function SettingsPage() {
         {tab === 'gateways' && <GatewayManager />}
 
         {tab === 'credentials' && <CredentialVault />}
-
-        {/* IM 是通道：每条连接绑一个智能体，私聊直接进它当前那段对话。 */}
-        {tab === 'im' && <ImSettings />}
 
         {tab === 'network' &&
           (isAdmin ? (

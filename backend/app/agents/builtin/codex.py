@@ -21,6 +21,7 @@ from ..base import (
 )
 from ..events import (
     AgentEvent,
+    context_usage,
     error,
     log,
     session,
@@ -41,6 +42,7 @@ from ..skills import (
 )
 from .util import (
     as_list,
+    context_tokens,
     flatten_content,
     npm_cli,
     npm_install_argv,
@@ -581,6 +583,9 @@ class CodexAgent(AgentDefinition):
             counters = self._app_usage(params.get("tokenUsage") or {})
             if counters:
                 yield usage(**counters)
+                window = context_tokens(counters)
+                if window:
+                    yield context_usage(window)
             return
 
         if method == "turn/completed":

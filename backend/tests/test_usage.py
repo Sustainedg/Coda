@@ -176,3 +176,34 @@ async def test_usage_overview_keeps_name_of_a_soft_deleted_agent(client: httpx.A
     data = (await client.get("/api/usage/overview")).json()
     assert data["tokens"]["total"] == 15
     assert data["by_agent"][0]["name"] == profile["name"]
+
+
+async def test_usage_overview_filters_by_agent(client: httpx.AsyncClient):
+    """agent_id 只统计这一个智能体：智能体设定页「统计」标签的数据源。"""
+    profile_a = await make_profile(client, name="智能体A")
+    profile_b = await make_profile(client, name="智能体B")
+    await _seed_conversation(
+        profile_a["id"], [{"usage": {"input_tokens": 30, "output_tokens": 10}}]
+    )
+    await _seed_conversation(
+        profile_b["id"], [{"usage": {"input_tokens": 70, "output_tokens": 20}}]
+    )
+
+    data = (
+        await client.get(f"/api/usage/overview?agent_id={profile_a['id']}")
+    ).json()
+    assert data["tokens"]["input"] == 30
+    assert data["tokens"]["total"] == 40
+    assert [item["id"] for item in data["by_agent"]] == [profile_a["id"]]
+    assert data["conversations"] == 1
+
+    # 不传 agent_id 仍是平台 / 用户全量口径（回归）。
+    total = (await client.get("/api/usage/overview")).json()
+    assert total["tokens"]["input"] == 100
+
+
+async def test_usage_overview_agent_filter_rejects_unknown_agent(client: httpx.AsyncClient):
+    """agent_id 不存在（或已软删除）时明确 422，不静默当成「没有用量」。"""
+    response = await client.get("/api/usage/overview?agent_id=不存在的智能体")
+    assert response.status_code == 422
+    assert "不存在" in response.json()["detail"]

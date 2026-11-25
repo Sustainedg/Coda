@@ -109,8 +109,7 @@ def test_frontend_does_not_map_platform_ids_to_icons():
     frontend = APP_DIR.parent.parent / "frontend" / "src"
     offenders: list[str] = []
     for path in (
-        frontend / "components" / "ImSettings.tsx",
-        frontend / "mobile" / "pages" / "MobileImPage.tsx",
+        frontend / "components" / "AgentImSettings.tsx",
     ):
         if not path.is_file():
             continue

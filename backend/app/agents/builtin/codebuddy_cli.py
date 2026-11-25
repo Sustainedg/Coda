@@ -42,6 +42,7 @@ from ..base import (
 )
 from ..events import (
     AgentEvent,
+    context_usage,
     error,
     log,
     session,
@@ -72,6 +73,7 @@ from .codebuddy_accounts import (
 )
 from .util import (
     as_list,
+    context_tokens,
     flatten_content,
     npm_cli,
     npm_install_argv,
@@ -716,7 +718,18 @@ class CodeBuddyCliAgent(AgentDefinition):
                     )
 
     def _from_stream_event(self, event: dict[str, Any], run: AgentRun) -> Iterable[AgentEvent]:
-        if event.get("type") != "content_block_delta":
+        kind = event.get("type")
+        if kind == "message_start":
+            # 输入 token 在 ``message_start.message.usage`` 里（不是 ``event.usage``）；
+            # result 里的是整轮累计，不能拿来当窗口占用。
+            tokens = context_tokens((event.get("message") or {}).get("usage") or {})
+            if tokens:
+                yield context_usage(tokens)
+            return
+        if kind == "message_delta":
+            # ``message_delta.usage`` 只有 output_tokens，不代表窗口输入。
+            return
+        if kind != "content_block_delta":
             return
         delta = event.get("delta") or {}
         if delta.get("type") == "text_delta" and delta.get("text"):
@@ -726,6 +739,9 @@ class CodeBuddyCliAgent(AgentDefinition):
             yield thinking_delta(delta["thinking"])
 
     def _from_assistant(self, message: dict[str, Any], run: AgentRun) -> Iterable[AgentEvent]:
+        tokens = context_tokens(message.get("usage") or {})
+        if tokens:
+            yield context_usage(tokens)
         for block in message.get("content") or []:
             if not isinstance(block, dict):
                 continue

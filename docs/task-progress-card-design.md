@@ -12,7 +12,7 @@
 | 决策点 | 结论 |
 | --- | --- |
 | 卡片渲染形态 | 独立组件 `TaskProgressCard`，挂在 `ConversationThreadItem.custom` 槽；桌面与移动端共用同一个组件 |
-| 卡片在对话流的位置 | 渲染在**建卡那一轮的助手消息之后**（`anchor_message_id`）；普通新消息不会移动它，模型重规划时随最新计划更新锚点 |
+| 卡片位置 | **常驻输入框上方**（`Composer` 的 `header` 槽）；不插进消息流。`anchor_message_id` 仅保留兼容，不参与排版 |
 | 折叠状态存放 | 前端 `localStorage`（`coda.taskcard.collapsed`，按卡片 id 记），后端不存折叠状态 |
 | 进度存储 | 新表 `task_cards`（SQLite / SQLModel），一个对话一行，任务项存 JSON 列 |
 | 恢复路径 | 页面刷新与进程重启都走同一条：`GET /api/conversations/{id}` 返回 `task_card` → 前端 `applyDetail` 写入状态 |
@@ -129,26 +129,33 @@
 ```
 
 * **不渲染任何可编辑控件**：没有 `<input type="checkbox">`、没有可点击的任务项、没有编辑/删除按钮。任务项的完成标记只是 `<span>` 文本 + CSS 状态类（`task-progress-mark is-done`）。
-* 唯一可点击的是标题栏的折叠按钮，只切换显隐，不改任何数据。
+* 唯一可点击的是整条标题栏（原生 `button`，支持 Enter / 空格），只切换显隐，不改任何数据。
 * 空标题回退为「任务进度」；进度显示 `已完成数 / 总数`。
 
-**放置位置（桌面）**：`frontend/src/pages/ChatPage.tsx:946-990` 组装 `threadItems` 时，按顺序压入普通消息；当遍历到 `message.id === taskCard.anchor_message_id` 的那条消息后，追加一个 `custom` 条目：
+**放置位置（桌面）**：常驻输入框上方 —— 渲染在 `Composer` 的 `header` 槽（`.composer-head`）里的第一项，位于上下文用量 / 工作目录 / 智能体那几个小图标之上：
 
-```ts
-{ id: `task-card-${taskCard.id}`, className: 'task-card-turn', custom: <TaskProgressCard card={taskCard} /> }
+```tsx
+header={
+  <>
+    {taskCard && <TaskProgressCard key={taskCard.id} card={taskCard} />}
+    <div className="composer-scope">…</div>
+  </>
+}
 ```
 
-`anchor_message_id` = 创建卡片那一轮的助手消息 id（后续模型用 `create` 重规划时更新到最新计划那一轮，落库规则见 §6.5）。若该 id 在当前消息列表里找不到（历史数据异常），把卡片追加到**最后一条已落库消息之后、实时流式条目之前**，保证卡片始终可见且不重复。
+它**不再插进消息流**：进度是「这条对话当前做到哪了」的状态栏，应该一直看得见；放在 `.chat-scroll` 里会跟着历史滚走、并被后续消息顶到看不到的位置。`key={taskCard.id}` 保证切到另一条对话时重新挂载、重新读取该卡的折叠偏好。
 
-**放置位置（移动端）**：`frontend/src/mobile/pages/MobileChatPage.tsx:1034-1085` 直接 `.map` 渲染 `MessageView`，改为每个消息外包一层 `<Fragment key={message.id}>`，在 `MessageView` 之后按同一 `anchor_message_id` 条件渲染 `<TaskProgressCard>`；找不到锚点时放在 `liveMessage` 之前。两端共用同一个组件与同一份 `taskCard` 状态来源，避免两套卡片 UI 漂移（调研报告 §9.2 的风险）。
+**放置位置（移动端）**：`frontend/src/mobile/pages/MobileChatPage.tsx` 同样放进 `Composer` 的 `header` 槽（与桌面端同一份组件、同一套语义），不在 `.m-thread` 的消息 `.map` 里渲染。
+
+`anchor_message_id` **不再参与排版**：字段保留用于接口兼容 / 历史数据，语义仍是「建卡那一轮」；`apply_block` 只在 `create`（重规划）时更新它，普通 `update` 保持不动（见 §6.5）。
 
 **插入时机**：卡片只在「一轮运行成功结束、协议块被解析落库」之后出现；流式过程中不渲染（不产生空卡、不闪半成品）。发送结束的 `finally` 会调用 `applyDetail` 刷新详情（`ChatPage.tsx:438-560`），3 秒轮询（`ChatPage.tsx:314-330`）与另一台设备也能在数秒内看到。
 
 ### 3.2 折叠展开交互与折叠状态
 
-* 交互：标题栏按钮 + `aria-expanded`，点击切换；默认展开。展开时显示任务项列表，收起时只留标题、进度与进度条。
-* 状态存放：**前端本地**，`localStorage` 键 `coda.taskcard.collapsed`，值形如 `{ "<cardId>": true }`。
-* 新增 `frontend/src/lib/taskCardCollapse.ts`，照 `composerDraft.ts` 的成熟写法：读盘异常 / 隐私模式 / 坏数据一律降级为「展开」，写入失败静默；最多保留 50 条，按写入顺序淘汰，避免本地存储无限膨胀（`composerDraft.ts:19-73` 的 `MAX_DRAFTS=50` 先例）。
+* 交互：整条标题栏是原生 `button`（带 `aria-expanded`，Enter / 空格可切换），点击切换；**默认收起**——常驻输入框上方时只占一行，点开才看任务项。展开时显示任务项列表，收起时只留标题、进度与进度条。
+* 状态存放：**前端本地**，`localStorage` 键 `coda.taskcard.collapsed`，值形如 `{ "<cardId>": true }`；没有记录时按「收起」处理，老用户存过的偏好优先。
+* 新增 `frontend/src/lib/taskCardCollapse.ts`，照 `composerDraft.ts` 的成熟写法：读盘异常 / 隐私模式 / 坏数据一律降级为「收起」，写入失败静默；最多保留 50 条，按写入顺序淘汰，避免本地存储无限膨胀（`composerDraft.ts:19-73` 的 `MAX_DRAFTS=50` 先例）。
 * 选前端本地的理由：
   1. 折叠是**这台设备的显示偏好**，与 `coda.sidebar`（`frontend/src/lib/sidebarCollapsed.ts:10-31`）、`coda.theme`、`coda.tools-hidden` 同一定位；
   2. 后端不存折叠状态，就没有「前后端两份折叠状态打架」的问题（§8 风险 5）；
@@ -159,13 +166,15 @@
 * 消息是**不可变的历史原文**：`consume_run` 的 `finally` 一次性写入 `content/parts` 并提交（`service.py:665-694`）。勾选状态变化若写回旧消息，会与这条提交路径抢占同一行，且语义上是在篡改历史。
 * 轮询比较不到：`sameMessageList` 只比 `id/content/status/error`（`useAutoRefresh.ts:58-69`），`parts` 变了不会触发重渲染（调研报告 §9.4）。
 * 渲染没有通道：`MessagePart.kind` 没有卡片类型，未知 kind 会被当工具卡（`MessageView.tsx:300-321`）；要新增就得同步改事件归约与类型，反而更容易踩铁律 5。
-* `custom` 槽是仓库既有的「对话流里放非消息卡片」入口（`ConversationThread.tsx:17-19,44`，协作域 `TicketCard` 已验证），用它不需要改消息协议。
+* 任务卡本身不寄生在消息里，也不需要新增 message part；它由独立组件渲染在输入框上方。`ConversationThread` 的 `custom` 槽（`ConversationThread.tsx:17-19,44`，协作域 `TicketCard` 已验证）仍然是「对话流里放非消息卡片」的入口，只是任务卡不再走这条路。
 
 ### 3.4 实时流里的协议块不外露
 
 模型输出是 SSE 文本增量，落库前的剥离发生在运行收尾，因此**流式过程中**原始 `task_card` 围栏块会短暂出现在气泡里。处理方式：新增纯函数 `stripTaskCardFence(text)`（`frontend/src/lib/taskCardFence.ts`），在 `MessageView` 渲染 text 片段前调用（`MessageView.tsx:142-161` 的 text 分支）；未闭合的围栏从起始标记一直剥到文本末尾，避免半截 JSON 闪屏。历史消息的服务端正文已经剥过，前端再剥一次是幂等的。
 
-IM 通道不同步走前端，需在 `backend/app/im/bridge.py:204-249`（`_collect` 汇总正文处）用后端同一份 `strip_task_card` 再剥一次，避免把协议 JSON 发到聊天软件。
+**容错**：实测模型会把协议块写成 ```json、甚至直接甩一段裸 JSON。前后端统一放宽到「`task_card` 围栏 / `json` 围栏 / 裸 JSON」，但这类非标准块**只认正文收尾处**，并且必须「长得像任务卡」（有 `action`，或 `items` 里是 `id/text/done` 字段）——回复中段举例用的 JSON 代码块必须原样保留。服务端与前端各有一份同语义实现，改动时两边同步（现有用例见 `backend/tests/test_task_cards.py`）。
+
+IM 通道不同步走前端，需在 `backend/app/im/bridge.py:204-249`（`_collect` 汇总正文处）用后端同一份 `strip_task_card` 再剥一次，避免把协议 JSON 发到聊天软件；上面的容错同样生效。
 
 ### 3.5 本节对应改动文件
 
@@ -175,7 +184,7 @@ IM 通道不同步走前端，需在 `backend/app/im/bridge.py:204-249`（`_coll
 | `frontend/src/lib/taskCardCollapse.ts` | 新建折叠偏好读写（localStorage） |
 | `frontend/src/lib/taskCardFence.ts` | 新建实时流围栏剥离纯函数 |
 | `frontend/src/components/MessageView.tsx` | text 片段渲染前调用剥离函数 |
-| `frontend/src/pages/ChatPage.tsx` | `taskCard` 状态、`applyDetail` 写入、`threadItems` 按锚点插入 |
+| `frontend/src/pages/ChatPage.tsx` | `taskCard` 状态、`applyDetail` 写入、卡片渲染在 `Composer` 的 `header` 槽 |
 | `frontend/src/mobile/pages/MobileChatPage.tsx` | 移动端同语义接入 |
 | `frontend/src/index.css` / `frontend/src/mobile/mobile.css` | 卡片与移动端样式 |
 
@@ -191,7 +200,7 @@ IM 通道不同步走前端，需在 `backend/app/im/bridge.py:204-249`（`_coll
 | --- | --- | --- |
 | `id` | `String(64)` 主键 | 卡片标识，`new_id()`（`models.py:93`） |
 | `conversation_id` | `String(64)`，外键 `conversations.id ON DELETE CASCADE`，**唯一**，索引 | 会话 ID；唯一约束保证一个对话只有一张卡，从根上杜绝重复建卡 |
-| `anchor_message_id` | `String(64)`，可空，索引 | 建卡那一轮的助手消息 id（重规划时随最新计划更新）；决定卡片在对话流中的位置 |
+| `anchor_message_id` | `String(64)`，可空，索引 | 建卡那一轮的助手消息 id（仅 `create` 重规划时更新，`update` 不动）；**仅接口兼容，不参与排版** |
 | `title` | `String(200)`，默认空串 | 卡片标题；为空显示「任务进度」 |
 | `items` | `JSON`，默认 `[]` | 任务项数组，见下 |
 | `version` | `Integer`，默认 1 | 乐观锁版本号，每次成功写入 +1 |
@@ -240,7 +249,7 @@ IM 通道不同步走前端，需在 `backend/app/im/bridge.py:204-249`（`_coll
 
 | 场景 | 恢复路径 | 代码位置 |
 | --- | --- | --- |
-| 页面刷新 / 切回标签页 | 重新 `GET /api/conversations/{id}`，响应新增 `task_card`；前端 `applyDetail` 把它写入 `taskCard` 状态；`threadItems` 按 `anchor_message_id` 重新插到原位置 | 后端 `backend/app/api/conversations.py:237-269`；前端 `frontend/src/pages/ChatPage.tsx:197-220`、`:946-990`；移动端 `frontend/src/mobile/pages/MobileChatPage.tsx:185-206`、`:1034-1085` |
+| 页面刷新 / 切回标签页 | 重新 `GET /api/conversations/{id}`，响应新增 `task_card`；前端 `applyDetail` 把它写入 `taskCard` 状态，卡片常驻在输入框上方渲染，折叠偏好按 `card.id` 从本地恢复 | 后端 `backend/app/api/conversations.py:237-269`；前端 `frontend/src/pages/ChatPage.tsx` 的 `applyDetail` / `Composer` header；移动端 `frontend/src/mobile/pages/MobileChatPage.tsx` 同语义 |
 | 另一台设备 | 3 秒轮询同一详情接口，按 `version` 判断是否变化后重渲染 | `frontend/src/lib/useAutoRefresh.ts:17-56`、`ChatPage.tsx:314-330` |
 | 进程重启 | 卡片在 SQLite 里，启动无需任何恢复逻辑；下一次详情请求原样读回。与消息本体同一保证（`service.py:665-694`），**不依赖**内存中的 `ActiveRun` | `backend/app/db.py:51-64`、`api/conversations.py:237-269` |
 | 运行中途进程被杀 | 卡片写入只在「一轮成功结束」后发生；被杀时卡片保持上一次已提交状态，不会出现半勾选。消息占位的残留是既有行为，与本方案无关（调研报告 §7） | `service.py:600-701` |
@@ -337,6 +346,7 @@ IM 通道不同步走前端，需在 `backend/app/im/bridge.py:204-249`（`_coll
 约定：
 
 * 一轮最多一个块；出现多个时按**最后一个**生效并记录告警（与 `parse_work_order` 的容错策略一致，`tickets.py:800-810`）。
+* 容错：模型写成 ```json 或直接甩裸 JSON 时，只要块在**正文收尾处**且结构像任务卡（有 `action` / 结构化 `items`），服务端与前端同样认；正文中段的 JSON 示例不会被误吞。
 * `action` 缺省时：会话无卡视为 `create`，有卡视为 `update`。
 * `create` 的 `items` 必须 2～20 项；`update` 只认已在卡里的 `id`。
 * 围栏外可以有正常 Markdown 正文；块本身永远不展示给用户（服务端剥离 + 前端实时流剥离）。
@@ -431,13 +441,14 @@ if status == "complete" and prepared.persist_session:
 `create`：
 
 * 没有卡 → 新建行，`anchor_message_id` = 本轮助手消息 id。
-* 已有卡 → 同一行的**重规划**：按 `id` 保留旧项的 `done`（`done = old.done or new.done`，已完成的绝不会因重规划被抹掉）；新 `id` 采用模型给的 `done`；旧卡里新块没有的 `id` 删除；`anchor_message_id` 更新到本轮消息（卡片随最新计划走）。
+* 已有卡 → 同一行的**重规划**：按 `id` 保留旧项的 `done`（`done = old.done or new.done`，已完成的绝不会因重规划被抹掉）；新 `id` 采用模型给的 `done`；旧卡里新块没有的 `id` 删除；**只有 `create` 重规划才把 `anchor_message_id` 更新到本轮消息**。
 * 有效项去重后不足 2 / 超过 20 → 整块忽略，日志告警，不建空卡。
 
 `update`：
 
 * 没有卡 → 忽略（`update` 永远不能凭空造卡，从根上杜绝空卡）。
 * 只处理卡内已存在的 `id`；未知 `id` 忽略并记告警。
+* **不移动 `anchor_message_id`**：普通报进度不该改变卡片归属的那一轮（旧实现每轮都改，导致卡片被一路拖到对话末尾）。
 * `done` 单调：`false → true` 允许并写 `done_at`；`true → false` 忽略并记告警（防止模型反复横跳造成「误取消 / 误勾选」）。
 * 同一 `id` 在一次块里出现多次：按最后一次为准并记告警。
 * 全部无效 / 没有任何状态变化 → 不写库、不 bump `version`。
@@ -493,7 +504,7 @@ if status == "complete" and prepared.persist_session:
 | 风险 | 具体应对 |
 | --- | --- |
 | **1. AI 判断不准**（任务项乱列、进度乱勾） | 协议说明明确「只标确实完成的」；服务端只接受 2～20 个非空项；`done` 单向单调，模型可下一轮补报但不能回退；每轮只应用一次、失败回合不应用；判断错的代价被限制在卡片展示层，正文与消息不受影响。后续若需要，可由模型用 `create` 重规划整张卡来纠错（不是新增功能，是协议既有动作） |
-| **2. 重复建卡** | `conversation_id` 唯一约束是最终防线；`create` 作用于已有卡时按重规划合并同一行；前端按 `card.id` 作为线程条目 key，不存在同卡渲染两次；多块取最后一个 |
+| **2. 重复建卡** | `conversation_id` 唯一约束是最终防线；`create` 作用于已有卡时按重规划合并同一行；前端按 `card.id` 作为渲染 key，不存在同卡渲染两次；多块取最后一个 |
 | **3. 并发写入** | 乐观锁 `version` + `WHERE version = :v`；冲突重读重试（≤3 次）；唯一约束兜底并发建卡；`last_run_id` 幂等；独立会话写入，卡片失败不回滚消息；失败只记日志 |
 | **4. 存储增长** | 一个对话最多一行、最多 20 项、每项 ≤120 字符，单卡上限约数 KB；不保存历史快照（只留最新一版）；对话删除级联删卡；折叠偏好本地最多 50 条 |
 | **5. 前后端折叠状态不一致** | 折叠状态**只存前端**，后端没有对应字段，结构上不存在前后端两份状态打架；跨设备折叠状态各自独立（与侧栏、主题一致的偏好语义）；卡片内容变化只 bump `version`，折叠 key 仍是稳定 `card.id`，刷新后展开/收起状态保留；卡片被删（对话删除）后残留的本地 key 无害，且有 50 条上限 |
@@ -532,9 +543,9 @@ if status == "complete" and prepared.persist_session:
 | S6 | 详情接口与响应模型 | `backend/app/api/conversations.py`、`backend/app/schemas.py` | `get_conversation` 返回 `task_card`（无卡为 `null`）；新增 `TaskCardRead`；不加写路由 | `pytest tests/test_api.py` 新增断言：无卡返回 null、有卡字段完整；归属校验沿用 `_owned_conversation`，他人对话 404 | 依赖 S1、S3；可与 S4/S5 并行 |
 | S7 | 前端类型与比较器 | `frontend/src/lib/types.ts`、`frontend/src/lib/useAutoRefresh.ts` | 新增 `TaskCard` / `TaskCardItem`；`ConversationDetail.task_card`；`sameTaskCard`（比 `id` + `version`） | `npm --prefix frontend run typecheck` | 依赖 S6 的响应契约；可与 S8 并行 |
 | S8 | 卡片组件与样式 | `frontend/src/components/TaskProgressCard.tsx`、`frontend/src/lib/taskCardCollapse.ts`、`frontend/src/index.css`、`frontend/src/mobile/mobile.css` | 只读卡片：标题/进度/进度条/任务项状态图标；折叠按钮 + `localStorage` 记忆（上限 50、坏数据降级）；**无任何编辑控件** | `typecheck` + `build`；人工检查组件源码无 `input` / 编辑 `onClick`；桌面与移动窄屏各看一次 | 依赖 S7；可与 S9/S10 并行 |
-| S9 | 桌面聊天页接入 | `frontend/src/pages/ChatPage.tsx` | `taskCard` 状态 + `applyDetail` 比较写入；`threadItems` 在 `anchor_message_id` 之后插入 `custom` 条目，找不到锚点回退到末尾；实时流不渲染卡片 | 手测：任务型对话收到回复后卡片出现在该回复下方；刷新后位置与勾选不变；另一设备 3 秒内同步；删除对话后卡片消失 | 依赖 S7、S8 |
-| S10 | 移动端接入 | `frontend/src/mobile/pages/MobileChatPage.tsx` | 与 S9 同语义：状态、`applyDetail`、消息 map 内按锚点渲染、移动样式 | 同 S9 的移动端手测 | 依赖 S7、S8；可与 S9 并行 |
-| S11 | 实时流协议块隐藏（前端） | `frontend/src/lib/taskCardFence.ts`、`frontend/src/components/MessageView.tsx` | text 片段渲染前剥离 `task_card` 围栏（含未闭合）；历史消息幂等 | `typecheck` + `build`；手测：流式输出中不闪 JSON 块 | 依赖 S2 的围栏格式；可与 S9/S10 并行 |
+| S9 | 桌面聊天页接入 | `frontend/src/pages/ChatPage.tsx` | `taskCard` 状态 + `applyDetail` 比较写入；卡片常驻渲染在 `Composer` 的 `header` 槽（`key={card.id}`），不进消息流；实时流不渲染卡片 | 手测：任务型对话收到回复后卡片出现在输入框上方；刷新后位置与勾选不变；另一设备 3 秒内同步；删除对话后卡片消失 | 依赖 S7、S8 |
+| S10 | 移动端接入 | `frontend/src/mobile/pages/MobileChatPage.tsx` | 与 S9 同语义：状态、`applyDetail`、卡片放在 `Composer` 的 `header` 槽、移动样式 | 同 S9 的移动端手测 | 依赖 S7、S8；可与 S9 并行 |
+| S11 | 实时流协议块隐藏（前端） | `frontend/src/lib/taskCardFence.ts`、`frontend/src/components/MessageView.tsx` | text 片段渲染前剥离 `task_card` 围栏（含未闭合）；兼容收尾处的 ```json / 裸 JSON 块，中段示例不动；历史消息幂等 | `typecheck` + `build`；手测：流式输出中不闪 JSON 块 | 依赖 S2 的围栏格式；可与 S9/S10 并行 |
 | S12 | IM 正文剥离 | `backend/app/im/bridge.py`（`_collect`） | 汇总正文时调用后端 `strip_task_card`，聊天软件看不到协议 JSON | `pytest tests/test_im.py` 新增断言（正文不含围栏内容） | 依赖 S2；可与 S5 并行 |
 | S13 | 文档同步与回归 | `docs/architecture.md`（数据模型 §7 与运行时序补一段）、本文档 | 架构文档记录 `task_cards` 表与 `task_card` 协议；全套测试通过 | `bash scripts/test.sh`、`npm --prefix frontend run build`；`git status` 只含文档与实现文件 | 依赖全部；最后执行 |
 

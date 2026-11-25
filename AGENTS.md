@@ -27,7 +27,7 @@
 | 技能 | 各内核自带技能（`SKILL.md` 目录）由适配器只读扫描，统一编目进 `skills` 表，**只能通过智能体分配生效**（`agent_skills`） |
 | MCP | MCP 服务器（stdio/http/sse）统一编目进 `mcp_servers` 表：平台可新建「通用」服务器，各内核配置里的只读收录；**只能通过智能体分配生效**（`agent_mcp_servers`）。平台内置服务器（`builtin_key` 非空，声明在 `app/builtin_mcp.py`：图片生成 / 系统管理）启动时逐用户播种，连接方式由平台维护 |
 | 协作域 | `backend/app/collab/` —— 多智能体「工单」协作（可视化编排 + 波次并行引擎，默认串行），独立于对话域，见 `docs/collaboration-design.md` |
-| IM 域 | `backend/app/im/` —— 把智能体连到聊天软件（Telegram / 飞书 / 钉钉 / 企业微信 / QQ / Discord / Slack）；设置页标签「IM」，见 `docs/im.md` |
+| IM 域 | `backend/app/im/` —— 把智能体连到聊天软件（Telegram / 飞书 / 钉钉 / 企业微信 / QQ / Discord / Slack）；入口在每个智能体设定页的「IM」标签，见 `docs/im.md` |
 
 ---
 
@@ -148,10 +148,10 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
 ## 3. 核心契约（改动这些等于改公共 API）
 
 ### 3.1 规范化事件协议（`agents/events.py`）
-`run.started · message.delta · thinking.delta · tool.call · tool.result · usage · session · log · error · run.finished`
+`run.started · message.delta · thinking.delta · tool.call · tool.result · usage · context.usage · session · log · error · run.finished`
 外加传输层自有的 `turn.started`（`runtime/service.start_run()` 在启动后台运行前同步发出，携带 run_id 与消息 id）
 与 `stream.closed`（`transport/sse.py` 收尾）。
-**适配器只能产出前 10 种**；`turn.started`/`stream.closed` 由框架产出，适配器不得越权。
+**适配器只能产出前 11 种**；`turn.started`/`stream.closed` 由框架产出，适配器不得越权。
 新增事件类型必须走铁律 5 的四步同步改动。
 框架自有的旁路信封**不属于**本协议：协作域是 `collab.*`（`collab/protocol.py`），
 「内核管理」页（设置 → 内核管理）的安装 / 更新 / 卸载是 `provision.*`（`runtime/provisioning.py`）——
@@ -353,8 +353,12 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
   `DynamicForm` / `MessageView` / `MarkdownView` / `ConversationThread` / `CollabAgentThread` /
   `KernelLogo` / `TicketBoardKit` / `Composer` / `ContextMeter` / `Icons` / `McpPicker` /
   `McpServerForm` / `McpAssignPanel` / `TeamAvatarStack` / `ConversationExportForm` /
-  `LoginInput` / `TaskProgressCard`
+  `LoginInput` / `TaskProgressCard` / `AgentImSettings` / `AgentUsagePanel` /
+  `UsageReport` / `PlatformIcon` / `Modal`
   这些纯展示组件（对话气泡只有 `MessageView` 一份，线程装配只有 `ConversationThread` 一份）。
+  `AgentImSettings` / `AgentUsagePanel` 是智能体设定页「IM / 统计」标签的共用面板 ——
+  它们渲染的 `usage-*` / `.modal` / `.platform-icon` 类在 `index.css` 与 `mobile.css`
+  **各写一份**（移动端按手机宽度重排，桌面端在用量页样式段），改样式记得两边同步语义。
 - **两端功能对齐、交互各表**：桌面端有的能力（例如协作组编排）移动端也要能用，但按触屏重做交互 ——
   移动端**不引用**桌面端的编排画布（`components/CollabCanvas` 等），协作组改用表单式编辑
   （`mobile/pages/MobileCollabTeamPage.tsx`，与桌面端共用 `lib/collabDraft.ts` 的字段语义）。
@@ -647,9 +651,9 @@ curl -s http://127.0.0.1:8010/api/health
 | `agents/base.py` 契约 | 全部内置适配器 + 测试 |
 | `agents/events.py` | `runtime/service.consume_run`、前端 `applyEvent` + `types.ts`、`docs/architecture.md` |
 | `agents/skills.py` / 技能契约 | 全部声明 `skills=True` 的适配器 + `runtime/skills.py` + `tests/test_skills.py` |
-| `runtime/skills.py` | 智能体分配接口、`service.prepare_run` 的物化步骤、前端技能页与智能体弹窗 |
+| `runtime/skills.py` | 智能体分配接口、`service.prepare_run` 的物化步骤、前端技能页与智能体设定页 |
 | `agents/mcp.py` / MCP 契约 | 全部声明 `mcp=True` 的适配器 + `runtime/mcp.py` + `api/mcp.py` + `tests/test_mcp.py` |
-| `runtime/mcp.py` · `api/mcp.py` | 智能体分配接口、`service.prepare_run` 的物化步骤、前端 MCP 页（两端）与智能体弹窗 |
+| `runtime/mcp.py` · `api/mcp.py` | 智能体分配接口、`service.prepare_run` 的物化步骤、前端 MCP 页（两端）与智能体设定页 |
 | `app/builtin_mcp.py`（内置 MCP 声明） | 启动播种与 `ensure_builtin_servers`、`docs/architecture.md` §6、`docs/admin-mcp.md`、`tests/test_mcp.py` 的内置用例；脚本要随 `scripts/release.sh` 与 `docker/Dockerfile` 打包 |
 | `runtime/gateway_probe.py` · `api/gateways.py` | 网关 CRUD、官方案例播种（`bootstrap.py`）、前端 `GatewayManager` / `MobileGatewaysPage`、适配器的 `protocol`/`default_auth_style`/`default_models` |
 | `models.py` / `schemas.py` | `api/*` 的读写、前端 `types.ts`、旧数据兼容性 |
@@ -660,9 +664,9 @@ curl -s http://127.0.0.1:8010/api/health
 | `runtime/provisioning.py` | 运行时维护动作：命令来自适配器、SSE 事件信封（含登录的 `provision.qr` / `provision.input` 与 `login/input` 写回）、超时、取消、脱敏；任务列表 / 重连接口收紧为管理员 |
 | 新增「运行时可由平台安装 / 更新」 | 适配器的 `provisioner`（`RuntimeProvisioner`）+ `docs/architecture.md` §4.1 |
 | 新增 `ConfigField` | 无需改前端；但要在 `bootstrap.py` 播种默认值里确认不影响首次启动 |
-| `AgentProfile` 新增字段 | `schemas.py` 读写、`ADDITIVE_COLUMNS` 登记、前端 `types.ts` 与智能体弹窗、旧数据兼容 |
-| 新增「全局一份 + 多智能体引用」的实体（如凭据） | 独立表 + 引用表（仿 `agent_skills` / `agent_credentials`）、运行时按引用注入、接口只回掩码、设置页与智能体弹窗两条入口 |
-| 新增「统一编目 + 智能体分配」的实体（如 MCP 服务器） | 编目表 + 分配表（仿 `skills` / `agent_skills`）、适配器声明扫描与物化钩子、`runtime/` 的编目/分配/物化、接口只回掩码、两端页面 + 智能体弹窗两条分配入口 |
+| `AgentProfile` 新增字段 | `schemas.py` 读写、`ADDITIVE_COLUMNS` 登记、前端 `types.ts` 与智能体设定页、旧数据兼容 |
+| 新增「全局一份 + 多智能体引用」的实体（如凭据） | 独立表 + 引用表（仿 `agent_skills` / `agent_credentials`）、运行时按引用注入、接口只回掩码、设置页与智能体设定页两条入口 |
+| 新增「统一编目 + 智能体分配」的实体（如 MCP 服务器） | 编目表 + 分配表（仿 `skills` / `agent_skills`）、适配器声明扫描与物化钩子、`runtime/` 的编目/分配/物化、接口只回掩码、两端页面 + 智能体设定页两条分配入口 |
 | 新增适配器模块 | `registry` 自动加载（确认 import 无副作用/无网络请求）、`/api/agent-types`、文档表格 |
 | 前端新增页面 | `App.tsx` 的 `NAV` + `Routes`、`index.css` |
 | `frontend/src/mobile/*` · `frontend/m/index.html` | `MobileApp.tsx` 路由、`mobile.css`、`vite.config.ts` 的多入口、`tests/test_mobile_web.py` |

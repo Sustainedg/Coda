@@ -373,7 +373,7 @@ class ConnectionManager:
         live = self._live.get(connection_id)
         if live is None:
             raise ImError(
-                "这个 IM 机器人当前没有连接，请稍后在「设置 → IM」里重试", status_code=409
+                "这个 IM 机器人当前没有连接，请稍后在「智能体 → 设定 → IM」里重试", status_code=409
             )
         await live.sender.submit(chat, message)
 
@@ -647,7 +647,7 @@ async def _ask_pairing(
         await _manager._safe_send(  # 同模块
             connection.id,
             message.chat,
-            "已向 Coda 发出连接请求，请在电脑上的「设置 → IM」里允许。"
+            "已向 Coda 发出连接请求，请在电脑上对应智能体的「设定 → IM」标签里允许。"
             if platform is not None
             else "已发出连接请求，请先在设置里允许。",
         )
@@ -659,7 +659,7 @@ async def _ask_pairing(
 def _text(key: str, platform: Platform | None) -> str:
     name = platform.name if platform is not None else "IM"
     return {
-        "unbound": f"这个 {name} 机器人还没绑定智能体，请在「设置 → IM」里选一个。",
+        "unbound": f"这个 {name} 机器人还没绑定智能体，请到对应智能体的「设定 → IM」标签里选一个。",
     }.get(key, key)
 
 

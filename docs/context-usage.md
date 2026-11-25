@@ -4,20 +4,56 @@
 （当前已用、可配置上限、触发阈值、压缩策略、最近一次压缩状态），上限与阈值可在面板
 里修改并持久化。用量达到阈值时，下一轮发送前会自动把更早的历史折叠成摘要。
 
-## 估算口径（唯一一份）
+## 计量口径（唯一一份）
+
+取数分两档，展示（`GET /api/conversations/{id}/context`）、阈值判断与压缩决策
+（`prepare_run` / `regenerate_last`）全部走 `runtime/context.py` 的同一个入口，
+前端不另算一套。
+
+### 1. 内核上报的真实快照（优先）
+
+会话型内核（Claude Code、CodeBuddy、Codex app-server 等）自己维护上下文，平台看不到
+它内部的历史。适配器每发生一次模型请求就上报一条 `context.usage` 事件，
+运行层把它记到 `messages.context_tokens`：
+
+* Claude Code / CodeBuddy：取 `stream_event` 里 `message_start.message.usage` 的
+  `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`，以及完整
+  `assistant` 消息的 `message.usage`；`message_delta.usage` 只有 `output_tokens`，不用于窗口占用；
+* API 型内核（OpenAI 兼容 / DeepSeek Harness）：取每一步的 `prompt_tokens`；
+* Codex app-server：取 `thread/tokenUsage/updated` 的 `last.inputTokens`。
+
+下一次估算以**最近一次请求的输入 token** 为基准，再加上此后新增的正文。
+快照在以下情况自动失效：会话被压缩 / 重置（`session_id` 清空）、消息早于最近一次压缩、
+或快照来自 @ 召唤轮（不写回主场会话记忆）。
+
+### 2. 按内容估算（没有快照时的兜底）
 
 | 内容 | 估算规则 |
 | --- | --- |
 | 中日韩文字（含全角标点、假名、谚文） | 1 字 ≈ 1 token |
 | 其余字符 | 4 字符 ≈ 1 token |
 | 每条消息 | 额外 4 tokens（角色 / 分隔开销） |
+| 工具调用 | 工具名 + 入参 JSON |
+| 工具结果 | 输出全文 |
+| 推理内容（thinking） | 全文 |
 
-实现只有一处：`backend/app/runtime/context.py` 的 `estimate_tokens` / `estimate_usage`。
-界面展示（`GET /api/conversations/{id}/context`）、阈值判断、压缩决策（`prepare_run`）
-全部调用它，前端不另算一套。
+估算范围按内核能力区分，保证「算的就是真正会发出去的」：
 
-> 这是**近似估算**，不是计费口径。各内核上报的 `usage` 才是真实消耗（用量页），
-> 但「下一轮还没发出去的上下文会有多大」只能按正文估算。
+* 会话型内核且 `session_id` 还在：内核转录里包含工具调用与工具结果，按全部有效消息
+  + 工具片段估算；
+* 非会话型内核（或会话已压缩 / 重置）：平台只回放最近 **24 条 / 40000 字符**的
+  **最终回复**，工具片段不计（`runtime.context.clip_messages` 与实际发送共用同一份规则）。
+
+`text` 片段与 `message.content` 是同一份内容，只计一次；正文为空但带 `parts` 的
+消息（只调工具、还没产出文字的回合）不会被丢掉。
+
+> 这是**近似估算**（快照档除外），不是计费口径。各内核上报的 `usage` 是整轮累计
+> （用量页），不能直接当作「当前窗口占用」；`context.usage` 才是单次请求的窗口快照。
+
+> **升级提示**：升级前的旧消息没有 `context_tokens` 快照，第一次打开时会按内容
+> （含历史工具调用与结果）估算，数字可能明显高于旧版本；下一次运行完成后会自动
+> 以内核上报的快照校准。若旧对话的估算已超过阈值，下一条消息会触发一次自动压缩
+> （原文一条不丢，只是更早的部分折叠进摘要）。
 
 默认值：上限 **128000** tokens，触发阈值 = 上限的 **80%**。
 
@@ -65,9 +101,13 @@
 
 - `backend/app/runtime/context.py`（新增）：估算口径、配置读写与校验、压缩、状态；
 - `backend/app/models.py`：`Conversation` 增加 `context_summary` /
-  `context_compacted_count` / `context_compacted_at`（含旧库补列声明）；
+  `context_compacted_count` / `context_compacted_at`，`Message` 增加
+  `context_tokens`（含旧库补列声明）；
+- `backend/app/agents/events.py`：新增 `context.usage` 事件（单次请求的输入 token）；
+- `backend/app/agents/builtin/{claude_code,codebuddy_cli,codex,deepseek_harness,
+  openai_harness}.py`：在每次模型请求后上报 `context.usage`；
 - `backend/app/runtime/service.py`：`prepare_run` / `regenerate_last` 接入压缩，
-  运行日志推送压缩结果；
+  任务卡与凭据说明并入估算，`context.usage` 落到 `messages.context_tokens`；
 - `backend/app/api/conversations.py`：`GET /conversations/{id}/context`；
   `/clear` 与删除对话时清理压缩状态；
 - `backend/app/api/system.py`：`GET/PUT /system/context`；

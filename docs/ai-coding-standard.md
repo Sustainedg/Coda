@@ -120,7 +120,8 @@ POST /api/conversations/{id}/messages
 | `thinking.delta` | `text` | 推理增量（如 `reasoning_content`、Claude thinking） |
 | `tool.call` | `name`、`call_id`、`payload.input` | 工具调用 |
 | `tool.result` | `call_id`、`payload.output`、`payload.is_error` | 工具结果 |
-| `usage` | 任意数值键 | token / 费用 / 耗时 |
+| `usage` | 任意数值键 | 整轮累计的 token / 费用 / 耗时（计费口径） |
+| `context.usage` | `payload.tokens` | **单次请求**的输入 token（上下文窗口占用，落 `messages.context_tokens`） |
 | `session` | `payload.session_id` | 智能体侧会话 id，落库以支持多轮 |
 | `log` | `text`、`payload.level` | 命令回显、诊断信息 |
 | `error` | `text` | 可展示的错误 |

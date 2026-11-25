@@ -1,8 +1,9 @@
 # IM：在聊天软件里和智能体说话
 
-- 入口：**设置 → IM**（桌面端标签页 `?tab=im`；移动端 `设置 → IM`，路由 `/m/im`）
-- 代码：`backend/app/im/`（域）· `frontend/src/components/ImSettings.tsx`（桌面）
-  · `frontend/src/mobile/pages/MobileImPage.tsx`（移动端）
+- 入口：**每个智能体的设定页 → IM 标签**（桌面端 `/agents/{id}?tab=im`；移动端 `/m/agents/{id}?tab=im`；
+  平台设置页不再有「IM」标签，`/m/im` 旧路由重定向到智能体列表）
+- 代码：`backend/app/im/`（域）· `frontend/src/components/AgentImSettings.tsx`（两端共用的 IM 面板，
+  挂在智能体设定页的「IM」标签里：桌面 `pages/AgentEditPage.tsx`，移动端 `mobile/pages/MobileAgentEditPage.tsx`）
 - 参考实现：DS Bot（`Fei2411/DS-Bot`）的 IM 设置页与平台适配器 —— 只借鉴交互与协议思路，
   代码按本仓库的分层重写（Python · FastAPI · 无前端框架）。
 - 相关文档：`AGENTS.md`（分层铁律与 §4.9 接入新平台）、`docs/architecture.md`（IM 表结构与
@@ -319,7 +320,7 @@ runtime/service.py（对话域：排队、执行、落库）
 
 - 一个账号第一次发消息（私聊，或在群里 @ 机器人）：记一条 `pending`，设置页出现「谁想连接」，
   带平台上的名字。
-- 没配对的账号：机器人只回**一次**「已向 Coda 发出连接请求，请在电脑上的『设置 → IM』里允许」；
+- 没配对的账号：机器人只回**一次**「已向 Coda 发出连接请求，请在电脑上对应智能体的『设定 → IM』标签里允许」；
   再说也不重复回。
 - 点「允许」→ `allowed`，并顺手建出那条聊天；点「拒绝」→ `denied`，之后它发消息只回
   「这个账号的连接请求已被拒绝」。
@@ -521,7 +522,7 @@ start_run(prepared)
 
 ### 11.1 桌面端
 
-- 设置页的「IM」标签（`frontend/src/pages/SettingsPage.tsx`，`?tab=im`）。
+- 每个智能体设定页的「IM」标签（`frontend/src/pages/AgentEditPage.tsx` → `components/AgentImSettings.tsx`，`/agents/{id}?tab=im`；设置页不再有 IM 标签）。
 - 打开时并发拉取：平台清单、连接、配对请求、智能体列表；然后逐个拉每条连接的聊天。
 - 连接状态是活的：每 5 秒轮询连接与配对请求；轮询失败只提示一次，不反复弹窗。
 - 页面结构：
@@ -536,7 +537,8 @@ start_run(prepared)
 
 ### 11.2 移动端
 
-- `frontend/src/mobile/pages/MobileImPage.tsx`，路由 `/m/im`，入口在移动端设置页。
+- `frontend/src/mobile/pages/MobileAgentEditPage.tsx`，路由 `/m/agents/{id}`，入口在智能体列表的「设定」；
+  旧路由 `/m/im` 重定向到智能体列表。
 - 功能与桌面端对齐，交互按触屏重做：列表 + 底部弹层。
 - 配对请求放最上面（「现在要动的东西」）；连接详情同样可以改智能体、开关过程内容、
   管理配对账号与聊天。
@@ -617,7 +619,7 @@ start_run(prepared)
 ### 13.3 其它
 
 - `backend/tests/test_ownership.py`：IM 连接的归属过滤与老库回填。
-- `backend/tests/test_settings_page.py`：设置页必须有「IM」标签页并渲染 `<ImSettings />`。
+- `backend/tests/test_settings_page.py`：IM 收在智能体设定页的「IM」标签（`AgentImSettings`），设置页不再有 IM 标签。
 
 ---
 
@@ -679,7 +681,7 @@ start_run(prepared)
 | 状态「连不上」 | 连接卡上的 `error` 文案（已脱敏）；凭据是否过期 / 权限是否开通 |
 | Telegram `409` | 这个机器人是否被 webhook 或另一个程序占用 |
 | 发消息没反应 | 账号是否已配对；群里是否 @ 了机器人；服务是否在运行；智能体是否已停用 / 删除 |
-| 收到「已发出连接请求」 | 去「设置 → IM」点「允许」 |
+| 收到「已发出连接请求」 | 去对应智能体的「设定 → IM」标签点「允许」 |
 | 收到「上一条还在处理」 | 同一聊天串行，等这一轮结束；需要停就发 `/stop` |
 | 消息发出去了但智能体没收到 | 看服务端 warning 日志；确认消息不是纯空文本且附件没有超限 |
 | 聊天里只有正文，没有思考 / 工具 | 过程开关默认关闭；在连接详情里逐项打开 |

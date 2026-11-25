@@ -99,7 +99,8 @@ collab.engine.consume_turn()  ── 取就绪工单跑一步（max_parallel>1 �
 | `thinking.delta` | `text` | 推理增量（如 `reasoning_content`、Claude thinking） |
 | `tool.call` | `name`, `call_id`, `payload.input` | 工具调用 |
 | `tool.result` | `call_id`, `payload.output`, `payload.is_error` | 工具结果 |
-| `usage` | 任意数值 | token / 费用 / 耗时 |
+| `usage` | 任意数值 | 整轮累计的 token / 费用 / 耗时（计费口径） |
+| `context.usage` | `payload.tokens` | **单次请求**的输入 token（上下文窗口占用，落 `messages.context_tokens`） |
 | `session` | `payload.session_id` | 智能体侧会话 id，落库以支持多轮 |
 | `log` | `text`, `payload.level` | 命令回显、诊断信息 |
 | `error` | `text` | 可展示的错误 |
@@ -599,8 +600,9 @@ conversations(id, title, agent_profile_id→agent_profiles, session_id, workspac
               # last_read_at 为空 = 升级前的旧对话，一律当已读
               # context_summary / context_compacted_count 是自动压缩的摘要与已折叠条数（原文仍全在 messages）
 messages(id, conversation_id→conversations, role, content, parts JSON, usage JSON, status, error,
-         agent_profile_id)   # agent_profile_id 为空 = 对话归属的智能体；非空 = @ 召唤的智能体
+         agent_profile_id, context_tokens)   # agent_profile_id 为空 = 对话归属的智能体；非空 = @ 召唤的智能体
                                # 回答的那一轮（消息仍在对话流里，归属与主场会话记忆不变）
+                               # context_tokens = 本轮最后一次模型请求的输入 token（上下文窗口快照）
 task_cards(id, conversation_id→conversations UNIQUE, anchor_message_id, title, items JSON,
            version, last_run_id, created_at, updated_at)
            # 一个对话最多一张；items = [{id,text,done,done_at,updated_at}]
@@ -651,7 +653,9 @@ im_chats(id, connection_id→im_connections, chat_key, kind(direct|group), title
   也会和消息落库路径抢同一行；因此单独建 `task_cards`（一个对话唯一一张）。模型在正文末尾
   输出一个 `task_card` 围栏 JSON 块声明建卡 / 勾选，运行收尾时服务端解析、从正文与
   `parts` 里剥离后落库；**没有客户端写接口**，界面只读。`done` 单向（`false → true`），
-  解析失败 / 冲突一律保持原状态并记日志。
+  解析失败 / 冲突一律保持原状态并记日志。模型把块写成 ```json 或裸 JSON 时同样认
+  （只认正文收尾处、且结构像任务卡，中段 JSON 示例不动）。卡片**常驻渲染在输入框上方**，
+  默认收起成一行，点开看任务项；折叠状态只存前端 localStorage。
 - **`parts` 用 JSON**：工具调用/结果/推理的形态随智能体变化，无需为每种智能体建表；
   它是按真实发生顺序排列的时间线（`thinking` / `text` / `tool_call` / `tool_result`），
   前端据此按**真实顺序**渲染，只把**连续**出现的「思考 / 工具调用 / 工具结果」收进一个默认折叠的

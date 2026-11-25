@@ -23,17 +23,23 @@ export function formatTokenCount(value: number): string {
 }
 
 /**
- * 用量刷新的轻量键：条数 + 正文总长 + 本轮状态。
+ * 用量刷新的轻量键：条数 + 正文总长 + 时间线片段数 + 本轮状态。
  *
  * 只盯条数会漏掉「另一台设备把流式那一轮写完后，消息 id 不变、正文补齐」的那次刷新；
+ * 只盯正文又会漏掉「只发生工具调用、正文没变」的那一轮（工具结果同样占上下文）。
  * 两端对话页共用这一个函数，别各写一份表达式。
  */
 export function contextRefreshKey(
-  messages: ReadonlyArray<{ content: string }>,
+  messages: ReadonlyArray<{ content: string; parts?: ReadonlyArray<unknown> }>,
   status: string | null | undefined,
 ): string {
-  const total = messages.reduce((sum, message) => sum + message.content.length, 0)
-  return `${messages.length}:${total}:${status ?? ''}`
+  let text = 0
+  let parts = 0
+  for (const message of messages) {
+    text += message.content.length
+    parts += message.parts?.length ?? 0
+  }
+  return `${messages.length}:${text}:${parts}:${status ?? ''}`
 }
 
 export type ContextInputCheck =

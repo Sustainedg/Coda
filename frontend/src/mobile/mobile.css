@@ -329,6 +329,10 @@ code, pre, .mono { font-family: var(--mono); }
   background: var(--bg-panel); color: inherit; cursor: pointer; width: 100%;
 }
 .m-item:active { background: var(--bg-hover); }
+/* IM 平台图标：行内小图，与标题文字垂直居中。共享组件 AgentImSettings 在移动端也用；
+   本文件不加载 index.css，这里补一份基类。 */
+.platform-icon { vertical-align: -2px; margin-right: 4px; flex: none; }
+.platform-icon-text { vertical-align: -2px; margin-right: 4px; }
 /* 列表项本身有 gap，去掉图标的右边距，避免与 gap 叠加。 */
 .m-item .platform-icon, .m-item .platform-icon-text { margin-right: 0; }
 /* 列表项里都用 span（button 只允许短语内容），因此显式块级化，省略号才会生效。 */
@@ -2029,6 +2033,164 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .m-usage-empty-line { padding: 8px; font-size: 12px; color: var(--text-dim); }
 
+/* ================= 智能体设定页：统计 / IM（组件两端共用，移动端尺寸各写一份）================= */
+/* `AgentUsagePanel`（components/AgentUsagePanel.tsx）渲染的是桌面同一组 usage-* 类名；
+   移动端不加载 index.css，这里按手机宽度重排：hero 单列、图表横条、技能排行紧凑。
+   桌面端同一组样式在 index.css 的「用量页」段，修改时两边同步语义。 */
+.usage-range {
+  flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+.usage-range-label { font-size: 10px; font-weight: 600; color: var(--text-dim); letter-spacing: 0.05em; }
+.usage-range-hint { font-size: 10.5px; color: var(--text-dim); }
+.usage-range .input { max-width: 132px; min-height: 34px; }
+
+.usage-hero {
+  flex: none; display: flex; flex-direction: column; gap: 14px;
+  padding: 16px; border: 1px solid var(--border); border-radius: var(--radius);
+  background:
+    radial-gradient(120% 170% at 0% 0%, var(--brand-soft), transparent 58%),
+    linear-gradient(135deg, var(--bg-panel), var(--bg-elevated));
+}
+.usage-hero-main { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.usage-hero-kicker { font-size: 10.5px; font-weight: 600; color: var(--text-dim); }
+.usage-hero-value {
+  font-size: 30px; font-weight: 750; font-variant-numeric: tabular-nums;
+  line-height: 1.05; letter-spacing: -0.01em;
+}
+.usage-hero-value > span { margin-left: 5px; font-size: 12px; font-weight: 500; color: var(--text-dim); }
+.usage-hero-unit { margin-left: 5px; font-size: 12px; font-weight: 500; color: var(--text-dim); }
+.usage-hero-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.usage-chip {
+  font-size: 10.5px; color: var(--text-muted); padding: 2px 8px;
+  border-radius: 999px; background: var(--bg-hover); white-space: nowrap;
+}
+.usage-hero-chips > span {
+  font-size: 10.5px; color: var(--text-muted); padding: 2px 8px;
+  border-radius: 999px; background: var(--bg-hover); white-space: nowrap;
+}
+.usage-hero-note { margin: 0; font-size: 10.5px; line-height: 1.5; color: var(--text-dim); }
+.usage-hero-side { display: flex; align-items: center; gap: 12px; }
+.usage-ring {
+  flex: none; width: 72px; height: 72px; border-radius: 50%;
+  display: grid; place-items: center;
+}
+.usage-ring-inner {
+  width: 52px; height: 52px; border-radius: 50%; background: var(--bg-elevated);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+}
+.usage-ring-inner strong { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.usage-ring-inner span { font-size: 8.5px; color: var(--text-dim); }
+.usage-legend { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.usage-legend li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.usage-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
+.usage-legend-label { font-size: 10.5px; color: var(--text-muted); }
+.usage-legend-value {
+  margin-left: auto; font-size: 10.5px; font-weight: 600;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+.usage-panel {
+  flex: none; display: flex; flex-direction: column; gap: 10px;
+  padding: 13px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+.usage-panel-head { display: flex; align-items: baseline; gap: 8px; }
+.usage-panel-title { font-size: 13px; font-weight: 650; }
+.usage-panel-sub { margin-left: auto; font-size: 10.5px; color: var(--text-dim); }
+
+/* 每日消耗：手机上改为横条（一行 = 一天），桌面是竖柱。 */
+.usage-chart-wrap { display: flex; flex-direction: column; gap: 7px; }
+.usage-chart { display: flex; flex-direction: column; gap: 7px; }
+.usage-chart-cols { display: flex; flex-direction: column; gap: 6px; }
+.usage-chart-cols.sparse { gap: 6px; }
+/* 一行 = 一天：日期在左、横条在右。组件只给 `--usage-share`，这里把它当宽度用。 */
+.usage-chart-col {
+  display: grid; grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center; gap: 8px;
+}
+.usage-chart-col .usage-chart-date { grid-column: 1; grid-row: 1; }
+.usage-chart-col .usage-chart-track { grid-column: 2; grid-row: 1; }
+.usage-chart-cols.sparse .usage-chart-col { flex: initial; }
+.usage-chart-col.today .usage-chart-date { color: var(--brand); font-weight: 700; }
+.usage-chart-date { font-size: 10px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.usage-chart-track { display: flex; height: 10px; overflow: hidden; border-radius: 999px; background: var(--bg-hover); }
+.usage-chart-seg { display: block; height: 100%; width: var(--usage-share, 0); }
+.usage-chart-seg.seg-input { background: linear-gradient(90deg, var(--brand), var(--brand-strong)); }
+.usage-chart-seg.seg-output { background: linear-gradient(90deg, var(--accent), var(--accent-soft)); }
+.usage-chart-seg.seg-cache { background: linear-gradient(90deg, var(--brand), var(--accent)); opacity: 0.22; }
+
+.usage-skill-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.usage-skill-summary > div {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 9px 11px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-elevated);
+}
+.usage-skill-summary strong { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.usage-skill-summary span { font-size: 10.5px; color: var(--text-dim); }
+
+.usage-skill-list { display: flex; flex-direction: column; gap: 2px; }
+.usage-skill { display: flex; align-items: flex-start; gap: 9px; width: 100%; padding: 7px 2px; }
+.usage-skill-main { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; }
+.usage-skill-line { display: flex; align-items: baseline; gap: 8px; }
+.usage-skill-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; }
+.usage-skill-calls { flex: none; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.usage-skill-calls em { margin-left: 3px; font-size: 9.5px; font-weight: 500; font-style: normal; color: var(--text-dim); }
+.usage-skill-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--text-dim); }
+.usage-skill-track { display: block; height: 4px; overflow: hidden; border-radius: 999px; background: var(--bg-hover); }
+.usage-skill-track > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--brand)); }
+.usage-rank {
+  flex: none; width: 20px; font-family: var(--mono); font-size: 9.5px;
+  color: var(--text-dim); font-variant-numeric: tabular-nums;
+}
+.usage-note {
+  margin: 0; padding-top: 10px; border-top: 1px dashed var(--border);
+  font-size: 10.5px; line-height: 1.6; color: var(--text-dim);
+}
+.usage-empty-line { padding: 8px; font-size: 12px; color: var(--text-dim); }
+
+/* `AgentImSettings`（components/AgentImSettings.tsx）共用时补移动端缺的三个原语：
+   状态点（.pill 里的 .dot）、加载圈（.spin）、移除账号的小文字按钮（.link-btn），
+   以及「添加连接」弹窗（桌面是居中 Modal，移动端按底部弹层呈现，同一组类名）。 */
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.dot.off { background: var(--danger); }
+.spin { display: inline-block; animation: spin 0.9s linear infinite; }
+.link-btn {
+  border: none; background: none; color: var(--brand);
+  font-size: 12.5px; cursor: pointer; padding: 2px 4px;
+}
+.link-btn:hover { text-decoration: underline; }
+
+/* 共用组件里的居中弹窗（桌面 `Modal`）：移动端按底部弹层呈现 —— 同一组类名，
+   布局贴手机习惯（底部圆角、贴安全区、脚部按钮等宽）。当前只有
+   `AgentImSettings` 的「添加连接」弹窗会用到。 */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 40; background: rgba(4, 3, 10, 0.6);
+  display: flex; align-items: flex-end; backdrop-filter: blur(2px);
+}
+.modal {
+  width: 100%; max-height: 88vh; max-height: 88dvh; display: flex; flex-direction: column;
+  background: var(--bg-elevated); border-top-left-radius: var(--radius-lg); border-top-right-radius: var(--radius-lg);
+  border-top: 1px solid var(--border-strong); box-shadow: var(--shadow);
+}
+.modal.wide { max-width: none; }
+.modal-head {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 8px 12px 8px 16px; border-bottom: 1px solid var(--border);
+}
+.modal-title { font-size: 15px; flex: 1; }
+.modal-body {
+  overflow-y: auto; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.modal-foot {
+  display: flex; gap: 9px; flex: none;
+  padding: 12px 16px calc(12px + var(--safe-bottom));
+  border-top: 1px solid var(--border);
+}
+.modal-foot .btn { flex: 1; }
+
 /* ================= 登录 / 注册（移动端外壳）================= */
 
 .auth-screen.auth-mobile {
@@ -2154,13 +2316,18 @@ code, pre, .mono { font-family: var(--mono); }
 
 /* ================= 任务进度卡片：标题 + 进度条 + 任务项（两端共用这一份）================= */
 /* 任务项是纯文本 + 状态标记，没有 checkbox / 输入框 / 可点击任务项；唯一按钮只切换折叠。 */
-.task-card-turn { align-items: stretch; }
 .task-progress-card {
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--bg-elevated); padding: 10px 12px;
   display: flex; flex-direction: column; gap: 8px;
 }
-.task-progress-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* 整条标题栏就是折叠开关：button 复位成普通行，图标 / 文本照旧 */
+.task-progress-head {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  width: 100%; padding: 0; background: transparent; border: 0;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.task-progress-head:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 6px; }
 .task-progress-icon { font-size: 13px; flex: none; display: flex; align-items: center; }
 .task-progress-title {
   font-weight: 650; font-size: 13px; color: var(--text); min-width: 0;

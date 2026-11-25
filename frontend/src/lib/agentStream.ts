@@ -74,6 +74,9 @@ export function applyAgentEvent(state: AgentStreamState, event: AgentEvent): Age
       }
     case 'usage':
       return { ...state, usage: { ...state.usage, ...(event.payload as Record<string, number>) } }
+    case 'context.usage':
+      // 单次请求的上下文快照，只用于服务端计量；流式界面不展示，等轮询刷新即可。
+      return state
     case 'log':
       return { ...state, logs: [...state.logs, event.text ?? ''] }
     case 'error':

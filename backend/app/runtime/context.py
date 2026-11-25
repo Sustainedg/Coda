@@ -1,14 +1,29 @@
 """上下文窗口：近似 token 估算、上限设置与自动压缩。
 
-**口径（唯一一份）**：所有「已用 / 上限 / 阈值 / 压缩决策」都走 :func:`estimate_tokens`。
+**口径（唯一一份）**：所有「已用 / 上限 / 阈值 / 压缩决策」都走本模块。
 
-* 中日韩文字（含全角标点、假名、谚文）按 **1 字 ≈ 1 token**；
-* 其余字符按 **4 字符 ≈ 1 token**；
-* 每条消息再加 :data:`MESSAGE_OVERHEAD_TOKENS` 的角色 / 分隔开销。
+取数优先级（两档，展示与压缩决策共用同一份结果）：
+
+1. **内核上报的真实快照**：会话型内核（Claude Code / CodeBuddy…）自己维护上下文，
+   平台看不到它内部的历史。适配器每次 API 调用上报 ``context.usage`` 事件，
+   运行层把它记在 ``messages.context_tokens`` 上；下一次估算直接以最近一次请求的
+   输入 token 为基准，再加上之后新增的正文。
+2. **按内容估算**（没有快照时的兜底）：一条消息 = 正文 + 工具调用入参 + 工具结果 +
+   推理内容 + :data:`MESSAGE_OVERHEAD_TOKENS` 的角色 / 分隔开销。
+   * 中日韩文字（含全角标点、假名、谚文）按 **1 字 ≈ 1 token**；
+   * 其余字符按 **4 字符 ≈ 1 token**；
+   * ``text`` 片段与 ``content`` 是同一份内容，只计一次。
+
+估算范围按内核能力区分，保证「算的就是真正会发出去的」：
+
+* 会话型内核且 ``conversation.session_id`` 还在：内核那份转录里装着工具调用与工具结果，
+  因此按全部有效消息 + 工具片段估算；
+* 非会话型内核（或会话已被压缩 / 重置）：平台只回放最近
+  :data:`MAX_HISTORY_MESSAGES` 条 / :data:`MAX_HISTORY_CHARS` 字符的**最终回复**
+  （与 ``runtime.service`` 实际发送的历史同一份），工具片段不计。
 
 这是近似值，不是计费口径：各内核上报的 ``usage`` 才是真实消耗（见
-``app/api/usage.py``）。上下文窗口需要的是「还没发出去的这一轮会有多大」，
-只能按正文估算；因此展示、阈值判断、压缩决策必须共用本模块，禁止各处各算一套。
+``app/api/usage.py``）。展示、阈值判断、压缩决策必须共用本模块，禁止各处各算一套。
 
 配置沿用仓库现有的键值配置表（:class:`app.models.PlatformSetting`，与
 ``runtime/titles.py`` 的标题设置同一套读写约定）：
@@ -58,6 +73,9 @@ MAX_SUMMARY_CHARS = 1_200
 MAX_SUMMARY_LINE_CHARS = 80
 #: 每条消息的角色 / 分隔开销（近似值）。
 MESSAGE_OVERHEAD_TOKENS = 4
+#: 非会话型内核实际回放的历史上限（与 ``runtime.service`` 共用同一份，别各写一套）。
+MAX_HISTORY_MESSAGES = 24
+MAX_HISTORY_CHARS = 40_000
 #: 摘要块的开头（同时用于展示与估算，保证两处口径一致）。
 SUMMARY_HEADER = "【较早对话摘要（自动压缩，原文仍保留在对话记录中）】"
 
@@ -107,9 +125,41 @@ def estimate_tokens(text: str | None) -> int:
     return math.ceil(cjk + (len(text) - cjk) / 4)
 
 
-def estimate_message_tokens(message: Message) -> int:
-    """一条消息的估算量：正文 + 固定角色开销。"""
-    return estimate_tokens(message.content) + MESSAGE_OVERHEAD_TOKENS
+def _part_tokens(part: object) -> int:
+    """一个时间线片段的估算量（``text`` 片段与正文重复，交给调用方决定）。"""
+    if not isinstance(part, dict):
+        return 0
+    kind = part.get("kind")
+    if kind == "thinking":
+        return estimate_tokens(part.get("text"))
+    if kind == "tool_call":
+        raw_input = json.dumps(part.get("input") or {}, ensure_ascii=False)
+        return estimate_tokens(part.get("name")) + estimate_tokens(raw_input)
+    if kind == "tool_result":
+        return estimate_tokens(part.get("output"))
+    return 0
+
+
+def estimate_message_tokens(message: Message, *, include_parts: bool = False) -> int:
+    """一条消息的估算量：正文 + 固定角色开销（可选：工具调用 / 结果 / 推理）。
+
+    ``include_parts`` 只在「内核自己维护上下文」时打开：工具调用与工具结果确实在
+    内核的转录里占窗口。非会话型内核只回放最终回复，打开它就会把根本没发送的内容
+    算进去。``text`` 片段与 ``content`` 是同一份内容，永远只计一次。
+    """
+    total = estimate_tokens(message.content) + MESSAGE_OVERHEAD_TOKENS
+    if not include_parts:
+        return total
+    parts = message.parts or []
+    if not message.content:
+        # 正常落库时 content == text 片段；只有正文为空时才需要单独补 text 片段。
+        total += sum(
+            estimate_tokens(part.get("text"))
+            for part in parts
+            if isinstance(part, dict) and part.get("kind") == "text"
+        )
+    total += sum(_part_tokens(part) for part in parts)
+    return total
 
 
 def estimate_usage(
@@ -117,6 +167,8 @@ def estimate_usage(
     summary: str | None,
     messages: Iterable[Message],
     prompt: str = "",
+    *,
+    include_parts: bool = False,
 ) -> int:
     """估算下一次请求的上下文大小（系统提示 + 摘要 + 历史 + 本轮提示）。
 
@@ -126,8 +178,101 @@ def estimate_usage(
     total += estimate_tokens(_with_header(summary))
     total += estimate_tokens(prompt)
     for message in messages:
-        total += estimate_message_tokens(message)
+        total += estimate_message_tokens(message, include_parts=include_parts)
     return total
+
+
+def clip_messages(rows: Iterable[Message]) -> list[Message]:
+    """非会话型内核真正会回放的历史：最近 24 条 / 40k 字符的最终回复。
+
+    与 ``runtime.service`` 发送历史时用的是同一份规则（那里直接引用本函数），
+    否则「估算」和「实际发送」会各算一套。
+    """
+    picked: list[Message] = []
+    budget = MAX_HISTORY_CHARS
+    rows = list(rows)
+    for row in reversed(rows[-MAX_HISTORY_MESSAGES:]):
+        if row.role not in ("user", "assistant") or not row.content:
+            continue
+        budget -= len(row.content)
+        if budget < 0:
+            break
+        picked.append(row)
+    return list(reversed(picked))
+
+
+def clip_history(rows: Iterable[Message]) -> list[dict[str, str]]:
+    """把 :func:`clip_messages` 的结果转成内核请求需要的 ``{role, content}``。"""
+    return [{"role": row.role, "content": row.content} for row in clip_messages(rows)]
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    """SQLite 取出的时间可能是裸 UTC；统一补上时区再比较。"""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
+
+
+def _snapshot_index(active: list[Message], conversation: Conversation) -> int | None:
+    """最近一条可用的内核上下文快照下标；没有就返回 None。
+
+    可用条件：
+    * 会话 id 还在（内核没有因为压缩 / 重置被换成新会话）；
+    * 快照来自本对话的主场智能体（@ 召唤轮不写回会话记忆，不能拿它的数）；
+    * 快照晚于最近一次压缩（压缩会清 session_id，旧快照随之失效）。
+    """
+    if not conversation.session_id or not active:
+        return None
+    compacted_at = _aware(conversation.context_compacted_at)
+    for index in range(len(active) - 1, -1, -1):
+        message = active[index]
+        if message.role != "assistant" or not message.context_tokens:
+            continue
+        if message.agent_profile_id and message.agent_profile_id != conversation.agent_profile_id:
+            continue
+        if compacted_at is not None and _aware(message.created_at) <= compacted_at:
+            continue
+        return index
+    return None
+
+
+def estimate_conversation(
+    rows: Iterable[Message],
+    conversation: Conversation,
+    system_prompt: str | None,
+    prompt: str = "",
+) -> tuple[int, bool]:
+    """估算下一次请求的上下文大小，返回 ``(tokens, 是否用了内核上报的快照)``。
+
+    这是展示与压缩决策**唯一**的入口：两条路径必须拿到同一个数，否则会出现
+    「面板说没超，压缩却触发了」这种自相矛盾。
+    """
+    active = active_messages(rows, conversation)
+    index = _snapshot_index(active, conversation)
+    if index is not None:
+        snapshot = active[index]
+        # 快照是那一轮最后一次 API 调用的输入：已包含系统提示、工具定义、工具调用与结果；
+        # 唯一还没进去的是这次调用产出的正文，因此只补它自己的正文。
+        total = int(snapshot.context_tokens or 0)
+        total += estimate_tokens(snapshot.content) + MESSAGE_OVERHEAD_TOKENS
+        for later in active[index + 1:]:
+            total += estimate_message_tokens(later, include_parts=True)
+        return total + estimate_tokens(prompt), True
+
+    # 会话型内核：工具调用 / 结果确实在内核的转录里，按全量 + 工具片段估算；
+    # 非会话型内核：平台只回放裁剪后的最终回复，裁剪规则与实际发送共用。
+    include_parts = bool(conversation.session_id)
+    sent = active if include_parts else clip_messages(active)
+    return (
+        estimate_usage(
+            system_prompt,
+            conversation.context_summary,
+            sent,
+            prompt,
+            include_parts=include_parts,
+        ),
+        False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +348,15 @@ async def write_settings(
 
 
 async def conversation_usage(
-    session: AsyncSession, conversation: Conversation, system_prompt: str | None
-) -> int:
-    """一条对话当前的上下文估算量（展示与「上限不得低于已用」校验共用）。"""
+    session: AsyncSession,
+    conversation: Conversation,
+    system_prompt: str | None,
+    prompt: str = "",
+) -> tuple[int, bool]:
+    """一条对话当前的上下文用量，返回 ``(tokens, 是否用了内核上报的快照)``。
+
+    「展示」与「上限不得低于已用」校验共用（见 ``GET /conversations/{id}/context``）。
+    """
     rows = (
         await session.execute(
             select(Message)
@@ -213,32 +364,38 @@ async def conversation_usage(
             .order_by(Message.created_at)
         )
     ).scalars().all()
-    active = active_messages(list(rows), conversation)
     # 估算要逐字扫全量正文，长对话时是纯 CPU 活：丢到线程池，别堵住事件循环
     # （这个接口会被前端在运行中定时轮询，堵住会拖慢正在推送的 SSE）。
     return await run_in_threadpool(
-        estimate_usage, system_prompt, conversation.context_summary, active
+        estimate_conversation, list(rows), conversation, system_prompt, prompt
     )
 
 
 def active_messages(rows: Iterable[Message], conversation: Conversation) -> list[Message]:
-    """本轮真正还会进上下文的消息：跳过已折叠进摘要的那一段。"""
-    messages = [row for row in rows if row.role in ("user", "assistant") and row.content]
+    """本轮真正还会进上下文的消息：跳过已折叠进摘要的那一段。
+
+    正文为空但带 ``parts`` 的消息也要保留：只调了工具、还没来得及产出正文的回合
+    同样占内核上下文（此前 ``and row.content`` 会把整条工具链一起丢掉）。
+    """
+    messages = [
+        row
+        for row in rows
+        if row.role in ("user", "assistant") and (row.content or row.parts)
+    ]
     return messages[max(0, conversation.context_compacted_count) :]
 
 
 def build_history(
     rows: Iterable[Message],
     conversation: Conversation,
-    clip: Callable[[list[Message]], list[dict[str, str]]],
+    clip: Callable[[list[Message]], list[dict[str, str]]] | None = None,
 ) -> list[dict[str, str]]:
     """把有效消息裁成历史；有摘要时作为第一段注在前面。
 
-    ``clip`` 由调用方传入（``runtime.service._clip_history``），保持既有的
-    24 条 / 40k 字符硬上限，不在压缩之外再放大提示词。
+    默认用 :func:`clip_history`（24 条 / 40k 字符）；估算与实际发送共用这一份规则。
     """
     active = active_messages(rows, conversation)
-    history = clip(active)
+    history = (clip or clip_history)(active)
     summary = _with_header(conversation.context_summary)
     if summary:
         history.insert(0, {"role": "user", "content": summary})
@@ -258,6 +415,9 @@ def _digest(previous_summary: str | None, dropped: list[Message], cap: int) -> s
         lines.append(previous_summary.strip())
     for message in dropped:
         text = " ".join((message.content or "").split())
+        if not text:
+            # 只有工具调用、没有可见正文的回合不必在摘要里占一行。
+            continue
         if len(text) > MAX_SUMMARY_LINE_CHARS:
             text = text[:MAX_SUMMARY_LINE_CHARS] + "…"
         label = "用户" if message.role == "user" else "智能体"
@@ -281,6 +441,8 @@ def compact_context(
     system_prompt: str | None,
     prompt: str,
     settings: ContextSettings,
+    include_parts: bool = False,
+    before_tokens: int | None = None,
 ) -> CompactionOutcome:
     """把较早消息折叠成摘要，保留最近若干条（按目标用量从新往旧收）。
 
@@ -288,11 +450,21 @@ def compact_context(
     :data:`KEEP_RECENT_MESSAGES` 条、最少 :data:`MIN_KEEP_MESSAGES` 条。这样
     压缩后真的落在阈值以下，而不是压完还超标、下一轮又立刻触发。
 
+    ``include_parts`` 与 :func:`estimate_message_tokens` 同一含义：会话型内核的
+    工具调用 / 结果占窗口，收消息时也要算进去。``before_tokens`` 由调用方传入
+    （它可能来自内核上报的快照，压缩日志必须与面板显示同一个数）。
+
     - 失败（有效消息太少、或最近两条本身就超过目标）抛 ``ValueError``；
       调用方必须**保留原上下文**并给出可理解的提示。
     - 只返回新的摘要与统计，不改数据库、不改传进来的消息列表。
     """
-    before = estimate_usage(system_prompt, previous_summary, messages, prompt)
+    before = (
+        before_tokens
+        if before_tokens is not None
+        else estimate_usage(
+            system_prompt, previous_summary, messages, prompt, include_parts=include_parts
+        )
+    )
     if len(messages) <= MIN_KEEP_MESSAGES:
         raise ValueError(f"只有 {len(messages)} 条有效消息，已无法再安全压缩")
 
@@ -302,7 +474,7 @@ def compact_context(
     for message in reversed(messages):
         if keep_count >= KEEP_RECENT_MESSAGES:
             break
-        cost = estimate_message_tokens(message)
+        cost = estimate_message_tokens(message, include_parts=include_parts)
         if keep_count >= MIN_KEEP_MESSAGES and budget - cost < 0:
             break
         budget -= cost
@@ -314,7 +486,9 @@ def compact_context(
     keep = messages[-keep_count:]
     dropped = messages[: len(messages) - keep_count]
     summary = _digest(previous_summary, dropped, _summary_cap(settings.limit_tokens))
-    after = estimate_usage(system_prompt, summary, keep, prompt)
+    # 压缩后 session_id 会被清掉：下一轮注入的是「摘要 + 裁剪后的最终回复」，
+    # 因此后量按非会话型口径（正文 + 摘要）算，和真正发出去的一致。
+    after = estimate_usage(system_prompt, summary, clip_messages(keep), prompt)
     return CompactionOutcome(
         summary=summary, dropped=len(dropped), before_tokens=before, after_tokens=after
     )
@@ -379,8 +553,10 @@ def usage_view(
     used_tokens: int,
     settings: ContextSettings,
     conversation: Conversation,
+    *,
+    measured: bool = False,
 ) -> dict:
-    """界面需要的上下文用量视图（展示与阈值共用同一份估算口径）。"""
+    """界面需要的上下文用量视图（展示与压缩决策共用同一份口径）。"""
     limit = settings.limit_tokens
     # 真实百分比（可能超过 100，说明已经超限）；进度条宽度由界面自己截断。
     percent = round((used_tokens / limit * 100) if limit > 0 else 0.0, 2)
@@ -390,6 +566,8 @@ def usage_view(
         "threshold_tokens": settings.threshold_tokens,
         "threshold_ratio": settings.threshold_ratio,
         "percent": percent,
+        # 是否以内核上报的真实请求 token 为准（False = 按内容估算）。
+        "measured": measured,
         "compacted_count": conversation.context_compacted_count,
         "compacted_at": (
             conversation.context_compacted_at.isoformat()
@@ -401,6 +579,12 @@ def usage_view(
             f"最多 {KEEP_RECENT_MESSAGES} 条、至少 {MIN_KEEP_MESSAGES} 条），"
             "更早的对话折叠成一段摘要（原文仍留在对话记录里）"
         ),
-        "estimation": "按字符近似估算：中日韩文字约 1 字 = 1 token，其余约 4 字符 = 1 token",
+        "estimation": (
+            "已用数以内核最近一次上报的请求 token 为准：包含系统提示、工具定义、"
+            "工具调用入参与工具结果"
+            if measured
+            else "按字符近似估算：中日韩文字约 1 字 = 1 token，其余约 4 字符 = 1 token；"
+            "已计入工具调用入参、工具结果与推理内容"
+        ),
         "compaction": compaction_state(conversation.id),
     }

@@ -952,18 +952,9 @@ export function ChatPage() {
     }
   }
 
-  // 任务进度卡片：插在「建卡那一轮助手消息」之后；锚点找不到（历史数据异常）时
-  // 放到最后一条已落库消息之后、实时流条目之前，保证始终可见且不重复。
-  const cardItem: ConversationThreadItem | null = taskCard
-    ? {
-        id: `task-card-${taskCard.id}`,
-        className: 'task-card-turn',
-        custom: <TaskProgressCard card={taskCard} />,
-      }
-    : null
-
+  // 任务进度卡片固定在输入框上方（Composer 的 header 槽），不再插进消息流：
+  // 它是「这条对话当前做到哪了」的状态栏，应该一直看得见，而不是跟着历史滚走。
   const threadItems: ConversationThreadItem[] = []
-  let cardPlaced = false
   for (const message of chatMessages) {
     const identity = assistantIdentity(message)
     threadItems.push({
@@ -977,12 +968,7 @@ export function ChatPage() {
       // @ 召唤轮的回复：气泡上方再亮一条「✦ 某某 的回答」，一眼分清不是主场智能体说的
       meta: identity.meta,
     })
-    if (cardItem && taskCard && message.id === taskCard.anchor_message_id) {
-      threadItems.push(cardItem)
-      cardPlaced = true
-    }
   }
-  if (cardItem && !cardPlaced) threadItems.push(cardItem)
 
   if (live && (live.userText || live.userAttachments.length > 0)) {
     threadItems.push({
@@ -1175,6 +1161,9 @@ export function ChatPage() {
                   inputLabel={`发消息给 ${active.agent_name}`}
                   header={
                     <>
+                      {/* 任务进度卡片常驻输入框上方：默认收起成一行，点开看任务项。
+                          key 用卡片 id —— 切到另一条对话时重新挂载，折叠偏好各记各的。 */}
+                      {taskCard && <TaskProgressCard key={taskCard.id} card={taskCard} />}
                       <div className="composer-scope">
                         <ContextMeter
                           usage={contextMeter.usage}

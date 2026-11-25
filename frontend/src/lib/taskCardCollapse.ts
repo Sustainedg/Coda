@@ -41,10 +41,22 @@ function writeStore(store: Store): void {
   }
 }
 
-/** 读某张卡是否收起；没有记录时返回 false（展开）。 */
-export function loadTaskCardCollapsed(cardId: string): boolean {
-  if (!cardId) return false
-  return readStore()[cardId] === true
+/** 读某张卡的折叠记录；从未记录过（或没有 id）时返回 null。 */
+export function readTaskCardCollapsed(cardId: string): boolean | null {
+  if (!cardId) return null
+  const store = readStore()
+  return Object.prototype.hasOwnProperty.call(store, cardId) ? store[cardId] === true : null
+}
+
+/**
+ * 读某张卡是否收起；没有记录时用 `fallback`。
+ *
+ * 卡片现在固定在输入框上方常驻，`fallback` 传 true（默认收起）—— 只占一行，
+ * 点开才看任务项；老用户存过的偏好仍然优先。
+ */
+export function loadTaskCardCollapsed(cardId: string, fallback = false): boolean {
+  const stored = readTaskCardCollapsed(cardId)
+  return stored === null ? fallback : stored
 }
 
 /** 记下某张卡的折叠状态；已经展开时顺手把这条记录抹掉，别占着 50 条上限。 */

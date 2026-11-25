@@ -44,6 +44,19 @@ _FENCE_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: 模型经常把协议块写成 ```json（而不是 ```task_card），甚至直接甩一段裸 JSON。
+#: 这类「非 task_card 围栏」**只在正文收尾处**才认：回复中段举例用的 JSON 代码块
+#: 不能当成协议块吞掉（见 `test_strip_task_card_keeps_mid_document_json_example`）。
+#: 闭合围栏必须一直顶到正文末尾；未闭合（流式截断）另行判定，且其后不能再有 ```。
+_JSON_FENCE_CLOSED_RE = re.compile(
+    r"```[ \t]*json[ \t]*\r?\n?([\s\S]*?)\r?\n?```[ \t]*\Z",
+    re.IGNORECASE,
+)
+_JSON_FENCE_OPEN_RE = re.compile(
+    r"```[ \t]*json(?![A-Za-z0-9_])[ \t]*\r?\n",
+    re.IGNORECASE,
+)
+
 #: 第 2 级容错：清理不可见字符、中文引号与尾随逗号
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _SMART_QUOTES = {
@@ -95,10 +108,18 @@ def looks_like_task_request(text: str) -> bool:
 
 
 def strip_task_card(text: str) -> str:
-    """删掉所有 ``task_card`` 围栏块（含未闭合），保留其余正文。"""
+    """删掉协议块，保留其余正文。
+
+    先按 ``task_card`` 围栏剥（含未闭合）；再补一刀：模型写成 ```json 或裸 JSON
+    且位于正文收尾处的任务卡块同样剥掉（只认收尾位置，中段示例不动）。
+    """
     if not text:
         return ""
-    return _FENCE_RE.sub("", text).rstrip()
+    cleaned = _FENCE_RE.sub("", text).rstrip()
+    tail = _find_tail_block(cleaned)
+    if tail is not None:
+        cleaned = cleaned[: tail[1]].rstrip()
+    return cleaned
 
 
 def _strip_stream(text: str, in_fence: bool) -> tuple[str, bool]:
@@ -132,7 +153,11 @@ _OPEN_FENCE_RE = re.compile(r"```[ \t]*task_card(?![A-Za-z0-9_])[^\n]*", re.IGNO
 
 
 def strip_task_card_from_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """跨 ``parts`` 片段剥离任务卡协议块（状态机），非 text 片段原样保留。"""
+    """跨 ``parts`` 片段剥离任务卡协议块（状态机），非 text 片段原样保留。
+
+    状态机只认 ``task_card`` 围栏；模型写成 ```json / 裸 JSON 时块一定在整条回复
+    的收尾处，也就是最后一段 text 里 —— 再对最后一段补一刀收尾剥离。
+    """
     result: list[dict[str, Any]] = []
     in_fence = False
     for part in parts or []:
@@ -148,6 +173,22 @@ def strip_task_card_from_parts(parts: list[dict[str, Any]]) -> list[dict[str, An
             continue
         else:
             result.append(part)
+    # 结尾仍在未闭合围栏里：后面已经没有可展示的正文，交给上面的状态机处理即可。
+    if in_fence or not result:
+        return result
+    # 非标准块只认「整条回复的收尾处」。时间线最后一段不是 text（例如以工具结果收尾）时，
+    # 前面那段 text 并不是回复结尾，不能剥，否则会吞掉中段的 JSON 示例。
+    last = result[-1]
+    if not isinstance(last, dict) or last.get("kind") != "text":
+        return result
+    original = str(last.get("text") or "")
+    cleaned = strip_task_card(original)
+    if cleaned == original:
+        return result
+    if cleaned.strip():
+        result[-1] = {**last, "text": cleaned}
+    elif original.strip():
+        del result[-1]
     return result
 
 
@@ -222,8 +263,22 @@ def _close_unbalanced(text: str) -> str | None:
 
 
 def _looks_like_block(obj: Any) -> bool:
-    """块至少要有 items 或 action，避免把 items 里的单个任务项当成整块。"""
-    return isinstance(obj, dict) and ("items" in obj or "action" in obj)
+    """结构上像任务卡协议块：有 ``action``，或 ``items`` 是一组结构化任务项。
+
+    只认 ``action`` 标注，或「items 里是对象且带 id / text / done」的块 —— 单纯一个
+    ``{"items": [...]}`` 的配置示例不能被当成任务卡（否则 ``strip_task_card`` 会把
+    用户可见正文剥掉）。判据与前端 ``lib/taskCardFence.ts`` 的 ``looksLikeTaskBlock``
+    保持一致。
+    """
+    if not isinstance(obj, dict):
+        return False
+    if "action" in obj:
+        return True
+    items = obj.get("items")
+    return isinstance(items, list) and any(
+        isinstance(item, dict) and ("id" in item or "text" in item or "done" in item)
+        for item in items
+    )
 
 
 def _repair_truncated(text: str) -> dict[str, Any] | None:
@@ -281,6 +336,62 @@ def _extract_json(raw: str) -> tuple[dict[str, Any] | None, str | None]:
     if repaired is not None:
         return repaired, None
     return None, last_error or "没有找到可解析的 task_card 对象"
+
+
+def _body_is_task_block(body: str) -> bool:
+    """这段 JSON 像不像任务卡协议块（有 ``action`` 或结构化的 ``items``）。"""
+    if not body.strip():
+        return False
+    obj, _reason = _extract_json(body)
+    return obj is not None and _looks_like_block(obj)
+
+
+def _tail_bare_block(text: str) -> tuple[str, int] | None:
+    """正文以裸 JSON 收尾时，取出最外层的那个对象（返回正文与起点）。
+
+    从后往前试 ``{`` 起点：先命中的往往是内层任务项（没有 ``items`` / ``action``），
+    一路退到真正的外层对象；最多试 ``MAX_REPAIR_TRIES`` 个起点，避免长文本拖死。
+    """
+    stripped = text.rstrip()
+    if not stripped.endswith("}"):
+        return None
+    starts = [index for index, char in enumerate(stripped) if char == "{"]
+    for start in reversed(starts[-MAX_REPAIR_TRIES:]):
+        body = stripped[start:]
+        if _body_is_task_block(body):
+            return body, start
+    return None
+
+
+def _find_tail_block(text: str) -> tuple[str, int, int] | None:
+    """识别正文**收尾处**的 ```json 围栏 / 裸 JSON 任务卡块。
+
+    返回 ``(块正文, 起点, 终点)``；找不到返回 ``None``。只认收尾位置是关键：
+    回复中段讲解用的 JSON 示例（哪怕字段长得像卡片）必须原样保留。
+    """
+    stripped = text.rstrip()
+    if not stripped:
+        return None
+    fenced = _JSON_FENCE_CLOSED_RE.search(stripped)
+    if fenced is not None:
+        body = fenced.group(1).strip()
+        if _body_is_task_block(body):
+            return body, fenced.start(), len(stripped)
+        return None
+    # 未闭合：最后一个 ```json 之后不能再出现 ```，否则那是「中段示例 + 后续正文」。
+    last_open = None
+    for match in _JSON_FENCE_OPEN_RE.finditer(stripped):
+        last_open = match
+    if last_open is not None:
+        body = stripped[last_open.end() :].strip()
+        if "```" not in body and _body_is_task_block(body):
+            return body, last_open.start(), len(stripped)
+        return None
+    bare = _tail_bare_block(stripped)
+    if bare is not None:
+        body, start = bare
+        return body.strip(), start, len(stripped)
+    return None
 
 
 def _as_text(value: Any) -> str:
@@ -389,19 +500,25 @@ def normalize_block(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | N
 
 
 def parse_task_card(text: str) -> tuple[dict[str, Any] | None, str | None]:
-    """从模型输出里取出最后一个 ``task_card`` 块并规整。
+    """从模型输出里取出最后一个任务卡片块并规整。
 
     一轮出现多个块时按最后一个生效并记告警（与工单解析的容错策略一致）。
-    没有围栏块时返回 ``(None, None)``：这是正常情况，不算解析失败。
+    兼容模型把块写成 ```json 或裸 JSON 的情形，但只认正文收尾处，避免误解析中段示例。
+    没有可解析的块时返回 ``(None, None)``：这是正常情况，不算解析失败。
     """
-    if not text or FENCE not in text.lower():
+    if not text:
         return None, None
     bodies = [match.group(1) for match in _FENCE_RE.finditer(text)]
-    if not bodies:
-        return None, None
-    if len(bodies) > 1:
-        logger.warning("检测到 %d 个 task_card 代码块，已按最后一个解析", len(bodies))
-    obj, reason = _extract_json(bodies[-1])
+    if bodies:
+        if len(bodies) > 1:
+            logger.warning("检测到 %d 个 task_card 代码块，已按最后一个解析", len(bodies))
+        body = bodies[-1]
+    else:
+        tail = _find_tail_block(text)
+        if tail is None:
+            return None, None
+        body = tail[0]
+    obj, reason = _extract_json(body)
     if obj is None:
         return None, reason
     return normalize_block(obj)
@@ -551,7 +668,8 @@ def render_notice(card: TaskCard | None, allow_create: bool) -> str:
         return ""
     lines = [
         "【任务进度卡片协议】",
-        "当本轮确实在推进一件需要多步完成的工作时，在正文最后追加一个 task_card 围栏代码块（整轮只能有一个）：",
+        "当本轮确实在推进一件需要多步完成的工作时，在正文最后追加一个 task_card 围栏代码块"
+        "（围栏的语言标签必须原样写 task_card，不要写成 json 或别的；整轮只能有一个）：",
         '- 首次给出计划：{"action":"create","title":"一句话任务名","items":[{"id":"t1","text":"步骤一","done":false},{"id":"t2","text":"步骤二","done":false}]}',
         '- 后续轮次只报告状态变化：{"action":"update","items":[{"id":"t1","done":true}]}',
         "规则：items 数量 2~20；id 短且稳定；只把确实完成的项标 done=true；闲聊、问答、单步指令不要输出这个块。",
@@ -645,10 +763,15 @@ async def apply_block(
                     # 没有任何状态变化：不写库、不 bump version
                     return card
 
-                anchor = (
-                    await _valid_anchor(session, conversation_id, anchor_message_id)
-                    or card.anchor_message_id
-                )
+                # 锚点只在「重新规划（create）」时随最新计划移动；普通 update 保持原位置，
+                # 否则每轮报一次进度都会把卡片往对话末尾拖（设计 §6.5）。
+                # 注意：卡片当前已固定在输入框上方渲染，anchor 仅为接口兼容/历史数据保留。
+                anchor = card.anchor_message_id
+                if resolved["action"] == "create":
+                    anchor = (
+                        await _valid_anchor(session, conversation_id, anchor_message_id)
+                        or card.anchor_message_id
+                    )
                 version = int(card.version or 1)
                 result = await session.execute(
                     sa_update(TaskCard)

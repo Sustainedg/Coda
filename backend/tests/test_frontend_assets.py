@@ -310,7 +310,7 @@ def test_avatar_pack_categories_cover_people_and_cartoons():
     # 两端的画廊都从分组清单取图，而不是把全部编号平铺。
     for page in (
         FRONTEND / "src" / "components" / "AgentAvatarPicker.tsx",
-        MOBILE_SRC / "pages" / "MobileAgentsPage.tsx",
+        MOBILE_SRC / "pages" / "MobileAgentEditPage.tsx",
     ):
         body = page.read_text(encoding="utf-8")
         assert "AVATAR_PRESET_GROUPS" in body, f"{page.name} 的头像画廊要按标签分组渲染"

@@ -559,6 +559,12 @@ class ConversationRead(BaseModel):
 
 
 class MessageRead(BaseModel):
+    """消息的只读响应模型。
+
+    ``context_tokens``（上下文窗口快照）是服务端估算内部字段，不对外暴露；
+    前端需要的是聚合后的 ``/conversations/{id}/context`` 视图。
+    """
+
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -587,7 +593,8 @@ class TaskCardItemRead(BaseModel):
 class TaskCardRead(BaseModel):
     """一条对话的任务进度卡片（只读响应模型）。
 
-    卡片只随对话详情返回，没有任何写接口；``anchor_message_id`` 决定它在对话流中的位置。
+    卡片只随对话详情返回，没有任何写接口；界面上常驻在输入框上方。
+    ``anchor_message_id`` 仅为接口兼容 / 历史数据保留（建卡那一轮），不再参与排版。
     """
 
     model_config = ConfigDict(from_attributes=True)

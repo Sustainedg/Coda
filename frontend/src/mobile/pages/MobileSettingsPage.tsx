@@ -89,6 +89,16 @@ export function MobileSettingsPage({ version }: { version: string }) {
 
           <div className="stack" style={{ gap: 8 }}>
             <div className="card-section-title">配置</div>
+            <button className="m-item" onClick={() => navigate('/agents')}>
+              <span style={{ fontSize: 18 }}>🤖</span>
+              <span className="m-item-main">
+                <span className="m-item-title">智能体</span>
+                <span className="m-item-sub">
+                  人格 · 内核 · 网关 · 技能 / MCP 分配 · IM 绑定 · 用量统计
+                </span>
+              </span>
+              <span className="m-item-chevron">›</span>
+            </button>
             <button className="m-item" onClick={() => navigate('/skills')}>
               <span style={{ fontSize: 18 }}>🧩</span>
               <span className="m-item-main">
@@ -110,14 +120,6 @@ export function MobileSettingsPage({ version }: { version: string }) {
               <span className="m-item-main">
                 <span className="m-item-title">自定义网关</span>
                 <span className="m-item-sub">API 密钥的唯一来源；官方链路 + 自建网关</span>
-              </span>
-              <span className="m-item-chevron">›</span>
-            </button>
-            <button className="m-item" onClick={() => navigate('/im')}>
-              <span style={{ fontSize: 18 }}>💬</span>
-              <span className="m-item-main">
-                <span className="m-item-title">IM</span>
-                <span className="m-item-sub">把智能体连到微信 / 飞书 / 钉钉 / Telegram 等聊天软件</span>
               </span>
               <span className="m-item-chevron">›</span>
             </button>

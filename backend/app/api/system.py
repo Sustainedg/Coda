@@ -196,7 +196,7 @@ async def set_context_settings(
                 raise HTTPException(status_code=404, detail="对话不存在")
             require_owned_strict(conversation, user)
             profile = await session.get(AgentProfile, conversation.agent_profile_id)
-            used = await context_service.conversation_usage(
+            used, _ = await context_service.conversation_usage(
                 session, conversation, profile.system_prompt if profile else None
             )
             if settings.limit_tokens < used:

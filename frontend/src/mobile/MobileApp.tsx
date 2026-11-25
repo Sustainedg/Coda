@@ -9,10 +9,10 @@ import { MobileCollabRunPage } from './pages/MobileCollabRunPage'
 import { MobileCollabTeamPage } from './pages/MobileCollabTeamPage'
 import { MobileTicketBoardPage } from './pages/MobileTicketBoardPage'
 import { MobileAccountPage } from './pages/MobileAccountPage'
+import { MobileAgentEditPage } from './pages/MobileAgentEditPage'
 import { MobileAgentsPage } from './pages/MobileAgentsPage'
 import { MobileCredentialsPage } from './pages/MobileCredentialsPage'
 import { MobileGatewaysPage } from './pages/MobileGatewaysPage'
-import { MobileImPage } from './pages/MobileImPage'
 import { MobileRuntimesPage } from './pages/MobileRuntimesPage'
 import { MobileSettingsPage } from './pages/MobileSettingsPage'
 import { MobileMcpPage } from './pages/MobileMcpPage'
@@ -53,9 +53,12 @@ export function MobileApp() {
         <Route path="/chat" element={<MobileChatPage />} />
         <Route path="/chat/:conversationId" element={<MobileChatPage />} />
         <Route path="/agents" element={<MobileAgentsPage />} />
+        {/* 智能体设定：整页 + 页内标签（基础信息 / 技能 / MCP / IM / 统计），与桌面端同一组。 */}
+        <Route path="/agents/new" element={<MobileAgentEditPage />} />
+        <Route path="/agents/:agentId" element={<MobileAgentEditPage />} />
         <Route path="/gateways" element={<MobileGatewaysPage />} />
         <Route path="/credentials" element={<MobileCredentialsPage />} />
-        <Route path="/im" element={<MobileImPage />} />
+        <Route path="/im" element={<Navigate to="/agents" replace />} />
         <Route path="/skills" element={<MobileSkillsPage />} />
         <Route path="/mcp" element={<MobileMcpPage />} />
         <Route path="/usage" element={<MobileUsagePage />} />

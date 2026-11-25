@@ -105,6 +105,32 @@ def test_claude_code_stream_parsing_dedupes_partial_text():
     assert run.session_id == "s1"
 
 
+def test_claude_code_reports_context_usage_from_message_start():
+    """窗口占用取 ``message_start.message.usage``；message_delta 只有 output_tokens，不计入。"""
+    definition = get_agent("claude-code")
+    run = definition.create_run(ctx())
+    lines = [
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 100,
+                        "cache_read_input_tokens": 20,
+                        "cache_creation_input_tokens": 5,
+                    }
+                },
+            },
+        },
+        # 只有输出 token：不能当成窗口输入
+        {"type": "stream_event", "event": {"type": "message_delta", "usage": {"output_tokens": 9}}},
+    ]
+    events = [e for line in lines for e in run.feed(json.dumps(line))]
+    assert [e.type.value for e in events] == ["context.usage"]
+    assert events[0].payload["tokens"] == 125
+
+
 def test_codex_invocation_uses_named_provider_and_resume():
     definition = get_agent("codex")
     invocation = definition.build_invocation(
@@ -474,9 +500,11 @@ def test_codex_app_server_handshake_then_streams_deltas():
             )
         )
     )
-    assert [e.type.value for e in events] == ["usage"]
+    # 用量（整轮累计）与上下文快照（单次请求）成对上报，两者语义不同。
+    assert [e.type.value for e in events] == ["usage", "context.usage"]
     assert events[0].payload["input_tokens"] == 5
     assert events[0].payload["total_tokens"] == 11
+    assert events[1].payload["tokens"] == 5
 
     # 本轮结束：适配器声明收工，运行层据此关 stdin。
     assert (

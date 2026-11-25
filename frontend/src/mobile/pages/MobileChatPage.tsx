@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { MessageView, type RenderMessage } from '../../components/MessageView'
 import { TaskProgressCard } from '../../components/TaskProgressCard'
@@ -1048,33 +1048,24 @@ export function MobileChatPage() {
             ? scopeAgents.find((agent) => agent.id === message.agent_profile_id)
             : undefined
           return (
-            <Fragment key={message.id}>
-              <MessageView
-                message={message}
-                avatar={summoned ? (summoner?.avatar ?? '🤖') : (active?.agent_avatar ?? undefined)}
-                avatarPreset={summoned ? summoner?.avatar_preset : active?.agent_avatar_preset}
-                avatarFile={summoned ? summoner?.avatar_file : active?.agent_avatar_file}
-                agentId={summoned ? summoner?.id : active?.agent_profile_id}
-                // @ 召唤轮的回复：名字一行亮出被召唤者，一眼分清不是主场智能体说的
-                label={
-                  summoned
-                    ? `✦ ${summoner?.name ?? '被召唤智能体'}（@ 召唤）`
-                    : (active?.agent_name ?? undefined)
-                }
-                finalOnly={!showTools}
-                user={user}
-              />
-              {taskCard && message.id === taskCard.anchor_message_id && (
-                <TaskProgressCard card={taskCard} />
-              )}
-            </Fragment>
+            <MessageView
+              key={message.id}
+              message={message}
+              avatar={summoned ? (summoner?.avatar ?? '🤖') : (active?.agent_avatar ?? undefined)}
+              avatarPreset={summoned ? summoner?.avatar_preset : active?.agent_avatar_preset}
+              avatarFile={summoned ? summoner?.avatar_file : active?.agent_avatar_file}
+              agentId={summoned ? summoner?.id : active?.agent_profile_id}
+              // @ 召唤轮的回复：名字一行亮出被召唤者，一眼分清不是主场智能体说的
+              label={
+                summoned
+                  ? `✦ ${summoner?.name ?? '被召唤智能体'}（@ 召唤）`
+                  : (active?.agent_name ?? undefined)
+              }
+              finalOnly={!showTools}
+              user={user}
+            />
           )
         })}
-
-        {/* 锚点找不到（历史数据异常）：卡片放在所有已落库消息之后、实时流之前 */}
-        {taskCard && !chatMessages.some((message) => message.id === taskCard.anchor_message_id) && (
-          <TaskProgressCard card={taskCard} />
-        )}
 
         {live && (live.userText || live.userAttachments.length > 0) && (
           <MessageView
@@ -1144,6 +1135,9 @@ export function MobileChatPage() {
         header={
           active ? (
             <>
+              {/* 任务进度卡片常驻输入框上方：默认收起成一行，点开看任务项。
+                  key 用卡片 id —— 切到另一条对话时重新挂载，折叠偏好各记各的。 */}
+              {taskCard && <TaskProgressCard key={taskCard.id} card={taskCard} />}
               {/* @ 召唤：正在输入 @ 时弹出的智能体选择（一次性，不影响对话归属） */}
               {mentionQuery !== null && mentionCandidates.length > 0 && (
                 <div className="chat-mention-list" role="listbox" aria-label="选择要召唤的智能体">

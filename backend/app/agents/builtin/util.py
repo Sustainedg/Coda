@@ -49,6 +49,53 @@ def dig(payload: Any, *path: str, default: Any = None) -> Any:
     return cursor
 
 
+#: 「缓存 token 与 input_tokens 分离」的字段（Anthropic / Claude Code 记法）。
+_EXCLUSIVE_CACHE_KEYS = (
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+)
+_INPUT_KEYS = ("input_tokens", "inputTokens", "prompt_tokens")
+_CACHE_READ_KEYS = (
+    "cache_read_input_tokens",
+    "cached_input_tokens",
+    "cachedInputTokens",
+    "cached_tokens",
+    "prompt_cache_hit_tokens",
+    "cache_read_tokens",
+)
+_CACHE_CREATE_KEYS = (
+    "cache_creation_input_tokens",
+    "cache_creation_tokens",
+    "cache_write_input_tokens",
+    "cacheWriteInputTokens",
+)
+
+
+def _number(usage: dict[str, Any], keys: tuple[str, ...]) -> int:
+    for key in keys:
+        value = usage.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value)
+    return 0
+
+
+def context_tokens(usage: Any) -> int:
+    """从一次模型请求的 usage 里取出**输入侧 token 总数**（上下文占用）。
+
+    不同内核的记法不一样：
+    * Anthropic 风格（``input_tokens`` + ``cache_read_input_tokens``）两者分离，需要相加；
+    * OpenAI 风格（``prompt_tokens`` 含 ``cached_tokens``）缓存是子集，不能重复相加。
+    """
+    if not isinstance(usage, dict) or not usage:
+        return 0
+    total = _number(usage, _INPUT_KEYS)
+    if any(key in usage for key in _EXCLUSIVE_CACHE_KEYS):
+        total += _number(usage, _CACHE_READ_KEYS) + _number(usage, _CACHE_CREATE_KEYS)
+    return total if total > 0 else 0
+
+
 #: npm 全局安装 / 更新的包装脚本（Node 实现，三平台同一套逻辑）。
 #:
 #: 为什么不再用 ``sh -c``：Windows 上没有 ``sh``（除非用户装了 Git Bash），

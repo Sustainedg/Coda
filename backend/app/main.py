@@ -51,7 +51,7 @@ async def _start_im() -> None:
     try:
         await im_manager.start_all()
     except Exception:  # noqa: BLE001 - IM 是旁路，不能因为连不上就起不来服务
-        logger.warning("IM 连接启动失败，可在「设置 → IM」里重试", exc_info=True)
+        logger.warning("IM 连接启动失败，可在对应智能体设定页的「IM」标签里重试", exc_info=True)
 
 
 async def _scan_skills(session) -> None:

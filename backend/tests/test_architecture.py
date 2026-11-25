@@ -40,6 +40,8 @@ DOCUMENTED_EVENTS = {
     "tool.call",
     "tool.result",
     "usage",
+    # 单次模型请求的输入 token（上下文窗口占用），与整轮累计的 usage 分开。
+    "context.usage",
     "session",
     "log",
     "error",

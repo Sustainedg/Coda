@@ -1,21 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { CollapsibleGroup } from '../components/CollapsibleGroup'
 import { CollabSettingsPanel } from '../components/CollabSettingsPanel'
-import {
-  CredentialEditor,
-  credentialsToDraft,
-  draftsToPayload,
-  validateCredentials,
-} from '../components/CredentialEditor'
-import { DynamicForm } from '../components/DynamicForm'
-import { AgentAvatarPicker } from '../components/AgentAvatarPicker'
 import { AgentAvatar } from '../components/AgentAvatar'
 import { TeamAvatarStack } from '../components/TeamAvatarStack'
 import { Modal } from '../components/Modal'
 import { StarIcon } from '../components/Icons'
-import { McpPicker } from '../components/McpPicker'
-import { SkillPicker } from '../components/SkillPicker'
 import { api, ApiError } from '../lib/api'
 import { groupAgents } from '../lib/agentGroups'
 import { useExpandMap } from '../lib/collapse'
@@ -24,28 +14,10 @@ import type {
   AgentProfile,
   AgentType,
   CollabTeam,
-  Credential,
-  Gateway,
   McpServer,
   Skill,
   TestResult,
 } from '../lib/types'
-
-/* 头像选择走 AgentAvatarPicker（可爱 emoji 池 + 随机生成 + 自定义上传），旧的固定池删了 */
-const PROMPT_TEMPLATES: { label: string; body: string }[] = [
-  {
-    label: '严格代码审查',
-    body: '你是一名严格的资深工程师。先阅读仓库再动手，指出风险与权衡，只提交最小且可验证的改动，并说明如何验证。',
-  },
-  {
-    label: '结对的编程搭子',
-    body: '你是务实的结对编程伙伴。改动小步提交，每次修改后运行相关测试，用一两句话总结改动与后续建议。',
-  },
-  {
-    label: '调研助手',
-    body: '你是研究型助手。先收集证据，引用你读过的文件路径，明确区分「事实」与「推测」。',
-  },
-]
 
 /**
  * 智能体：人格 + 内核 + 网关 + 模型。
@@ -54,11 +26,9 @@ const PROMPT_TEMPLATES: { label: string; body: string }[] = [
  * 也是对话与协作唯一的最小单位（原「角色」与「智能体实例」合并而来）。
  */
 export function AgentsPage() {
+  const navigate = useNavigate()
   const [types, setTypes] = useState<AgentType[]>([])
   const [agents, setAgents] = useState<AgentProfile[]>([])
-  const [gateways, setGateways] = useState<Gateway[]>([])
-  const [credentials, setCredentials] = useState<Credential[]>([])
-  const [protocolLabels, setProtocolLabels] = useState<Record<string, string>>({})
   const [skills, setSkills] = useState<Skill[]>([])
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [teams, setTeams] = useState<CollabTeam[]>([])
@@ -73,8 +43,6 @@ export function AgentsPage() {
   const tab = params.get('tab') === 'collab' ? 'collab' : 'agents'
   const editingTeamId = tab === 'collab' ? params.get('team') ?? undefined : undefined
 
-  const [editing, setEditing] = useState<AgentProfile | null>(null)
-  const [creating, setCreating] = useState(false)
   const [teamCreating, setTeamCreating] = useState(false)
   const [newTeamName, setNewTeamName] = useState('')
   const [testing, setTesting] = useState<{ agent: AgentProfile; result: TestResult | null; busy: boolean } | null>(null)
@@ -94,20 +62,14 @@ export function AgentsPage() {
   const reload = async () => {
     setLoading(true)
     try {
-      const [typeList, agentList, gatewayList, skillList, credentialList, mcpList] =
-        await Promise.all([
-          api.agentTypes(),
-          api.listAgents(),
-          api.listGateways(),
-          api.listSkills(),
-          api.listCredentials(),
-          api.listMcpServers(),
-        ])
+      const [typeList, agentList, skillList, mcpList] = await Promise.all([
+        api.agentTypes(),
+        api.listAgents(),
+        api.listSkills(),
+        api.listMcpServers(),
+      ])
       setTypes(typeList)
       setAgents(agentList)
-      setGateways(gatewayList.items)
-      setCredentials(credentialList.items)
-      setProtocolLabels(Object.fromEntries(gatewayList.protocols.map((item) => [item.value, item.label])))
       setSkills(skillList)
       setMcpServers(mcpList)
       setError(null)
@@ -131,8 +93,6 @@ export function AgentsPage() {
 
   /** 切换页内标签；离开智能体列表时把手上的弹窗收掉，避免下次回来还挂着。 */
   const openTab = (next: 'agents' | 'collab') => {
-    setEditing(null)
-    setCreating(false)
     setTeamCreating(false)
     setTesting(null)
     setParams(next === 'collab' ? { tab: 'collab' } : {})
@@ -293,8 +253,8 @@ export function AgentsPage() {
           <button className="btn sm" onClick={() => void toggleEnabled(agent)}>
             {agent.enabled ? '停用' : '启用'}
           </button>
-          <button className="btn sm" onClick={() => setEditing(agent)}>
-            编辑
+          <button className="btn sm" onClick={() => navigate(`/agents/${agent.id}`)}>
+            设定
           </button>
           <button className="btn sm" onClick={() => void duplicate(agent)}>
             复制
@@ -374,7 +334,7 @@ export function AgentsPage() {
             <button className="btn" onClick={() => void reload()} disabled={loading}>
               {loading ? <span className="spin">◌</span> : '↻'} 刷新
             </button>
-            <button className="btn primary" onClick={() => setCreating(true)}>
+            <button className="btn primary" onClick={() => navigate('/agents/new')}>
               + 新建智能体
             </button>
           </>
@@ -500,29 +460,6 @@ export function AgentsPage() {
         </Modal>
       )}
 
-      {(creating || editing) && (
-        <AgentModal
-          types={types}
-          gateways={gateways}
-          protocolLabels={protocolLabels}
-          skills={skills}
-          mcpServers={mcpServers}
-          library={credentials}
-          /** 已有分组名：分组输入框点开时的快捷选项 */
-          groups={[...new Set(agents.map((a) => a.group_name).filter(Boolean))].sort()}
-          agent={editing}
-          onClose={() => {
-            setCreating(false)
-            setEditing(null)
-          }}
-          onSaved={async () => {
-            setCreating(false)
-            setEditing(null)
-            await reload()
-          }}
-        />
-      )}
-
       {testing && (
         <Modal
           title={`连通性测试 · ${testing.agent.name}`}
@@ -556,530 +493,6 @@ export function AgentsPage() {
         </Modal>
       )}
     </>
-  )
-}
-
-/**
- * 可以选择的自定义网关。
- *
- * 官方链路不在这里选：选「官方默认」就等于平台不接管路由、沿用内核自带的网关与凭据。
- * 自定义网关全部列出（协议与内核不一致的排到后面并标注），由用户自己判断能不能用。
- */
-function gatewaysFor(type: AgentType | null, gateways: Gateway[]): Gateway[] {
-  const custom = gateways.filter((g) => g.kind === 'custom')
-  const protocol = type?.protocol
-  if (!protocol) return custom
-  const matches = (g: Gateway) => g.protocol === protocol
-  return [...custom.filter(matches), ...custom.filter((g) => !matches(g))]
-}
-
-function AgentModal({
-  types,
-  gateways,
-  protocolLabels,
-  skills,
-  mcpServers,
-  library,
-  groups,
-  agent,
-  onClose,
-  onSaved,
-}: {
-  types: AgentType[]
-  gateways: Gateway[]
-  protocolLabels: Record<string, string>
-  skills: Skill[]
-  mcpServers: McpServer[]
-  library: Credential[]
-  /** 已有分组名（去重排序）：「分组」输入框聚焦时弹出的快捷选项 */
-  groups: string[]
-  agent: AgentProfile | null
-  onClose: () => void
-  onSaved: () => void
-}) {
-  // 「新建智能体」只列可选的内核模板（逃生舱型模板太技术化，不放在推荐入口）；
-  // 编辑存量智能体时，即使它的内核已不再作为新选项，也要把当前内核留在下拉里，
-  // 否则一打开表单就会显示成另一个内核。
-  const selectableTypes = useMemo(() => {
-    const usable = types.filter((type) => type.selectable !== false)
-    if (agent && !usable.some((type) => type.id === agent.type_id)) {
-      const current = types.find((type) => type.id === agent.type_id)
-      if (current) return [...usable, current]
-    }
-    return usable
-  }, [types, agent])
-
-  const [typeId, setTypeId] = useState<string>(
-    agent?.type_id ?? selectableTypes[0]?.id ?? types[0]?.id ?? '',
-  )
-  const selected = types.find((t) => t.id === typeId) ?? null
-
-  const [name, setName] = useState(agent?.name ?? '')
-  const [avatar, setAvatar] = useState(agent?.avatar ?? '🛠️')
-  /** 内置头像包编号：随机生成 / 画廊挑选写这里，随表单一并保存 */
-  const [avatarPreset, setAvatarPreset] = useState<string | null>(agent?.avatar_preset ?? null)
-  /** 自定义头像文件标识：上传接口直接落库，这里只是镜像（保存 payload 不带它） */
-  const [avatarFileId, setAvatarFileId] = useState<string | null>(agent?.avatar_file ?? null)
-  const [groupName, setGroupName] = useState(agent?.group_name ?? '')
-  /** 分组快捷建议的开合：聚焦弹出、失焦/选中即收 */
-  const [groupSuggestOpen, setGroupSuggestOpen] = useState(false)
-  const [tagline, setTagline] = useState(agent?.tagline ?? '')
-  const [description, setDescription] = useState(agent?.description ?? '')
-  const [systemPrompt, setSystemPrompt] = useState(agent?.system_prompt ?? '')
-  // 官方链路统一显示为「官方默认」（等于平台不接管路由），因此这里归一化成空值。
-  const [gatewayId, setGatewayId] = useState(
-    agent && agent.gateway_kind !== 'official' ? agent.gateway_id ?? '' : '',
-  )
-  const [model, setModel] = useState(agent?.model ?? '')
-  const [options, setOptions] = useState<Record<string, unknown>>(agent?.options ?? {})
-  const [credentials, setCredentials] = useState(() => credentialsToDraft(agent?.credentials))
-  const [skillIds, setSkillIds] = useState<string[]>(agent?.skill_ids ?? [])
-  const [skillsOpen, setSkillsOpen] = useState(false)
-  const [mcpIds, setMcpIds] = useState<string[]>(agent?.mcp_ids ?? [])
-  const [mcpOpen, setMcpOpen] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  // 新建时按当前内核补齐适配器选项的默认值（换内核走 chooseType）。
-  useEffect(() => {
-    if (agent) return
-    const initial = selectableTypes.find((type) => type.id === typeId) ?? selectableTypes[0]
-    if (!initial) return
-    if (!typeId) setTypeId(initial.id)
-    setOptions((prev) =>
-      Object.keys(prev).length > 0
-        ? prev
-        : Object.fromEntries(initial.config_fields.map((field) => [field.key, field.default])),
-    )
-  }, [agent, typeId, selectableTypes])
-
-  const gatewayChoices = useMemo(() => gatewaysFor(selected, gateways), [selected, gateways])
-  const gateway = gateways.find((g) => g.id === gatewayId) ?? null
-  const modelChoices = gateway?.selected_models ?? []
-  // 自定义网关的协议与内核期望的协议不一致时提醒（不拦，由用户判断代理是否兼容）。
-  const protocolMismatch = !!(gateway && selected?.protocol && gateway.protocol !== selected.protocol)
-  const supportsSkills = !!selected?.capabilities.skills
-  const matchingSkills = useMemo(
-    () => skills.filter((s) => s.type_id === typeId),
-    [skills, typeId],
-  )
-  const pickedSkills = useMemo(
-    () => matchingSkills.filter((skill) => skillIds.includes(skill.id)),
-    [matchingSkills, skillIds],
-  )
-  const otherSkills = skills.length - matchingSkills.length
-  const supportsMcp = !!selected?.capabilities.mcp
-  // 平台通用的服务器（type_id 为空）可以分配给任意内核；扫描来的只能给同内核。
-  const assignableMcp = useMemo(
-    () => mcpServers.filter((server) => !server.type_id || server.type_id === typeId),
-    [mcpServers, typeId],
-  )
-  const pickedMcp = useMemo(
-    () => assignableMcp.filter((server) => mcpIds.includes(server.id)),
-    [assignableMcp, mcpIds],
-  )
-  const otherMcp = mcpServers.length - assignableMcp.length
-
-  const chooseType = (type: AgentType) => {
-    if (type.id === typeId) return
-    setTypeId(type.id)
-    setOptions(Object.fromEntries(type.config_fields.map((f) => [f.key, f.default])))
-    // 换内核后原网关可能不再匹配，清掉让用户重新选。
-    setGatewayId('')
-    setModel('')
-    setSkillIds([])
-    setMcpIds([])
-    if (!agent) setName((prev) => prev || type.name)
-  }
-
-  const toggleSkill = (id: string) =>
-    setSkillIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]))
-
-  const toggleMcp = (id: string) =>
-    setMcpIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]))
-
-  const save = async () => {
-    if (!selected) return setError('请先选择内核类型')
-    if (!name.trim()) return setError('请填写名称')
-    const credentialError = validateCredentials(credentials, library)
-    if (credentialError) return setError(credentialError)
-    setSaving(true)
-    setError(null)
-    try {
-      const payload: Record<string, unknown> = {
-        name: name.trim(),
-        group_name: groupName.trim(),
-        type_id: selected.id,
-        avatar,
-        avatar_preset: avatarPreset,
-        tagline: tagline.trim() || null,
-        description: description.trim() || null,
-        system_prompt: systemPrompt,
-        gateway_id: gatewayId || null,
-        model: model.trim() || null,
-        options,
-        credentials: draftsToPayload(credentials),
-      }
-      // 技能分配紧随智能体保存：未分配的技能对这次运行不生效。
-      const saved = agent ? await api.updateAgent(agent.id, payload) : await api.createAgent(payload)
-      await api.setAgentSkills(saved.id, skillIds)
-      // MCP 分配同理：没挂上的服务器对这次运行不生效。
-      await api.setAgentMcpServers(saved.id, mcpIds)
-      onSaved()
-    } catch (e) {
-      setError(describe(e))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Modal
-      wide
-      title={agent ? `编辑智能体 · ${agent.name}` : '新建智能体'}
-      onClose={onClose}
-      escapeDisabled={skillsOpen || mcpOpen}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button className="btn primary" onClick={() => void save()} disabled={saving || !selected}>
-            {saving ? '保存中…' : '保存'}
-          </button>
-        </>
-      }
-    >
-      {error && <div className="banner err">{error}</div>}
-
-      {/* 表单顺序：头像 → 名称 → 内核类型 → 分组 —— 身份（头像 / 名字）在前，
-          用什么内核跑是技术细节靠后；分组带着已有分组的快捷建议。 */}
-      <AgentAvatarPicker
-        agentId={agent?.id ?? null}
-        emoji={avatar}
-        onEmojiChange={setAvatar}
-        preset={avatarPreset}
-        onPresetChange={setAvatarPreset}
-        avatarFileId={avatarFileId}
-        onUploaded={(next: { avatar_file?: string | null }) => setAvatarFileId(next.avatar_file ?? null)}
-      />
-
-      <div className="form-grid">
-        <div className="field">
-          <label className="field-label">名称</label>
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如 代码审查员" />
-        </div>
-
-        <div className="field">
-          <label className="field-label">内核类型</label>
-          <select
-            className="select"
-            value={typeId}
-            onChange={(e) => {
-              const next = types.find((type) => type.id === e.target.value)
-              if (next) chooseType(next)
-            }}
-          >
-            {selectableTypes.map((type) => (
-              <option key={type.id} value={type.id}>
-                {type.name} · {type.vendor}
-                {type.availability.installed ? '' : '（未安装）'}
-              </option>
-            ))}
-          </select>
-          <span className="field-help">
-            {selected?.description}
-            {selected && !selected.availability.installed
-              ? ' ⚠️ 该内核的运行时还没安装，可到「运行时」页安装。'
-              : ''}
-          </span>
-        </div>
-
-        <div className="field span-2 group-suggest-wrap">
-              <label className="field-label">分组</label>
-              <input
-                className="input"
-                value={groupName}
-                onChange={(e) => setGroupName(e.target.value)}
-                onFocus={() => setGroupSuggestOpen(true)}
-                onBlur={() => setGroupSuggestOpen(false)}
-                placeholder="例如 开发 / 写作（留空就归入「未分组」）"
-              />
-              {/* 已有分组的快捷选项：点一下即填。onMouseDown 而不是 onClick ——
-                  blur 先于 click 触发，用 click 的话菜单在收到点击前就收掉了。 */}
-              {groupSuggestOpen && groups.length > 0 && (
-                <div className="group-suggest" role="listbox" aria-label="已有分组">
-                  {groups.map((item) => (
-                    <button
-                      key={item}
-                      type="button"
-                      className="group-suggest-item"
-                      role="option"
-                      aria-selected={item === groupName}
-                      onMouseDown={(e) => {
-                        e.preventDefault()
-                        setGroupName(item)
-                        setGroupSuggestOpen(false)
-                      }}
-                    >
-                      {item}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <span className="field-help">智能体页按它折叠分组展示；留空表示未分组，永远排在最后。</span>
-            </div>
-
-            <div className="field span-2">
-              <label className="field-label">一句话简介</label>
-              <input
-                className="input"
-                value={tagline}
-                onChange={(e) => setTagline(e.target.value)}
-                placeholder="显示在对话列表里"
-              />
-            </div>
-
-            <div className="field span-2">
-              <label className="field-label">网关</label>
-              <select className="select" value={gatewayId} onChange={(e) => setGatewayId(e.target.value)}>
-                <option value="">官方默认（平台不接管路由 · 沿用内核自带的网关与凭据）</option>
-                {gatewayChoices.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name} · {item.base_url}
-                    {protocolLabels[item.protocol] ? ` · ${protocolLabels[item.protocol]}` : ''}
-                  </option>
-                ))}
-              </select>
-              <span className="field-help">
-                选「官方默认」= 平台不接管路由，沿用内核自带的网关与凭据；自定义网关在
-                「设置 → 自定义网关」里维护，选中后平台会把它的地址、密钥与模型白名单注入这次运行。
-                {gateway && !gateway.api_key_set ? ' ⚠️ 该网关还没配置密钥。' : ''}
-                {protocolMismatch && gateway && selected
-                  ? ` ⚠️ 该网关协议是 ${protocolLabels[gateway.protocol] ?? gateway.protocol}，与内核期望的 ${
-                      protocolLabels[selected.protocol ?? ''] ?? selected.protocol
-                    } 不一致，运行可能失败。`
-                  : ''}
-              </span>
-            </div>
-
-            <div className="field">
-              <label className="field-label">默认模型</label>
-              {gateway && modelChoices.length > 0 ? (
-                <select className="select" value={model} onChange={(e) => setModel(e.target.value)}>
-                  <option value="">内核默认（{selected?.default_model ?? '由内核决定'}）</option>
-                  {modelChoices.map((item) => (
-                    <option key={item} value={item}>
-                      {item}
-                    </option>
-                  ))}
-                  {model && !modelChoices.includes(model) && <option value={model}>{model}（不在白名单）</option>}
-                </select>
-              ) : (
-                <input
-                  className="input mono"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder={selected?.default_model ?? '例如 sonnet / gpt-5-codex'}
-                />
-              )}
-              <span className="field-help">
-                新对话默认使用的模型。
-                {gateway ? '只允许选择该网关白名单里的模型。' : '官方默认时可直接填写模型名，留空则用内核默认。'}
-              </span>
-            </div>
-
-            <div className="field span-2">
-              <label className="field-label">
-                系统提示词
-                <span className="dim small" style={{ marginLeft: 'auto' }}>
-                  <button className="btn ghost sm" type="button" onClick={() => setSystemPrompt('')}>
-                    清空
-                  </button>
-                </span>
-              </label>
-              <textarea
-                className="textarea"
-                style={{ minHeight: 130 }}
-                value={systemPrompt}
-                onChange={(e) => setSystemPrompt(e.target.value)}
-                placeholder="描述这个智能体的身份、风格与工作方式…"
-              />
-              <div className="chips">
-                {PROMPT_TEMPLATES.map((template) => (
-                  <button
-                    key={template.label}
-                    type="button"
-                    className="btn sm"
-                    onClick={() => setSystemPrompt(template.body)}
-                  >
-                    {template.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="field span-2">
-              <label className="field-label">
-                技能
-                <span className="dim small" style={{ marginLeft: 'auto' }}>
-                  已选 {skillIds.length} 个
-                </span>
-              </label>
-              {!supportsSkills ? (
-                <div className="banner info">该内核不支持技能，这个智能体不会加载任何技能。</div>
-              ) : (
-                <div className="row wrap" style={{ gap: 8 }}>
-                  <button
-                    type="button"
-                    className="btn sm"
-                    onClick={() => setSkillsOpen(true)}
-                    disabled={matchingSkills.length === 0}
-                  >
-                    {skillIds.length > 0 ? '管理技能' : '选择技能'}（可选 {matchingSkills.length} 个）
-                  </button>
-                  {pickedSkills.map((skill) => (
-                    <span className="pill" key={skill.id}>
-                      {skill.name}
-                      <button
-                        type="button"
-                        className="btn ghost sm"
-                        onClick={() => toggleSkill(skill.id)}
-                        aria-label={`移除技能「${skill.name}」`}
-                      >
-                        ✕
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              {supportsSkills && matchingSkills.length === 0 && (
-                <span className="field-help">
-                  还没有属于「{selected.name}」的技能，请先到「技能」页重新扫描。
-                </span>
-              )}
-              <span className="field-help">
-                智能体能用的技能只能来自这里的分配：未勾选的技能不会被加载。换内核时，不匹配的技能会被自动移除。
-              </span>
-              {otherSkills > 0 && (
-                <span className="field-help">另有 {otherSkills} 个技能来自其它内核，与当前内核不匹配，无法选择。</span>
-              )}
-            </div>
-
-            <div className="field span-2">
-              <label className="field-label">
-                MCP 服务器
-                <span className="dim small" style={{ marginLeft: 'auto' }}>
-                  已挂 {mcpIds.length} 个
-                </span>
-              </label>
-              {!supportsMcp ? (
-                <div className="banner info">该内核不支持 MCP，这个智能体不会连任何 MCP 服务器。</div>
-              ) : (
-                <div className="row wrap" style={{ gap: 8 }}>
-                  <button
-                    type="button"
-                    className="btn sm"
-                    onClick={() => setMcpOpen(true)}
-                    disabled={assignableMcp.length === 0}
-                  >
-                    {mcpIds.length > 0 ? '管理 MCP' : '选择 MCP'}（可选 {assignableMcp.length} 个）
-                  </button>
-                  {pickedMcp.map((server) => (
-                    <span className="pill" key={server.id}>
-                      🔌 {server.name}
-                      <button
-                        type="button"
-                        className="btn ghost sm"
-                        onClick={() => toggleMcp(server.id)}
-                        aria-label={`移除 MCP「${server.name}」`}
-                      >
-                        ✕
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              {supportsMcp && assignableMcp.length === 0 && (
-                <span className="field-help">
-                  目录里还没有可分配的服务器，请先到「MCP」页新建或重新扫描。
-                </span>
-              )}
-              <span className="field-help">
-                智能体能连的 MCP 服务器只能来自这里的分配：没挂上的不会被加载。换内核时，
-                来自其它内核配置的服务器会被自动移除，平台通用的保留。
-              </span>
-              {otherMcp > 0 && (
-                <span className="field-help">
-                  另有 {otherMcp} 个服务器来自其它内核的配置，与当前内核不匹配，无法选择。
-                </span>
-              )}
-            </div>
-
-            <div className="field span-2">
-              <label className="field-label">备注</label>
-              <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} />
-            </div>
-          </div>
-
-          {selected && (
-            <div className="stack">
-              <div className="card-section-title">适配器设置</div>
-              <DynamicForm
-                fields={selected.config_fields}
-                value={options}
-                onChange={setOptions}
-                advancedExtra={
-                  <div className="field span-2">
-                    <label className="field-label">
-                      凭据
-                      <span className="dim small" style={{ marginLeft: 'auto' }}>
-                        已配置 {credentials.length} 条
-                      </span>
-                    </label>
-                    <CredentialEditor drafts={credentials} library={library} onChange={setCredentials} />
-                    <span className="field-help">
-                      点名字输入框会列出凭据库里已有的数据：挑一条就引用它，也可以输入新名字 + 值
-                      顺手新建（保存后进入凭据库）。取用方式是把值注入成环境变量，智能体直接读取，
-                      值不会出现在提示词、对话记录与接口响应里；完整清单在「设置 → 凭据库」。
-                      与「网关」无关 —— 网关密钥只属于模型提供方。
-                    </span>
-                  </div>
-                }
-              />
-            </div>
-          )}
-
-      {mcpOpen && selected && (
-        <Modal
-          wide
-          title={`选择 MCP 服务器 · ${selected.name}`}
-          onClose={() => setMcpOpen(false)}
-          footer={
-            <button className="btn primary" onClick={() => setMcpOpen(false)}>
-              完成（已挂 {mcpIds.length}）
-            </button>
-          }
-        >
-          <McpPicker servers={assignableMcp} selected={mcpIds} onChange={setMcpIds} />
-        </Modal>
-      )}
-
-      {skillsOpen && selected && (
-        <Modal
-          wide
-          title={`选择技能 · ${selected.name}`}
-          onClose={() => setSkillsOpen(false)}
-          footer={
-            <button className="btn primary" onClick={() => setSkillsOpen(false)}>
-              完成（已选 {skillIds.length}）
-            </button>
-          }
-        >
-          <SkillPicker skills={matchingSkills} selected={skillIds} onChange={setSkillIds} />
-        </Modal>
-      )}
-    </Modal>
   )
 }
 

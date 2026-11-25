@@ -27,6 +27,7 @@ from ..base import (
 )
 from ..events import (
     AgentEvent,
+    context_usage,
     error,
     text_delta,
     thinking_delta,
@@ -360,6 +361,11 @@ class OpenAIHarnessBase(AgentDefinition):
                     truncated=raw.truncated,
                 )
             raise
+        # 本次请求实际携带的输入 token：多步工具循环里每一步都要更新，
+        # 否则上下文窗口只会停在第一轮的旧数上。
+        prompt_tokens = step_usage.get("prompt_tokens") or 0
+        if prompt_tokens > 0:
+            yield context_usage(prompt_tokens)
 
     async def _execute_tools(
         self,

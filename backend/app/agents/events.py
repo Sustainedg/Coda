@@ -18,6 +18,8 @@ class EventType(str, Enum):
     TOOL_CALL = "tool.call"
     TOOL_RESULT = "tool.result"
     USAGE = "usage"
+    #: 单次模型请求的输入 token 数（上下文窗口的真实占用，不是整轮累计）。
+    CONTEXT_USAGE = "context.usage"
     SESSION = "session"
     LOG = "log"
     ERROR = "error"
@@ -73,6 +75,15 @@ def tool_result(call_id: str | None, output: str, is_error: bool = False) -> Age
 
 def usage(**counters: Any) -> AgentEvent:
     return AgentEvent(EventType.USAGE, payload=counters)
+
+
+def context_usage(tokens: int) -> AgentEvent:
+    """上报**单次请求**的上下文占用（输入 token）。
+
+    与 :func:`usage` 分开是有意的：``usage`` 是整轮累计（用来计费），
+    ``context.usage`` 是最近一次请求的窗口快照（用来判断离上限还有多远）。
+    """
+    return AgentEvent(EventType.CONTEXT_USAGE, payload={"tokens": int(tokens)})
 
 
 def session(session_id: str) -> AgentEvent:

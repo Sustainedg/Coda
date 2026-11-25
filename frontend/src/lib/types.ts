@@ -645,6 +645,8 @@ export interface ContextUsage {
   /** 触发阈值占上限的比例（0~1） */
   threshold_ratio: number
   percent: number
+  /** 已用数是否以内核上报的真实请求 token 为准（false = 按内容估算） */
+  measured: boolean
   /** 已折叠进摘要的消息条数（原文仍保留在消息表里） */
   compacted_count: number
   compacted_at: string | null
@@ -806,7 +808,8 @@ export interface Message {
 
 export type AgentEventType =
   | 'turn.started' | 'run.started' | 'message.delta' | 'thinking.delta' | 'tool.call'
-  | 'tool.result' | 'usage' | 'session' | 'log' | 'error' | 'run.finished' | 'stream.closed'
+  | 'tool.result' | 'usage' | 'context.usage' | 'session' | 'log' | 'error'
+  | 'run.finished' | 'stream.closed'
 
 export interface AgentEvent {
   type: AgentEventType
@@ -1357,7 +1360,7 @@ export interface AuthConfig {
   has_users: boolean
 }
 
-// --- IM（设置 → IM：在聊天软件里和智能体说话）--------------------------------
+// --- IM（智能体设定页的「IM」标签：在聊天软件里和智能体说话）--------------------
 
 /** 一个平台字段；`secret` 的值加密落库，界面只显示「已填」。 */
 export interface ImPlatformField {

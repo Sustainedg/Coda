@@ -2326,7 +2326,8 @@ code, pre, .mono { font-family: var(--mono); }
   transition: filter 0.15s ease;
 }
 .usage-chart-col:hover .usage-chart-track { filter: brightness(1.18); }
-.usage-chart-seg { display: block; width: 100%; }
+/* 柱子占比由组件写成 `--usage-share`：桌面当高度（竖柱），移动端当宽度（横条）。 */
+.usage-chart-seg { display: block; width: 100%; height: var(--usage-share, 0); }
 .usage-chart-seg.seg-input { background: linear-gradient(180deg, var(--brand), var(--brand-strong)); }
 .usage-chart-seg.seg-output { background: linear-gradient(180deg, var(--accent), var(--accent-soft)); }
 .usage-chart-seg.seg-cache {
@@ -3005,13 +3006,18 @@ code, pre, .mono { font-family: var(--mono); }
 
 /* ================= 任务进度卡片：标题 + 进度条 + 任务项（两端共用这一份）================= */
 /* 任务项是纯文本 + 状态标记，没有 checkbox / 输入框 / 可点击任务项；唯一按钮只切换折叠。 */
-.task-card-turn { align-items: stretch; }
 .task-progress-card {
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--bg-elevated); padding: 10px 12px;
   display: flex; flex-direction: column; gap: 8px;
 }
-.task-progress-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* 整条标题栏就是折叠开关：button 复位成普通行，图标 / 文本照旧 */
+.task-progress-head {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  width: 100%; padding: 0; background: transparent; border: 0;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.task-progress-head:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 6px; }
 .task-progress-icon { font-size: 13px; flex: none; display: flex; align-items: center; }
 .task-progress-title {
   font-weight: 650; font-size: 13px; color: var(--text); min-width: 0;

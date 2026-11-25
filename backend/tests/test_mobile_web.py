@@ -806,9 +806,9 @@ def test_agents_own_the_configuration_and_runtimes_own_the_install():
     runtimes = (MOBILE_SRC / "pages" / "MobileRuntimesPage.tsx").read_text(encoding="utf-8")
     assert "MobileAgentSettings" not in runtimes, "运行时页不再内嵌智能体配置"
 
-    agents = (MOBILE_SRC / "pages" / "MobileAgentsPage.tsx").read_text(encoding="utf-8")
-    assert "DynamicForm" in agents, "适配器选项仍由 DynamicForm 渲染（前端不硬编码字段）"
-    assert "listGateways" in agents, "网关下拉要读 /api/gateways"
+    edit = (MOBILE_SRC / "pages" / "MobileAgentEditPage.tsx").read_text(encoding="utf-8")
+    assert "DynamicForm" in edit, "适配器选项仍由 DynamicForm 渲染（前端不硬编码字段）"
+    assert "listGateways" in edit, "网关下拉要读 /api/gateways"
 
     settings = (MOBILE_SRC / "pages" / "MobileSettingsPage.tsx").read_text(encoding="utf-8")
     assert "内核管理" in settings and "技能" in settings

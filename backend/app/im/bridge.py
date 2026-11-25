@@ -82,7 +82,7 @@ async def ensure_conversation(
     profile_id = chat.agent_profile_id or connection.agent_profile_id
     profile = await session.get(AgentProfile, profile_id) if profile_id else None
     if profile is None or profile.deleted_at is not None:
-        raise ConfigurationError("这个 IM 机器人还没绑定可用的智能体，请在「设置 → IM」里选一个")
+        raise ConfigurationError("这个 IM 机器人还没绑定可用的智能体，请到对应智能体的「设定 → IM」标签里选一个")
     if chat.conversation_id:
         existing = await session.get(Conversation, chat.conversation_id)
         same_agent = existing is not None and existing.agent_profile_id == profile.id

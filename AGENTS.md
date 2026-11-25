@@ -345,6 +345,9 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
    否则同名技能会在编目与物化时互相覆盖。
 3. 实现 `skill_mount(ctx)`：声明隔离目录名、需要携带的配置文件、要关闭的内核自带技能，
    并在 `build_invocation()` 里把 `ctx.home_dir` 写进对应环境变量（如 `CLAUDE_CONFIG_DIR`）。
+   隔离 HOME 时注意内核「跟着 HOME 走的数据」不止技能根：登录态、设备身份等必须留在真实
+   目录的数据（macOS 上按 `Application Support` 解析的，见 `doubao_cli.py:_link_macos_data`）
+   要一并软链进隔离 HOME，漏链会让内核在隔离目录重建设备身份、对话起不来。
 4. 加测试：参考 `backend/tests/test_skills.py`（解析、物化、隔离变量）。
 
 ### 4.7 新增前端页面

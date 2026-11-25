@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+from pathlib import Path
 from typing import Iterable
 
 import pytest
@@ -295,3 +297,56 @@ def test_skill_mount_materializes_only_assigned_skills(tmp_path):
         "login",
         "--qr=png",
     ]
+
+
+def test_link_macos_data_links_doubao_cli_and_mssdk(tmp_path, monkeypatch):
+    """macOS 隔离 HOME 里 ``doubao_cli`` 与 ``mssdk`` 都要软链到真实目录。
+
+    漏链 ``mssdk``（设备身份的安全存储）会让每次运行在隔离目录重建设备身份，
+    报「无法访问用于保存设备身份的安全存储」，对话起不来——真机上踩过的坑。
+    """
+    from app.agents.builtin import doubao_cli
+
+    real_home = tmp_path / "real-home"
+    isolated_home = tmp_path / "isolated-home"
+    for name in ("doubao_cli", "mssdk"):
+        (real_home / "Library" / "Application Support" / name).mkdir(parents=True)
+
+    monkeypatch.setattr(doubao_cli.sys, "platform", "darwin")
+    monkeypatch.setattr(doubao_cli.os, "environ", {**os.environ, "HOME": str(real_home)})
+
+    doubao_cli._link_macos_data(str(isolated_home))
+    support = isolated_home / "Library" / "Application Support"
+    for name in ("doubao_cli", "mssdk"):
+        target = support / name
+        assert target.is_symlink(), f"缺少软链：{target}"
+        assert target.resolve() == (real_home / "Library" / "Application Support" / name).resolve()
+
+
+def test_link_macos_data_skips_existing_targets(tmp_path, monkeypatch):
+    """已存在的目标（早建过的软链 / 用户自建目录）不覆盖，也不抛错。"""
+    from app.agents.builtin import doubao_cli
+
+    real_home = tmp_path / "real-home"
+    isolated_home = tmp_path / "isolated-home"
+    (real_home / "Library" / "Application Support" / "doubao_cli").mkdir(parents=True)
+    (real_home / "Library" / "Application Support" / "mssdk").mkdir(parents=True)
+    preexisting = isolated_home / "Library" / "Application Support" / "mssdk"
+    preexisting.mkdir(parents=True)
+    (preexisting / "keep.txt").write_text("设备身份占位", encoding="utf-8")
+
+    monkeypatch.setattr(doubao_cli.sys, "platform", "darwin")
+    monkeypatch.setattr(doubao_cli.os, "environ", {**os.environ, "HOME": str(real_home)})
+
+    doubao_cli._link_macos_data(str(isolated_home))  # 不抛错即通过
+    assert (preexisting / "keep.txt").read_text(encoding="utf-8") == "设备身份占位"
+    assert (isolated_home / "Library" / "Application Support" / "doubao_cli").is_symlink()
+
+
+def test_link_macos_data_noop_outside_darwin(tmp_path, monkeypatch):
+    """非 darwin 平台（Linux 走 XDG_DATA_HOME、Windows 走 LOCALAPPDATA）不建任何链接。"""
+    from app.agents.builtin import doubao_cli
+
+    monkeypatch.setattr(doubao_cli.sys, "platform", "linux")
+    doubao_cli._link_macos_data(str(tmp_path / "isolated-home"))
+    assert not (tmp_path / "isolated-home" / "Library").exists()

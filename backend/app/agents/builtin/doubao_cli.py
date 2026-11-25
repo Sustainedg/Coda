@@ -6,7 +6,8 @@
 * 不声明 ``api_key_env`` / ``base_url_env`` / ``default_gateway``（启动播种会跳过）；
 * headless 走 ``-p - --output-format stream-json``，事件形状与 Claude Code 同构；
 * 技能隔离靠覆盖子进程 ``HOME``（``~/.agents/skills`` 等相对 HOME 的根），
-  原生程序与登录态则留在真实数据目录（``XDG_DATA_HOME``）；
+  原生程序、登录态与设备身份（``mssdk``）则留在真实数据目录（``XDG_DATA_HOME``）；
+  macOS 无 XDG 机制，靠把 ``Application Support`` 下的豆包数据目录软链进隔离 HOME；
 * 人格拼进提示词：内核只读工作目录的 ``AGENTS.md``，写进去会污染用户项目。
 
 平台与适配器的边界不变：这里只描述「怎么启动、怎么解析、配置落在哪」。
@@ -70,27 +71,38 @@ def _probe_env() -> dict[str, str]:
     return env
 
 
+#: macOS 上随 ``os.homedir()/Library/Application Support`` 解析、必须软链到真实目录的
+#: 豆包数据目录。``doubao_cli`` 是原生程序与登录态；``mssdk`` 是设备身份的「安全存储」
+#: （字节设备指纹 SDK 的数据根）——漏掉它时每次运行都会在隔离目录里重建设备身份，
+#: 触发 ``auth_unavailable: 无法访问用于保存设备身份的安全存储``，对话直接起不来。
+_MACOS_DATA_NAMES = ("doubao_cli", "mssdk")
+
+
 def _link_macos_data(home_dir: str) -> None:
-    """macOS：把隔离 HOME 里的数据目录软链到真实目录。
+    """macOS：把隔离 HOME 里的豆包数据目录软链到真实目录。
 
     ``runtime.cjs`` 在 darwin 上按 ``os.homedir()/Library/Application Support`` 找原生程序
     与登录态，而 Node 的 ``os.homedir()`` 认的是 ``HOME``。技能隔离要求把 HOME 换掉，
-    不补这条链接，豆包会「已安装但找不到运行时」。Linux 有 ``XDG_DATA_HOME``、Windows 有
+    不补这条链接，豆包会「已安装但找不到运行时」；设备身份（``mssdk``）也按同一根解析，
+    不链的话登录态与设备身份会分家，报「安全存储不可用」。Linux 有 ``XDG_DATA_HOME``
+    （豆包原生程序与 ``mssdk`` 都认它，适配器已显式指向真实目录）、Windows 有
     ``LOCALAPPDATA``，都不受影响。
     """
     if sys.platform != "darwin":
         return
     real_home = os.environ.get("HOME") or str(Path.home())
-    real = Path(real_home) / "Library" / "Application Support" / "doubao_cli"
-    target = Path(home_dir) / "Library" / "Application Support" / "doubao_cli"
-    try:
-        if target.exists() or target.is_symlink():
-            return
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.symlink_to(real, target_is_directory=True)
-    except OSError:
-        # 尽力而为：链接建不出来时运行会报「运行时缺失」，但不该阻断构建启动命令。
-        return
+    support = Path(real_home) / "Library" / "Application Support"
+    for name in _MACOS_DATA_NAMES:
+        real = support / name
+        target = Path(home_dir) / "Library" / "Application Support" / name
+        try:
+            if target.exists() or target.is_symlink():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(real, target_is_directory=True)
+        except OSError:
+            # 尽力而为：链接建不出来时运行会报「运行时缺失」，但不该阻断构建启动命令。
+            continue
 
 
 def _auth_argv(exe: str) -> list[str]:

@@ -145,8 +145,8 @@ doubao -C <工作目录> --output-format stream-json -p -
 
 | 环境变量 | 作用 |
 | --- | --- |
-| `XDG_DATA_HOME` | 决定 `doubao_cli/app`（原生程序）与登录态、控制通道 |
-| `HOME` | 决定 `~/Doubao/skills`、`~/.agents/skills` 等技能扫描根 |
+| `XDG_DATA_HOME` | 决定 `doubao_cli/app`（原生程序）与登录态、控制通道；也决定设备身份存储 `mssdk` 的落点 |
+| `HOME` | 决定 `~/Doubao/skills`、`~/.agents/skills` 等技能扫描根；macOS 上还决定 `Application Support` 数据根 |
 | `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` | 常规缓存/配置 |
 
 实测结论：
@@ -156,7 +156,14 @@ doubao -C <工作目录> --output-format stream-json -p -
 - `HOME=<隔离目录>` + `XDG_DATA_HOME=<真实数据目录>` → 正常启动，
   技能根全部落到隔离目录。**这是推荐组合**：
   - `HOME = ctx.home_dir` —— 技能严格仅分配
-  - `XDG_DATA_HOME` 显式指向服务进程的真实数据目录 —— 复用已安装的原生程序与登录态
+  - `XDG_DATA_HOME` 显式指向服务进程的真实数据目录 —— 复用已安装的原生程序、登录态与设备身份
+- macOS 没有 `XDG_DATA_HOME` 机制（`runtime.cjs` 写死按 `os.homedir()/Library/Application Support`
+  解析，而 Node 的 `os.homedir()` 认 `HOME`）：隔离 HOME 里必须把
+  `Application Support/doubao_cli`（原生程序 + 登录态）**和 `Application Support/mssdk`
+  （设备身份的「安全存储」，字节设备指纹 SDK 的数据根）都软链到真实目录。
+  只链 `doubao_cli` 漏掉 `mssdk` 时，每次运行都会在隔离目录重建设备身份，
+  报 `auth_unavailable: 无法访问用于保存设备身份的安全存储`，对话直接起不来
+  —— macOS 真机踩过的坑，适配器 `_link_macos_data` 两个目录一起链。
 - 控制通道在 `/tmp/dcli-<uid>`，实例锁 `doubao-cli-instance.lock` 在数据目录。
   **并发运行是否互相打架必须实测**（协作域会并行跑多个智能体）。
 

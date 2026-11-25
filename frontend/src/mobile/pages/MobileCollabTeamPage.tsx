@@ -412,7 +412,14 @@ export function MobileCollabTeamPage() {
                     return (
                       <div className="m-node-card" key={item.key}>
                         <div className="m-node-head">
-                          <span className="avatar">{agent?.avatar ?? '🤖'}</span>
+                          <span className="avatar">
+                            <AgentAvatar
+                              avatar={agent?.avatar}
+                              avatarPreset={agent?.avatar_preset}
+                              avatarFile={agent?.avatar_file}
+                              agentId={agent?.id}
+                            />
+                          </span>
                           <div className="m-item-main">
                             <div className="m-node-title">
                               {item.label || agent?.name || item.key}

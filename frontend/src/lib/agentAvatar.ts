@@ -1,12 +1,13 @@
 /**
  * 智能体头像的统一取值逻辑（两端共用）。
  *
- * 一个智能体的头像有三个来源，显示优先级从高到低：
+ * 头像**只来自头像包**，显示优先级从高到低：
  *
  * 1. `avatar_file` —— 自定义上传（`/api/agents/{id}/avatar`，需带令牌取 blob）；
  * 2. `avatar_preset` —— 内置头像包（`/avatars/pack-NNN.webp`，随前端构建发布的静态图）；
- * 3. `avatar` —— emoji（最老的字段，所有地方都能渲染）。
+ * 3. 兜底 —— 两者都没有时，按智能体 id 稳定地选一张头像包图片（`fallbackAvatarPreset`）。
  *
+ * 老的 `avatar` emoji 字段**已下线**，只在兜底挑选时当种子用，界面永不渲染 emoji。
  * 头像包清单由 `scripts/gen_avatar_pack.py` 生成（`lib/avatarPack.ts`），图片与清单
  * 必须同步，所以随机生成只会抽到真实存在的图。
  */
@@ -38,6 +39,26 @@ export function randomAvatarPreset(exclude?: string | null): string {
   const pool = AVATAR_PRESETS.filter((item) => item !== exclude)
   const source = pool.length > 0 ? pool : [...AVATAR_PRESETS]
   return source[Math.floor(Math.random() * source.length)]
+}
+
+/** emoji 头像已全面下线：没有任何头像来源时，界面统一退到这张头像包兜底。 */
+export const DEFAULT_AVATAR_PRESET: string = AVATAR_PRESETS[0]
+
+/**
+ * 没有明确头像时的兜底头像包：按种子（智能体 id）稳定地挑一张。
+ *
+ * 「稳定」很关键 —— 同一个智能体每次渲染都必须是同一张脸，不能刷新一次换一个。
+ * 老智能体只存了 emoji（`avatar`）没有 `avatar_preset`，用 id 兜底就能直接长出
+ * 一张固定的头像包人物图，不必改库。
+ */
+export function fallbackAvatarPreset(seed?: string | null): string {
+  const text = (seed ?? '').trim()
+  if (!text) return DEFAULT_AVATAR_PRESET
+  let hash = 0
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0
+  }
+  return AVATAR_PRESETS[hash % AVATAR_PRESETS.length]
 }
 
 /** 内置头像包的编号列表（画廊挑选用）。 */

@@ -354,7 +354,7 @@ export function buildCollabProgress({
     return {
       key: node.key,
       label: node.label || node.key,
-      avatar: agentsById.get(node.agent_profile_id)?.avatar ?? '🤖',
+      avatar: agentsById.get(node.agent_profile_id)?.avatar ?? '',
       avatarPreset: agentsById.get(node.agent_profile_id)?.avatar_preset ?? null,
       avatarFile: agentsById.get(node.agent_profile_id)?.avatar_file ?? null,
       agentId: node.agent_profile_id,

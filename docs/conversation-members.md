@@ -39,7 +39,7 @@
 | @ 召唤机制完整：召唤轮不续接主场会话、技能/MCP 物化到一次性隔离目录（`summon-` 前缀）、不用对话单独指定的模型 | `runtime/service.py:prepare_run`（约 L269-340） | 成员智能体发言**零新增机制**，只放宽召唤校验 |
 | `messages.agent_profile_id` 已存在（@ 召唤轮记录作答者） | `models.py` | 多用户同聊还需 `author_user_id` 区分"谁发的" |
 | 用户头像：`lib/avatar.ts` blob 加载 + `components/UserAvatar.tsx`（两端共用） | 前端 | 成员列表直接复用，零新资产 |
-| 智能体头像：`components/AgentAvatar.tsx`（自定义上传 > 头像包 > emoji 三层优先级） | 前端 | 同上 |
+| 智能体头像：`components/AgentAvatar.tsx`（自定义上传 > 头像包 > 按 id 兜底的头像包；emoji 已下线） | 前端 | 同上 |
 | `/api/auth/users` 列用户是**管理员专属** | `api/auth.py:list_users` | 邀请不能靠它——按用户名查 + 邀请链接，不泄漏用户清单 |
 | `require_owned` / `owner_id_for` 归属校验体系 | `auth_deps.py` | 成员访问权在这之上扩展 |
 | 桌面顶栏：`chat-topbar-actions`（分享 + 朗读） | `pages/ChatPage.tsx`（约 L990） | 「⋯」加在其右侧 |

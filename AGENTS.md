@@ -608,8 +608,10 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
   前端取图走 `lib/avatar.ts` 带令牌 `fetch` 成 blob + object URL，**不要**把头像地址塞进
   `<img src>` 拼 `?access_token=`（令牌会进日志与历史）。展示统一用 `components/UserAvatar.tsx`
   （有图显示图、没图显示显示名首字母）。
-- **智能体头像**：三个来源并存，显示优先级 **自定义上传（`avatar_file`）> 内置头像包
-  （`avatar_preset`）> emoji（`avatar`）**。内置头像包是 3D 黏土风角色（**人物 + 卡通**两类），
+- **智能体头像**：**只保留头像包**（外加自定义上传），emoji 头像已全部下线 ——
+  显示优先级 **自定义上传（`avatar_file`）> 内置头像包（`avatar_preset`）> 按智能体 id
+  稳定兜底的一张头像包图（`lib/agentAvatar.ts::fallbackAvatarPreset`）**；老的 `avatar`
+  emoji 字段只为兼容历史数据保留，界面不展示、选择器也不再提供。内置头像包是 3D 黏土风角色（**人物 + 卡通**两类），
   图片在 `frontend/public/avatars/`、清单在 `frontend/src/lib/avatarPack.ts`，
   **清单与文件由 `scripts/gen_avatar_pack.py` 一次生成**（`SOURCES` 里每张拼图标分类，
   `CATEGORIES` 定分组名，清单会带出 `AVATAR_GROUPS` 供画廊分组）；白底抠成透明背景用
@@ -621,7 +623,9 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
   「随机生成」只是从清单里抽一个编号，不调用生图接口 —— 秒出、离线可用、零成本。
   编号形状（`pack-NNN`）由 `app/avatars.is_valid_preset` 校验；展示统一用
   `components/AgentAvatar.tsx`（取自定义图同样走带令牌 blob，不要拼 `?access_token=`）。
-  只认得到 emoji 的地方（IM 绑定下拉、协作流程图节点等）继续显示 `avatar`，不会露出一串编号。
+  **任何界面都不要再把智能体的 `avatar` emoji 当头像渲染**（含 `🤖` 兜底与下拉框前缀）——
+  文字列表 / 下拉框只显示名字，需要智能体头像的地方一律用 `AgentAvatar`。
+  `tests/test_frontend_assets.py::test_agent_avatars_only_come_from_the_avatar_pack` 会拦。
 
 ---
 

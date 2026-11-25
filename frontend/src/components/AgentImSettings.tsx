@@ -279,7 +279,7 @@ export function AgentImSettings({
                             )
                           }
                         >
-                          <option value="">{agent.avatar} {agent.name}（当前智能体）</option>
+                          <option value="">{agent.name}（当前智能体）</option>
                         </select>
                         <span className="field-help">
                           私聊都进绑定的智能体；要换成别的智能体，去那个智能体的「IM」标签里操作。
@@ -516,7 +516,7 @@ function AddAgentConnectionModal({
 
         <div className="field">
           <label className="field-label">对话的智能体</label>
-          <input className="input" value={`${agent.avatar} ${agent.name}`} readOnly />
+          <input className="input" value={agent.name} readOnly />
           <span className="field-help">这条连接将绑定到「{agent.name}」；创建后在这个标签里管理。</span>
         </div>
 

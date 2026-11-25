@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../../lib/api'
+import { AgentAvatar } from '../../components/AgentAvatar'
 import { CollapsibleGroup } from '../../components/CollapsibleGroup'
 import { SkillAssignPanel } from '../../components/SkillAssignPanel'
 import { SkillCopyForm } from '../../components/SkillCopyForm'
@@ -401,7 +402,9 @@ function MobileSkillsLocal() {
                 <div className="m-skill-agents">
                   {selected.agents.map((agent) => (
                     <span className="m-skill-agent" key={agent.id}>
-                      <span className="m-skill-agent-avatar">{agent.avatar || '🤖'}</span>
+                      <span className="m-skill-agent-avatar">
+                        <AgentAvatar avatar={agent.avatar} avatarPreset={agent.avatar_preset} agentId={agent.id} />
+                      </span>
                       {agent.name}
                     </span>
                   ))}

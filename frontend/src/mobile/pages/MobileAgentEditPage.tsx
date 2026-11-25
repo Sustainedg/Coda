@@ -183,6 +183,8 @@ function AgentCreatePanel({ onCreated }: { onCreated: (agent: AgentProfile) => v
   const [groupName, setGroupName] = useState('')
   const [tagline, setTagline] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
+  // emoji 头像已下线：新智能体直接领一张随机头像包图片。
+  const [avatarPreset] = useState(() => randomAvatarPreset())
   const [gatewayId, setGatewayId] = useState('')
   // 多账号内核：官方链路下指定用哪个登录账号；空串 = 跟随内核当前登录的账号。
   const [accountId, setAccountId] = useState('')
@@ -215,7 +217,9 @@ function AgentCreatePanel({ onCreated }: { onCreated: (agent: AgentProfile) => v
         name: name.trim(),
         group_name: groupName.trim(),
         type_id: selected.id,
-        avatar: '🛠️',
+        // emoji 头像已下线：新智能体直接领一张头像包图片（老字段留空，仅作兜底种子）。
+        avatar: '',
+        avatar_preset: avatarPreset,
         tagline: tagline.trim() || null,
         description: null,
         system_prompt: systemPrompt,
@@ -397,7 +401,8 @@ function AgentBasicPanel({ agent, onSaved }: { agent: AgentProfile; onSaved: () 
   }, [])
 
   const [name, setName] = useState(agent.name)
-  const [avatar, setAvatar] = useState(agent.avatar)
+  // emoji 头像已下线：老字段只原样带回（后端 NOT NULL），界面上不再可编辑 / 展示。
+  const avatar = agent.avatar
   const [avatarPreset, setAvatarPreset] = useState<string | null>(agent.avatar_preset ?? null)
   const [groupName, setGroupName] = useState(agent.group_name ?? '')
   const [tagline, setTagline] = useState(agent.tagline ?? '')
@@ -418,7 +423,7 @@ function AgentBasicPanel({ agent, onSaved }: { agent: AgentProfile; onSaved: () 
   const [credentialDrafts, setCredentialDrafts] = useState(() => credentialsToDraft(agent.credentials))
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
-  /** 头像包画廊的开合：60 张缩略图没必要常驻 */
+  /** 头像包画廊的开合：80 张缩略图没必要常驻 */
   const [galleryOpen, setGalleryOpen] = useState(false)
 
   const selected = types.find((type) => type.id === typeId) ?? null
@@ -493,7 +498,7 @@ function AgentBasicPanel({ agent, onSaved }: { agent: AgentProfile; onSaved: () 
       {loadError && <div className="banner err">{loadError}</div>}
       {saveError && <div className="banner err">{saveError}</div>}
 
-      {/* 头像：emoji 快选 + 头像包画廊（随机生成 / 自定义上传在桌面端设定页里也有） */}
+      {/* 头像：头像包画廊（emoji 已下线；随机生成 / 自定义上传在桌面端设定页里也有） */}
       <div className="field">
         <label className="field-label">头像</label>
         <div className="row" style={{ gap: 12, alignItems: 'center' }}>
@@ -538,21 +543,6 @@ function AgentBasicPanel({ agent, onSaved }: { agent: AgentProfile; onSaved: () 
             ))}
           </div>
         )}
-        <div className="row wrap" style={{ gap: 6, marginTop: 8 }}>
-          {AVATARS.map((item) => (
-            <button
-              key={item}
-              type="button"
-              className={`btn sm${item === avatar && !avatarPreset ? ' primary' : ''}`}
-              onClick={() => {
-                setAvatar(item)
-                setAvatarPreset(null)
-              }}
-            >
-              {item}
-            </button>
-          ))}
-        </div>
       </div>
 
       <div className="field">
@@ -951,5 +941,3 @@ function gatewaysFor(type: AgentType | null, gateways: Gateway[]): Gateway[] {
   const matches = (g: Gateway) => g.protocol === protocol
   return [...custom.filter(matches), ...custom.filter((g) => !matches(g))]
 }
-
-const AVATARS = ['🛠️', '🧪', '🔎', '🐳', '🔗', '🎨', '📚', '🧠', '⚡', '🛰️', '🧭', '🦾']

@@ -54,7 +54,7 @@ interface LiveTurn extends AgentStreamState {
   userAttachments: string[]
   /** @ 召唤轮：正在回答的智能体名（气泡上亮「✦ 某某正在回答」） */
   summonName?: string
-  /** @ 召唤轮：被召唤者的 emoji 头像（气泡左侧也跟着换人） */
+  /** @ 召唤轮：被召唤者的老 emoji 字段（已下线，仅作兜底种子；气泡左侧也跟着换人） */
   summonAvatar?: string
   /** @ 召唤轮：被召唤者的内置头像包编号 / 自定义头像文件 / 智能体 id */
   summonAvatarPreset?: string | null
@@ -1051,7 +1051,7 @@ export function MobileChatPage() {
             <MessageView
               key={message.id}
               message={message}
-              avatar={summoned ? (summoner?.avatar ?? '🤖') : (active?.agent_avatar ?? undefined)}
+              avatar={summoned ? (summoner?.avatar ?? '') : (active?.agent_avatar ?? undefined)}
               avatarPreset={summoned ? summoner?.avatar_preset : active?.agent_avatar_preset}
               avatarFile={summoned ? summoner?.avatar_file : active?.agent_avatar_file}
               agentId={summoned ? summoner?.id : active?.agent_profile_id}

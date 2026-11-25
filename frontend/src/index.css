@@ -545,7 +545,7 @@ code, pre, .mono { font-family: var(--mono); }
   font-size: 15px; background: var(--bg-panel); border: 1px solid var(--border);
 }
 .avatar.user { background: linear-gradient(135deg, #3b3760, #2b2844); }
-/* 自己的消息画真头像（UserAvatar）：撑满 avatar 圆框，与 AI 侧的 emoji 头像同尺寸 */
+/* 自己的消息画真头像（UserAvatar）：撑满 avatar 圆框，与 AI 侧的 AgentAvatar 同尺寸 */
 .avatar .avatar-user { --avatar-size: 100%; width: 100%; height: 100%; }
 
 .bubble { min-width: 0; }
@@ -1102,7 +1102,7 @@ code, pre, .mono { font-family: var(--mono); }
 .empty-icon .agent-avatar { margin: 0 auto; }
 /* 气泡 / 列表里的头像：AgentAvatar 撑满外层圆框，避免出现双层描边 */
 .avatar > .agent-avatar { width: 100%; height: 100%; border: none; background: none; }
-/* emoji 快选 / 头像包：一排圆形小按钮，选中的描边点亮 */
+/* 头像包画廊：一排圆形小按钮，选中的描边点亮 */
 .agent-avatar-emoji-btn {
   flex: none; width: 36px; height: 36px; border-radius: 50%; padding: 0;
   display: grid; place-items: center; font-size: 19px; line-height: 1;
@@ -1127,7 +1127,7 @@ code, pre, .mono { font-family: var(--mono); }
 .agent-avatar-group-grid { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* ---------- 智能体头像选择器（编辑表单第一位） ---------- */
-/* 布局：左边大头像预览（64px 圆），右边「随机生成 / 上传 / 移除」按钮竖排；emoji 快选在下一行 */
+/* 布局：左边大头像预览（64px 圆），右边「随机生成 / 上传 / 移除」按钮竖排；头像包画廊在下方 */
 .agent-avatar-picker { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .agent-avatar-preview {
   flex: none; width: 64px; height: 64px; border-radius: 50%; overflow: hidden;
@@ -1136,28 +1136,7 @@ code, pre, .mono { font-family: var(--mono); }
   border: 1px solid var(--border-strong);
 }
 .agent-avatar-preview img { width: 100%; height: 100%; object-fit: cover; }
-.agent-avatar-emoji { font-size: 34px; line-height: 1; }
 .agent-avatar-actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-/* 随机生成的可爱头像「会动」：三套小动作（摇摆 / 浮动 / 蹦跳），挑一套随机配上 */
-.agent-avatar-preview.live-swing .agent-avatar-emoji { animation: avatar-swing 2.6s ease-in-out infinite; display: inline-block; }
-.agent-avatar-preview.live-float .agent-avatar-emoji { animation: avatar-float 3s ease-in-out infinite; display: inline-block; }
-.agent-avatar-preview.live-bounce .agent-avatar-emoji { animation: avatar-bounce 2.2s cubic-bezier(0.34, 1.56, 0.64, 1) infinite; display: inline-block; }
-@keyframes avatar-swing {
-  0%, 100% { transform: rotate(-9deg); }
-  50% { transform: rotate(9deg); }
-}
-@keyframes avatar-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-5px); }
-}
-@keyframes avatar-bounce {
-  0%, 100% { transform: translateY(0) scale(1); }
-  40% { transform: translateY(-7px) scale(1.06); }
-  60% { transform: translateY(0) scale(0.97); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .agent-avatar-preview[class*='live-'] .agent-avatar-emoji { animation: none; }
-}
 
 /* ---------- 空会话中央的大头像（两端各一份，共享段逐字一致；移动端在 mobile.css 收小） ----------
    智能体的头像放大了站在会话中央：透明背景、四周留白（头像包的图已由

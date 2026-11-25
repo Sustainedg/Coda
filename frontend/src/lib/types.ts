@@ -303,10 +303,11 @@ export interface AgentCredentialInput {
 export interface AgentProfile {
   id: string
   name: string
+  /** 老的 emoji 头像字段（已下线）：仅作兜底挑头像包的种子，界面不再展示 */
   avatar: string
   /** 内置头像包编号（pack-001 ~，清单见 lib/avatarPack.ts）；有值时渲染 /avatars/<它>.webp，优先级在 avatar_file 之后 */
   avatar_preset?: string | null
-  /** 自定义头像文件名；有值时取 /api/agents/{id}/avatar 显示，优先于 emoji */
+  /** 自定义头像文件名；有值时取 /api/agents/{id}/avatar 显示，优先于头像包 */
   avatar_file?: string | null
   tagline?: string | null
   description?: string | null
@@ -573,7 +574,7 @@ export interface ActiveRunInfo {
   agent_name: string
   /** 本轮作答的智能体 id：@ 召唤轮是被召唤者，普通轮是对话归属者 */
   agent_profile_id?: string | null
-  /** 本轮作答智能体的 emoji 头像（与 agent_profile_id 对应） */
+  /** 本轮作答智能体的老 emoji 字段（已下线，仅作兜底种子）；真要画头像看 agent_avatar_preset */
   agent_avatar?: string | null
   /** 本轮作答智能体的内置头像包编号（与 agent_avatar 对应） */
   agent_avatar_preset?: string | null

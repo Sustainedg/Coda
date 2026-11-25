@@ -145,7 +145,8 @@ class AgentCredentialBrief(BaseModel):
 class AgentProfileCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     type_id: str
-    avatar: str = "🛠️"
+    #: 老的 emoji 头像字段（已下线，仅兼容历史数据）；新智能体请直接用 `avatar_preset`。
+    avatar: str = ""
     #: 内置头像包编号（``pack-001`` ~ ``pack-999``）；合法值由前端 `lib/avatarPack.ts` 的清单定义
     avatar_preset: str | None = None
     tagline: str | None = None
@@ -170,7 +171,7 @@ class AgentProfileUpdate(BaseModel):
     is_default: bool | None = None
     type_id: str | None = None
     avatar: str | None = None
-    #: 内置头像包编号；传 null 表示不用（界面回退到 emoji）
+    #: 内置头像包编号；传 null 表示不用（界面按 id 稳定兜底一张头像包图）
     avatar_preset: str | None = None
     tagline: str | None = None
     description: str | None = None
@@ -216,7 +217,7 @@ class AgentProfileRead(BaseModel):
     avatar: str
     #: 内置头像包编号；有值时前端渲染 ``/avatars/<它>.webp``，优先级在 avatar_file 之后
     avatar_preset: str | None = None
-    #: 自定义头像文件名；有值时前端拼 ``/api/agents/{id}/avatar?v=<它>`` 取图，优先于 emoji
+    #: 自定义头像文件名；有值时前端拼 ``/api/agents/{id}/avatar?v=<它>`` 取图，优先于头像包
     avatar_file: str | None = None
     tagline: str | None = None
     description: str | None = None

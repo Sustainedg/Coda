@@ -15,6 +15,7 @@ import { AgentUsagePanel } from '../components/AgentUsagePanel'
 import { McpPicker } from '../components/McpPicker'
 import { SkillPicker } from '../components/SkillPicker'
 import { api, ApiError } from '../lib/api'
+import { randomAvatarPreset } from '../lib/agentAvatar'
 import type {
   AgentProfile,
   AgentType,
@@ -248,6 +249,8 @@ function AgentCreatePanel({ onCreated }: { onCreated: (agent: AgentProfile) => v
   const [groupName, setGroupName] = useState('')
   const [tagline, setTagline] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
+  // emoji 头像已下线：新智能体直接领一张随机头像包图片。
+  const [avatarPreset] = useState(() => randomAvatarPreset())
   // 官方链路统一显示为「官方默认」（等于平台不接管路由），因此这里归一化成空值。
   const [gatewayId, setGatewayId] = useState('')
   // 多账号内核：官方链路下指定用哪个登录账号；空串 = 跟随内核当前登录的账号。
@@ -283,7 +286,9 @@ function AgentCreatePanel({ onCreated }: { onCreated: (agent: AgentProfile) => v
         name: name.trim(),
         group_name: groupName.trim(),
         type_id: selected.id,
-        avatar: '🛠️',
+        // emoji 头像已下线：新智能体直接领一张头像包图片（老字段留空，仅作兜底种子）。
+        avatar: '',
+        avatar_preset: avatarPreset,
         tagline: tagline.trim() || null,
         description: null,
         system_prompt: systemPrompt,
@@ -511,7 +516,8 @@ function AgentBasicPanel({ agent, onSaved }: { agent: AgentProfile; onSaved: () 
   }, [])
 
   const [name, setName] = useState(agent.name)
-  const [avatar, setAvatar] = useState(agent.avatar)
+  // emoji 头像已下线：老字段只原样带回（后端 NOT NULL），界面上不再可编辑 / 展示。
+  const avatar = agent.avatar
   const [avatarPreset, setAvatarPreset] = useState<string | null>(agent.avatar_preset ?? null)
   const [avatarFileId, setAvatarFileId] = useState<string | null>(agent.avatar_file ?? null)
   const [groupName, setGroupName] = useState(agent.group_name ?? '')
@@ -622,8 +628,6 @@ function AgentBasicPanel({ agent, onSaved }: { agent: AgentProfile; onSaved: () 
 
       <AgentAvatarPicker
         agentId={agent.id}
-        emoji={avatar}
-        onEmojiChange={setAvatar}
         preset={avatarPreset}
         onPresetChange={setAvatarPreset}
         avatarFileId={avatarFileId}

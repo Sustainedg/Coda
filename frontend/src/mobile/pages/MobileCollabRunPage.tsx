@@ -559,7 +559,7 @@ export function MobileCollabRunPage() {
           const agent = agents.find((item) => item.id === (step.agent_profile_id ?? node?.agent_profile_id))
           return {
             id: step.id,
-            avatar: agent?.avatar ?? '🤖',
+            avatar: agent?.avatar ?? '',
             label: node?.label ?? step.profile_name ?? step.role_key,
             message: {
               id: step.id,
@@ -586,7 +586,7 @@ export function MobileCollabRunPage() {
             }
           : {
               id: row.id,
-              avatar: agents.find((agent) => agent.id === row.agent_profile_id)?.avatar ?? '🤖',
+              avatar: agents.find((agent) => agent.id === row.agent_profile_id)?.avatar ?? '',
               label: leaderLabel,
               message: {
                 id: row.id,
@@ -626,7 +626,7 @@ export function MobileCollabRunPage() {
       const agent = agents.find((item) => item.id === node?.agent_profile_id)
       entries.push({
         id: step.stepId,
-        avatar: agent?.avatar ?? '🤖',
+        avatar: agent?.avatar ?? '',
         label: node?.label ?? step.agentName,
         message: {
           id: step.stepId,
@@ -648,7 +648,7 @@ export function MobileCollabRunPage() {
         id: 'live',
         avatar: agents.find(
           (agent) => agent.id === graph?.nodes.find((node) => node.key === leaderLive.nodeKey)?.agent_profile_id,
-        )?.avatar ?? '🤖',
+        )?.avatar ?? '',
         label: leaderLive.agentName,
         message: {
           id: 'live',
@@ -669,7 +669,7 @@ export function MobileCollabRunPage() {
         id: `chat-live-${chatTurn.live.messageId}`,
         avatar: agents.find((agent) => agent.id === graph?.nodes.find(
           (node) => node.key === (chatTurn.live?.roleKey || leaderKey),
-        )?.agent_profile_id)?.avatar ?? '🤖',
+        )?.agent_profile_id)?.avatar ?? '',
         label: graph?.nodes.find(
           (node) => node.key === (chatTurn.live?.roleKey || leaderKey),
         )?.label ?? chatTurn.live.agentName,

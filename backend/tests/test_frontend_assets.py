@@ -322,6 +322,55 @@ def test_avatar_pack_categories_cover_people_and_cartoons():
             assert selector in style, f"{css.name} 缺少分组样式 {selector}"
 
 
+@needs_frontend
+def test_agent_avatars_only_come_from_the_avatar_pack():
+    """智能体头像**只保留头像包**（外加自定义上传），emoji 头像已全部下线。
+
+    三处一起收口，任何一处漏了都会让 emoji 脸重新露出来：
+    ① 选择器（桌面 / 移动）不再提供 emoji 快选池；
+    ② `AgentAvatar` 不再回退 emoji —— 没有自定义图 / 头像包时按智能体 id 稳定兜底一张；
+    ③ 下拉框等只能显示文字的地方不再拼 emoji 前缀。
+    人物 / 卡通头像包必须原样保留（下架的是 emoji，不是图片）。
+    """
+    picker = FRONTEND / "src" / "components" / "AgentAvatarPicker.tsx"
+    picker_body = picker.read_text(encoding="utf-8")
+    assert "FALLBACK_AVATARS" not in picker_body, "选择器里还有 emoji 快选池"
+    assert "CUTE_AVATARS" not in picker_body, "选择器里还有 emoji 快选池"
+    assert "onEmojiChange" not in picker_body, "选择器还在渲染 emoji 头像"
+    assert "liveAnimation" not in picker_body, "选择器还在渲染 emoji 头像"
+    assert "AVATAR_PRESET_GROUPS" in picker_body, "头像包画廊被误删了"
+    assert "avatarPresetUrl" in picker_body
+
+    mobile = (MOBILE_SRC / "pages" / "MobileAgentEditPage.tsx").read_text(encoding="utf-8")
+    assert "const AVATARS = [" not in mobile, "移动端还留着一排 emoji 头像"
+    assert "AVATAR_PRESET_GROUPS" in mobile, "移动端头像包画廊被误删了"
+
+    avatar_component = (
+        FRONTEND / "src" / "components" / "AgentAvatar.tsx"
+    ).read_text(encoding="utf-8")
+    assert "fallbackAvatarPreset" in avatar_component
+    assert "avatarPresetUrl" in avatar_component
+    assert "'🤖'" not in avatar_component, "AgentAvatar 还在回退 emoji"
+
+    # 文字型下拉 / 只读框不再展示 emoji 前缀。
+    text_targets = (
+        FRONTEND / "src" / "components" / "NodeInspector.tsx",
+        FRONTEND / "src" / "components" / "AgentImSettings.tsx",
+        MOBILE_SRC / "components" / "CollabNodeForm.tsx",
+    )
+    for target in text_targets:
+        text = target.read_text(encoding="utf-8")
+        assert "{item.avatar}" not in text, f"{target.name} 还在拼 emoji 头像"
+        assert "{agent.avatar}" not in text, f"{target.name} 还在拼 emoji 头像"
+
+    # 全前端不再有「没头像就画 🤖」的兜底。
+    for path in (FRONTEND / "src").rglob("*.tsx"):
+        assert "'🤖'" not in path.read_text(encoding="utf-8"), f"{path.name} 还在回退 🤖 emoji"
+
+    # 头像包（人物 / 卡通）必须完好：下架的是 emoji，不是整批图片头像。
+    assert len(list(AVATAR_DIR.glob("pack-*.webp"))) >= 20, "人物 / 卡通头像包被误删了"
+
+
 # --- 协作：工单更新小卡片（两端都在用，样式不能只写一端） ---------------------
 
 TICKET_UPDATE_CLASSES = (

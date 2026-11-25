@@ -506,7 +506,7 @@ code, pre, .mono { font-family: var(--mono); }
   border: 1px solid var(--border-strong);
 }
 .avatar.user { background: linear-gradient(135deg, #3b3760, #2b2844); }
-/* 自己的消息画真头像（UserAvatar）：撑满 avatar 圆框，与 AI 侧的 emoji 头像同尺寸 */
+/* 自己的消息画真头像（UserAvatar）：撑满 avatar 圆框，与 AI 侧的 AgentAvatar 同尺寸 */
 .avatar .avatar-user { --avatar-size: 100%; width: 100%; height: 100%; }
 
 /* ---------- 智能体头像（两端共用：列表 / 气泡 / 选择器） ---------- */
@@ -524,7 +524,7 @@ code, pre, .mono { font-family: var(--mono); }
 .empty-icon .agent-avatar { margin: 0 auto; }
 /* 气泡 / 列表里的头像：AgentAvatar 撑满外层圆框，避免出现双层描边 */
 .avatar > .agent-avatar { width: 100%; height: 100%; border: none; background: none; }
-/* emoji 快选 / 头像包：一排圆形小按钮，选中的描边点亮 */
+/* 头像包画廊：一排圆形小按钮，选中的描边点亮 */
 .agent-avatar-emoji-btn {
   flex: none; width: 36px; height: 36px; border-radius: 50%; padding: 0;
   display: grid; place-items: center; font-size: 19px; line-height: 1;
@@ -676,8 +676,9 @@ code, pre, .mono { font-family: var(--mono); }
 }
 .m-skill-agent-avatar {
   display: grid; place-items: center; width: 20px; height: 20px;
-  border-radius: 50%; background: var(--brand-soft); font-size: 12px;
+  border-radius: 50%; background: var(--brand-soft); font-size: 12px; overflow: hidden;
 }
+.m-skill-agent-avatar > .agent-avatar { width: 100%; height: 100%; border: none; background: none; }
 .m-skill-text { margin: 0; font-size: 12.5px; line-height: 1.7; color: var(--text-muted); white-space: pre-wrap; }
 .m-skill-empty { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-dim); }
 .m-skill-body {

@@ -90,7 +90,15 @@ export function AgentConversationPanel({
         className="collab-agent-thread"
         empty={(
           <div className="collab-agent-empty">
-            <div className="collab-agent-empty-icon">{node.avatar}</div>
+            <div className="collab-agent-empty-icon">
+              <AgentAvatar
+                avatar={node.avatar}
+                avatarPreset={node.avatarPreset}
+                avatarFile={node.avatarFile}
+                agentId={node.agentId}
+                size={44}
+              />
+            </div>
             {node.state === 'active' ? (
               <>
                 <p>「{node.label}」正在处理中…</p>

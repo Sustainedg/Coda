@@ -114,7 +114,7 @@ export function CollabAgentThread({
     [tickets],
   )
   const labelOf = (key: string) => roster.find((item) => item.key === key)?.label ?? key
-  const avatarOf = (key: string) => roster.find((item) => item.key === key)?.avatar ?? '🤖'
+  const avatarOf = (key: string) => roster.find((item) => item.key === key)?.avatar ?? ''
   // 本岗位被流式结果顶替的步骤不再进线程模型，否则历史里会多一个空的占位气泡。
   const threadSteps = useMemo(
     () => steps.filter((step) => step.role_key !== node.key || !superseded(step.id)),
@@ -153,7 +153,7 @@ export function CollabAgentThread({
     }
 
     if (entry.kind === 'handoff') {
-      // 交接人是协作组里的另一个岗位：头像取 roster 的三字段（自定义图 > 头像包 > emoji），
+      // 交接人是协作组里的另一个岗位：头像取 roster 的三字段（自定义图 > 头像包 > 按 id 兜底），
       // 与气泡其他位置同一套渲染，换了头像同步显示（原来只认 emoji 会一直是旧头像）。
       const fromNode = entry.fromKey ? roster.find((item) => item.key === entry.fromKey) : undefined
       threadItems.push({

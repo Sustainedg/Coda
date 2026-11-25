@@ -599,7 +599,8 @@ gateways(id, name, kind(official|custom), type_id, protocol, auth_style, base_ur
          enabled, last_probed_at, deleted_at, owner_id)   ← API 密钥的唯一来源
 agent_profiles(id, name, avatar, avatar_preset, avatar_file, tagline, description, system_prompt,
                type_id, gateway_id→gateways, model, options JSON, enabled, deleted_at, owner_id)
-               -- 头像优先级：avatar_file（自定义上传）> avatar_preset（内置头像包）> avatar（emoji）
+               -- 头像优先级：avatar_file（自定义上传）> avatar_preset（内置头像包）
+               -- 两者都空时按 id 稳定兜底一张头像包图片；avatar（emoji）已下线，仅兼容历史数据
                -- 内置头像包分「人物 / 卡通」两类，画廊按分类分组；清单见 frontend/src/lib/avatarPack.ts
 credentials(id, name, description, value_encrypted, created_at, updated_at, deleted_at, owner_id)
 agent_credentials(agent_profile_id→agent_profiles, credential_id→credentials，复合主键 + position)

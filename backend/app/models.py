@@ -36,9 +36,9 @@ ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "is_default": "BOOLEAN NOT NULL DEFAULT 0",
         "group_name": "VARCHAR(60) NOT NULL DEFAULT ''",
         "owner_id": "VARCHAR(64)",
-        # 「智能体自定义头像文件」是后加的：老行留空，界面回退到 emoji 头像。
+        # 「智能体自定义头像文件」是后加的：老行留空，界面回退到内置头像包。
         "avatar_file": "VARCHAR(120)",
-        # 「内置头像包编号」是后加的：老行留空，界面回退到 emoji 头像。
+        # 「内置头像包编号」是后加的：老行留空，界面按 id 稳定兜底一张头像包图。
         "avatar_preset": "VARCHAR(32)",
         # 「指定内核账号槽位」是后加的：老行留空 = 跟随内核当前登录的账号。
         "account_id": "VARCHAR(64)",
@@ -194,13 +194,14 @@ class AgentProfile(SQLModel, table=True):
 
     id: str = Field(default_factory=new_id, primary_key=True)
     name: str = Field(sa_column=Column(String(120), nullable=False))
-    avatar: str = Field(default="🛠️", sa_column=Column(String(16), nullable=False))
+    #: 老的 emoji 头像字段（**已下线**）：只为兼容历史数据保留，界面不再展示 / 可编辑。
+    avatar: str = Field(default="", sa_column=Column(String(16), nullable=False))
     #: 内置头像包编号（``pack-001`` ~ ``pack-999``，实际清单见前端 `lib/avatarPack.ts`）：
-    #: 随机生成 / 快选从这里选，前端渲染成 ``/avatars/pack-001.webp``。与 ``avatar``（emoji
-    #: 兜底）、``avatar_file``（自定义上传）三个并存，显示优先级：自定义上传 > 内置头像包 > emoji。
+    #: 随机生成 / 快选从这里选，前端渲染成 ``/avatars/pack-001.webp``。与 ``avatar_file``
+    #: （自定义上传）并存，显示优先级：自定义上传 > 内置头像包 > 按 id 稳定兜底的头像包。
     avatar_preset: str | None = Field(default=None, sa_column=Column(String(32)))
     #: 自定义头像文件名（``<智能体id>-<内容摘要>.<png|jpg|webp>``，文件在 ``<数据目录>/avatars/``，
-    #: 与用户头像同一个目录与校验管线）。有值时界面优先显示它，否则回退到 emoji 头像。
+    #: 与用户头像同一个目录与校验管线）。有值时界面优先显示它，否则回退到内置头像包。
     avatar_file: str | None = Field(default=None, sa_column=Column(String(120)))
     #: 一句话简介（列表卡片用）
     tagline: str | None = Field(default=None, sa_column=Column(String(200)))

@@ -236,7 +236,7 @@ export const api = {
   /** 上传 / 替换智能体的自定义头像（base64，PNG / JPEG / WebP ≤2MB）。 */
   uploadAgentAvatar: (id: string, body: { content_base64: string; name?: string }) =>
     request<AgentProfile>(`/api/agents/${id}/avatar`, { method: 'PUT', body: JSON.stringify(body) }),
-  /** 清掉智能体的自定义头像，回退到 emoji。 */
+  /** 清掉智能体的自定义头像，回退到内置头像包。 */
   deleteAgentAvatar: (id: string) =>
     request<AgentProfile>(`/api/agents/${id}/avatar`, { method: 'DELETE' }),
   // 凭据库（全局一份，智能体按引用使用）

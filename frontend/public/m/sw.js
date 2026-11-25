@@ -6,8 +6,8 @@
  */
 /* 缓存名带版本号：改了外壳（入口 HTML / 样式表 / 构建产物）就把它 +1 —— 老客户端下次
  * 打开会装上新版 SW，activate 时清掉旧缓存；用户也可以在设置页「更新到最新版本」自助清。 */
-const SHELL_CACHE = 'coda-m-shell-v136'
-const ASSET_CACHE = 'coda-m-assets-v135'
+const SHELL_CACHE = 'coda-m-shell-v137'
+const ASSET_CACHE = 'coda-m-assets-v136'
 const ENTRY = '/m/'
 const STATIC_SHELL = ['/m/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png']
 

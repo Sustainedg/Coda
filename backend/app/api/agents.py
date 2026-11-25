@@ -315,13 +315,13 @@ async def create_agent(
     if account_id and user.role != "admin":
         raise HTTPException(status_code=403, detail="只有管理员能指定内核账号")
     target_owner = owner_id_for(user)
-    # 不传 = 不用内置头像包（回退 emoji），只有真的带了编号才校验形状。
+    # 不传 = 不用内置头像包（界面按 id 稳定兜底一张），只有真的带了编号才校验形状。
     if payload.avatar_preset is not None and not avatars.is_valid_preset(payload.avatar_preset):
         raise HTTPException(status_code=422, detail="头像包编号不合法")
     profile = AgentProfile(
         name=payload.name,
         type_id=payload.type_id,
-        avatar=payload.avatar or "🛠️",
+        avatar=payload.avatar or "",
         avatar_preset=payload.avatar_preset,
         tagline=payload.tagline,
         description=payload.description,

@@ -508,7 +508,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
     const node = graph?.nodes.find((item) => item.key === nodeKey)
     const agent = agents.find((item) => item.id === (agentId ?? node?.agent_profile_id))
     return {
-      avatar: agent?.avatar ?? '🤖',
+      avatar: agent?.avatar ?? '',
       avatarPreset: agent?.avatar_preset ?? null,
       avatarFile: agent?.avatar_file ?? null,
       agentId: agent?.id ?? null,

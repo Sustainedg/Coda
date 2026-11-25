@@ -134,7 +134,7 @@ function NodePanel({
           <select className="select" value={node.agent_profile_id} onChange={(e) => onPatch({ agent_profile_id: e.target.value })}>
             {agents.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.avatar} {item.name} · {item.type_name ?? item.type_id}
+                {item.name} · {item.type_name ?? item.type_id}
               </option>
             ))}
           </select>

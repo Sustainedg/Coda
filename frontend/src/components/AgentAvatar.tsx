@@ -1,14 +1,20 @@
 /**
- * 智能体头像（两端共用）：自定义上传图 > 内置头像包 > emoji，三者依次回退。
+ * 智能体头像（两端共用）：自定义上传图 > 内置头像包 > 头像包兜底。
+ *
+ * **emoji 头像已全面下线**：没有自定义图 / 没选头像包时，按智能体 id 稳定地挑一张
+ * 头像包图片（`fallbackAvatarPreset`），界面里不会再出现 emoji 脸，也不会出现裂图。
  *
  * 与 `UserAvatar` 同一套外形约定：尺寸走内联 `width/height`（调用方原样式就是内联的），
- * 图片撑满圆框；加载失败（文件丢了 / 取图失败）自动退回 emoji，界面里不出现裂图。
- *
- * 「没图显示 emoji」不只是兜底：协作流程图、IM 绑定等只认得到 emoji 字段的界面，
- * 依旧显示 `avatar`，所以选了头像包也不会在那边变成一串编号。
+ * 图片撑满圆框；加载失败时退到默认头像包，仍失败就留空圆框。
  */
 import { useEffect, useState } from 'react'
-import { avatarPresetUrl, isAvatarPreset, useAgentAvatarFileUrl } from '../lib/agentAvatar'
+import {
+  DEFAULT_AVATAR_PRESET,
+  avatarPresetUrl,
+  fallbackAvatarPreset,
+  isAvatarPreset,
+  useAgentAvatarFileUrl,
+} from '../lib/agentAvatar'
 
 export function AgentAvatar({
   avatar,
@@ -19,7 +25,7 @@ export function AgentAvatar({
   className,
   title,
 }: {
-  /** emoji 头像（最老的字段，永远有值可回退） */
+  /** 老库里只剩 emoji 时，仅拿它当「挑兜底头像包」的种子；emoji 本身不再渲染 */
   avatar?: string | null
   /** 内置头像包编号；有值时渲染 /avatars/<它>.webp */
   avatarPreset?: string | null
@@ -33,27 +39,36 @@ export function AgentAvatar({
   title?: string
 }) {
   const fileUrl = useAgentAvatarFileUrl(agentId, avatarFile)
-  const [broken, setBroken] = useState(false)
+  /** 加载失败的来源：自定义图的标识是 `file`，头像包就是它自己的编号。 */
+  const [failed, setFailed] = useState<string[]>([])
   // 换了图重置裂图标记：上一次加载失败不代表这一次也失败
-  useEffect(() => setBroken(false), [fileUrl, avatarFile, avatarPreset])
-  const preset = !avatarFile && isAvatarPreset(avatarPreset) ? avatarPreset : null
-  const showFile = Boolean(agentId && avatarFile && fileUrl && !broken)
-  const showPreset = !showFile && Boolean(preset) && !broken
+  useEffect(() => setFailed([]), [fileUrl, avatarFile, avatarPreset, agentId])
+
+  // 显式选过头像包就用它；否则按 id（老数据退回 emoji 文本）稳定兜底一张。
+  const preferred = isAvatarPreset(avatarPreset) ? avatarPreset : fallbackAvatarPreset(agentId ?? avatar)
+  const showFile = Boolean(agentId && avatarFile && fileUrl && !failed.includes('file'))
+  // 自定义图挂了退头像包；头像包本身挂了退默认那张，再挂就留空圆框（绝不回 emoji）。
+  const presetAfterFile = preferred
+  const preset = failed.includes(presetAfterFile)
+    ? (presetAfterFile === DEFAULT_AVATAR_PRESET ? null : DEFAULT_AVATAR_PRESET)
+    : presetAfterFile
+  const showPreset = !showFile && Boolean(preset) && !failed.includes(preset ?? '')
   const style = size
     ? ({ width: size, height: size, fontSize: Math.round(size * 0.47) } as React.CSSProperties)
     : undefined
+
+  const markFailed = (source: string) =>
+    setFailed((current) => (current.includes(source) ? current : [...current, source]))
 
   return (
     <span className={['agent-avatar', className].filter(Boolean).join(' ')} style={style} title={title}>
       {showFile || showPreset ? (
         <img
-          src={showFile ? (fileUrl ?? undefined) : avatarPresetUrl(preset ?? '')}
+          src={showFile ? (fileUrl ?? undefined) : avatarPresetUrl(preset ?? preferred)}
           alt=""
-          onError={() => setBroken(true)}
+          onError={() => markFailed(showFile ? 'file' : (preset ?? preferred))}
         />
-      ) : (
-        avatar || '🤖'
-      )}
+      ) : null}
     </span>
   )
 }

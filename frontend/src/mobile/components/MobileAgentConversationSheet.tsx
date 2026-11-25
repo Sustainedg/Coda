@@ -80,7 +80,15 @@ export function MobileAgentConversationSheet({
         className="m-thread m-collab-agent-thread"
         empty={(
           <div className="m-empty">
-            <div className="m-empty-icon">{node.avatar}</div>
+            <div className="m-empty-icon">
+              <AgentAvatar
+                avatar={node.avatar}
+                avatarPreset={node.avatarPreset}
+                avatarFile={node.avatarFile}
+                agentId={node.agentId}
+                size={48}
+              />
+            </div>
             {node.state === 'active' ? (
               <>
                 <p>「{node.label}」正在处理中…</p>

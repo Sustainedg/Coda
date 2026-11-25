@@ -23,32 +23,42 @@ from .settings import get_settings
 if TYPE_CHECKING:  # 仅供类型标注：播种由入口组合根传入适配器，避免运行期反向依赖 agents
     from .agents.base import AgentDefinition
 
+#: 默认智能体的人格：(显示名, 系统提示词)。
+#: **不带 emoji 头像** —— 头像统一由下面的 `STARTER_AVATAR_PRESETS` 从内置头像包里指定。
 STARTER_PERSONAS = {
     "claude-code": (
-        "🛠️",
         "资深工程师",
         "你是一名严谨的资深软件工程师。动手前先通读仓库，简要说明取舍，"
         "优先给出最小且经过验证的改动。",
     ),
     "codex": (
-        "🧪",
         "结对编程搭子",
         "你是务实的结对编程伙伴。每次改动尽量小而可评审，改完立刻运行相关测试，"
         "并总结改了什么。",
     ),
     "openai-harness": (
-        "🔗",
         "网关通用助手",
         "你是通过自定义网关接入的通用助手。回答要精确，"
         "遇到含糊的需求先请求澄清。",
     ),
     "deepseek-harness": (
-        "🐳",
         "DeepSeek 工程搭子",
         "你是 DeepSeek Harness 驱动的工程搭子。先读代码、再动手，"
         "改动尽量小而可验证，并在结束时说明改了什么。",
     ),
 }
+
+#: 默认智能体领取的头像包编号。
+#: emoji 头像已下线，播种时直接发一张 3D 黏土风人物 / 卡通图。
+STARTER_AVATAR_PRESETS = {
+    "claude-code": "pack-005",
+    "codex": "pack-013",
+    "openai-harness": "pack-021",
+    "deepseek-harness": "pack-029",
+}
+
+#: 没登记的适配器兜底：头像包第一张。
+DEFAULT_STARTER_AVATAR_PRESET = "pack-001"
 
 
 async def seed_if_empty(session: AsyncSession, definitions: Sequence[AgentDefinition]) -> None:
@@ -94,13 +104,17 @@ async def seed_if_empty(session: AsyncSession, definitions: Sequence[AgentDefini
         await session.refresh(gateway)
 
     for index, (gateway, definition, model) in enumerate(created):
-        avatar, name, prompt = STARTER_PERSONAS.get(
-            definition.id, ("🤖", f"{definition.name} 助手", "你是一个乐于助人的助手。")
+        name, prompt = STARTER_PERSONAS.get(
+            definition.id, (f"{definition.name} 助手", "你是一个乐于助人的助手。")
         )
         session.add(
             AgentProfile(
                 name=name,
-                avatar=avatar,
+                # emoji 头像已下线：老字段留空，头像由内置头像包提供。
+                avatar="",
+                avatar_preset=STARTER_AVATAR_PRESETS.get(
+                    definition.id, DEFAULT_STARTER_AVATAR_PRESET
+                ),
                 tagline=f"由 {definition.name} 官方链路驱动",
                 description=definition.description,
                 system_prompt=prompt,

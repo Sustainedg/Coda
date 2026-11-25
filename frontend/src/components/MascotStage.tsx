@@ -20,7 +20,7 @@ export function MascotStage({
   agentId,
   agentName,
 }: {
-  /** 智能体的 emoji 头像（回退层级之一，见 AgentAvatar） */
+  /** 智能体的老 emoji 字段（已下线，仅作兜底挑头像包的种子，见 AgentAvatar） */
   avatar?: string | null
   /** 智能体的内置头像包编号（透明背景版，随前端发布） */
   avatarPreset?: string | null

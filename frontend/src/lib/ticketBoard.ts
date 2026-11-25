@@ -81,9 +81,9 @@ export interface BoardAuditView {
  * 视图模型
  * ------------------------------------------------------------------ */
 
-/** 岗位头像的完整三字段（与 `AgentAvatar` 一致：自定义图 > 头像包 > emoji）。 */
+/** 岗位头像的完整字段（与 `AgentAvatar` 一致：自定义图 > 头像包 > 按 id 兜底）。 */
 export interface BoardFace {
-  /** emoji 头像（永远有值可回退） */
+  /** 老的 emoji 字段（已下线，仅作兜底挑头像包的种子） */
   avatar: string
   /** 内置头像包编号；有值渲染 /avatars/<它>.webp */
   avatarPreset?: string | null
@@ -416,13 +416,13 @@ export function buildBoardModel({ tickets, steps, graph, agents, nodeLabel }: Bu
   const nodes = new Map((graph?.nodes ?? []).map((node) => [node.key, node]))
   const agentsById = new Map(agents.map((agent) => [agent.id, agent]))
 
-  // 头像跟智能体设定走：自定义上传图 > 内置头像包 > emoji（与 `AgentAvatar` 同一套优先级）。
+  // 头像跟智能体设定走：自定义上传图 > 内置头像包 > 按 id 兜底（与 `AgentAvatar` 同一套优先级）。
   // 只传 emoji 的话，用户在智能体页换了头像，工单看板这边还是老 emoji —— 就是「没同步」。
   const faceOf = (key: string): BoardFace => {
     const agentId = nodes.get(key)?.agent_profile_id ?? null
     const agent = agentId ? agentsById.get(agentId) : undefined
     return {
-      avatar: agent?.avatar || '🧑‍💻',
+      avatar: agent?.avatar ?? '',
       avatarPreset: agent?.avatar_preset ?? null,
       avatarFile: agent?.avatar_file ?? null,
       agentId,

@@ -62,7 +62,7 @@ export function CollabNodeForm({
         <select className="select" value={form.agent_profile_id} onChange={(event) => set({ agent_profile_id: event.target.value })}>
           {agents.map((item) => (
             <option key={item.id} value={item.id}>
-              {item.avatar} {item.name} · {item.type_name ?? item.type_id}
+              {item.name} · {item.type_name ?? item.type_id}
             </option>
           ))}
         </select>

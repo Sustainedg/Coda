@@ -33,6 +33,7 @@ export interface RenderMessage {
 
 export function MessageView({ message, avatar, avatarPreset, avatarFile, agentId, label, finalOnly = false, user }: {
   message: RenderMessage
+  /** 老的 emoji 头像字段（已下线，仅作兜底挑头像包的种子） */
   avatar?: string
   /** 智能体的内置头像包编号 / 自定义头像文件：AI 侧气泡画真头像用（见 AgentAvatar） */
   avatarPreset?: string | null
@@ -105,13 +106,11 @@ export function MessageView({ message, avatar, avatarPreset, avatarFile, agentId
   return (
     <div className={`bubble-row${isUser ? ' user' : ''}`}>
       <div className={`avatar${isUser ? ' user' : ''}`}>
-        {/* 自己的消息画真头像（有图显示图，没图自动退回显示名首字母）；
-            AI 侧优先画真头像图（头像包 / 自定义上传），没有才回退到 emoji */}
+        {/* 自己的消息画真头像（有图显示图，没图回退显示名首字母）；
+            AI 侧统一走 AgentAvatar：头像包 / 自定义上传，没有就按 id 兜底头像包（emoji 已下线） */}
         {isUser
           ? (user ? <UserAvatar user={user} className="avatar-user" /> : '🙋')
-          : (avatarPreset || avatarFile
-            ? <AgentAvatar avatar={avatar} avatarPreset={avatarPreset} avatarFile={avatarFile} agentId={agentId} />
-            : (avatar ?? '🤖'))}
+          : <AgentAvatar avatar={avatar} avatarPreset={avatarPreset} avatarFile={avatarFile} agentId={agentId} />}
       </div>
       <div className="bubble">
         <div className="bubble-head">

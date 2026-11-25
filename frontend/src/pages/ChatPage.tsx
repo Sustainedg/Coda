@@ -360,7 +360,7 @@ export function ChatPage() {
       // 运行快照里带的是**本轮作答者**（@ 召唤轮＝被召唤者），不能用对话归属者顶替；
       // 另一台设备 / 刷新后重连时，头像和名字也要跟当前这一轮保持一致。
       agentName: activeRun.agent_name ?? conversation?.agent_name ?? '智能体',
-      avatar: activeRun.agent_avatar ?? conversation?.agent_avatar ?? '🤖',
+      avatar: activeRun.agent_avatar ?? conversation?.agent_avatar ?? '',
       avatarPreset: activeRun.agent_avatar_preset ?? conversation?.agent_avatar_preset ?? null,
       avatarFile: conversation?.agent_avatar_file ?? null,
       agentProfileId: activeRun.agent_profile_id ?? conversation?.agent_profile_id ?? null,
@@ -495,7 +495,7 @@ export function ChatPage() {
       userText: content,
       userAttachments: pending.map((item) => item.rel_path),
       agentName: summonAgent?.name ?? conversation.agent_name ?? '智能体',
-      avatar: summonAgent?.avatar ?? conversation.agent_avatar ?? '🤖',
+      avatar: summonAgent?.avatar ?? conversation.agent_avatar ?? '',
       avatarPreset: summonAgent?.avatar_preset ?? conversation.agent_avatar_preset ?? null,
       avatarFile: summonAgent?.avatar_file ?? conversation.agent_avatar_file ?? null,
       agentProfileId: summonAgent?.id ?? conversation.agent_profile_id,
@@ -941,7 +941,7 @@ export function ChatPage() {
     }
     const summoner = scopeAgents.find((agent) => agent.id === message.agent_profile_id)
     return {
-      avatar: summoner?.avatar ?? '🤖',
+      avatar: summoner?.avatar ?? '',
       avatarPreset: summoner?.avatar_preset ?? undefined,
       avatarFile: summoner?.avatar_file ?? undefined,
       agentId: summoner?.id ?? undefined,

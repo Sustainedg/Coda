@@ -24,7 +24,7 @@ export function BoardStatePill({ ticket }: { ticket: BoardTicket }) {
   return <span className={`pill ${ticket.statePill}`}>{ticket.stateLabel}</span>
 }
 
-/** 岗位头像：与智能体设定同一套渲染（自定义图 > 头像包 > emoji）+ 岗位提示。 */
+/** 岗位头像：与智能体设定同一套渲染（自定义图 > 头像包 > 按 id 兜底）+ 岗位提示。 */
 export function BoardAvatar({
   avatar, avatarPreset, avatarFile, agentId, label, duty, size = 'md',
 }: BoardFace & {

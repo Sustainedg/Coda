@@ -31,10 +31,8 @@ import {
   type ExportChoice,
 } from '../lib/conversationExport'
 import {
-  isSidebarForcedCollapsed,
   readSidebarCollapsed,
   subscribeSidebarCollapsed,
-  subscribeSidebarViewport,
   toggleSidebarCollapsed,
 } from '../lib/sidebarCollapsed'
 import { useThemeMode } from '../lib/theme'
@@ -94,10 +92,10 @@ export function ChatPage() {
   const { theme } = useThemeMode()
   /** 当前用户：自己发的消息画真头像（见 MessageView 的 user prop） */
   const { user } = useAuth()
-  /** 侧栏折叠：与外壳（App）共用同一份真值（顶栏的折叠按钮也能折，见 lib/sidebarCollapsed） */
-  const manualCollapsed = useSyncExternalStore(subscribeSidebarCollapsed, readSidebarCollapsed)
-  const sidebarNarrow = useSyncExternalStore(subscribeSidebarViewport, isSidebarForcedCollapsed)
-  const sidebarCollapsed = sidebarNarrow || manualCollapsed
+  /** 侧栏折叠：与外壳（App）共用同一份真值
+   *  （顶栏的折叠按钮也能折，见 lib/sidebarCollapsed）。
+   *  宽窗读本机偏好；窄窗默认折叠、但允许从这里临时展开。 */
+  const sidebarCollapsed = useSyncExternalStore(subscribeSidebarCollapsed, readSidebarCollapsed)
   /** 顶栏「新建对话」正在创建（期间按钮置灰，避免连点开出两条） */
   const [creating, setCreating] = useState(false)
   /**
@@ -1021,19 +1019,21 @@ export function ChatPage() {
         {active ? (
           <>
             {/* 顶栏左侧：折叠侧栏 + 新建对话（与移动端顶栏同一套布局）；中间不放标题 ——
-                对话名左侧栏一直看得见，顶栏不重复它。右侧是导出 / 朗读。 */}
+                对话名左侧栏一直看得见，顶栏不重复它。右侧是导出 / 朗读。
+                折叠按钮**任何宽度都渲染**：窄窗默认折叠，
+                但它就是窄窗下展开侧栏的入口。 */}
             <div className="chat-topbar">
               <div className="chat-topbar-lead">
-                {!sidebarNarrow && (
-                  <button
-                    className="icon-btn"
-                    onClick={toggleSidebarCollapsed}
-                    aria-label={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
-                    title={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
-                  >
-                    <MenuIcon size={18} />
-                  </button>
-                )}
+                <button
+                  className="icon-btn"
+                  onClick={toggleSidebarCollapsed}
+                  aria-expanded={!sidebarCollapsed}
+                  aria-controls="app-sidebar"
+                  aria-label={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+                  title={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+                >
+                  <MenuIcon size={18} />
+                </button>
                 <button
                   className="icon-btn"
                   onClick={() => void startConversation()}

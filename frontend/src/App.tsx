@@ -11,10 +11,8 @@ import {
 import { ConversationList } from './components/ConversationList'
 import { api } from './lib/api'
 import {
-  isSidebarForcedCollapsed,
   readSidebarCollapsed,
   subscribeSidebarCollapsed,
-  subscribeSidebarViewport,
   toggleSidebarCollapsed,
 } from './lib/sidebarCollapsed'
 import { useAuth } from './components/AuthGate'
@@ -62,11 +60,9 @@ export default function App() {
   const { user, authEnabled, logout } = useAuth()
   const navigate = useNavigate()
   const [version, setVersion] = useState('')
-  /** 用户手动折叠的本机偏好（宽窗时生效） */
-  const manualCollapsed = useSyncExternalStore(subscribeSidebarCollapsed, readSidebarCollapsed)
-  /** 窗口窄到放不下展开的侧栏：强制折叠，避免对话列表被挤变形 */
-  const narrow = useSyncExternalStore(subscribeSidebarViewport, isSidebarForcedCollapsed)
-  const collapsed = narrow || manualCollapsed
+  /** 折叠状态（`useSyncExternalStore` 的 getSnapshot）：
+   *  宽窗读本机偏好；窄窗默认折叠、但允许临时展开（见 `lib/sidebarCollapsed`）。 */
+  const collapsed = useSyncExternalStore(subscribeSidebarCollapsed, readSidebarCollapsed)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const userMenuRef = useRef<HTMLDivElement | null>(null)
 
@@ -117,20 +113,20 @@ export default function App() {
             <div className="brand-sub">多智能体控制台</div>
           </div>
           {/* 折叠入口有两处：这里的 ‹/› 与对话页顶栏的汉堡（同一份状态，见 lib/sidebarCollapsed）。
-              非对话页面没有顶栏汉堡，这里的按钮是它们唯一的折叠出口。 */}
-          {!narrow && (
-            <button
-              type="button"
-              className="sidebar-toggle"
-              onClick={toggleSidebar}
-              aria-expanded={!collapsed}
-              aria-controls="app-sidebar"
-              aria-label={collapsed ? '展开侧边栏' : '折叠侧边栏'}
-              title={collapsed ? '展开侧边栏' : '折叠侧边栏'}
-            >
-              {collapsed ? '›' : '‹'}
-            </button>
-          )}
+              非对话页面没有顶栏汉堡，这里的按钮是它们唯一的折叠出口。
+              **任何宽度都要渲染**：窄窗默认折叠，但用户仍能点它把侧栏展开
+              （展开后挤压的是右侧内容区，不是侧栏本身）。 */}
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={toggleSidebar}
+            aria-expanded={!collapsed}
+            aria-controls="app-sidebar"
+            aria-label={collapsed ? '展开侧边栏' : '折叠侧边栏'}
+            title={collapsed ? '展开侧边栏' : '折叠侧边栏'}
+          >
+            {collapsed ? '›' : '‹'}
+          </button>
         </div>
         <nav className="stack" style={{ gap: 2 }}>
           {NAV.map((item) => (

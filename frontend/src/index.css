@@ -2098,26 +2098,11 @@ code, pre, .mono { font-family: var(--mono); }
 .collab-toggle input { display: none; }
 .collab-issues { display: flex; flex-direction: column; gap: 6px; max-height: 160px; overflow: auto; padding: 10px 14px; border-top: 1px solid var(--border); }
 
-
-@media (max-width: 1100px) {
-  /* 侧栏放不下时（与 lib/sidebarCollapsed 的断点一致）隐藏对话列表：
-     JS 会把整壳切到 collapsed 态；这里兜底，避免 68px 里塞一列被挤变的对话。 */
-  .sidebar-conversations { display: none; }
-}
-
+/* 窄窗（≤1100px）默认折叠由 lib/sidebarCollapsed 驱动（用户仍可临时展开）；
+   侧栏折叠态的样式统一由前面的 `.app-shell.collapsed` 负责，这里不再按视口宽无条件
+   隐藏内容 —— 否则窄窗展开后 232px 的侧栏里会剩一片空白、
+   外框也仍被钉在 68px。下面只保留与侧栏无关的窄屏排版（对话/技能/协作等页面）。 */
 @media (max-width: 980px) {
-  .app-shell { grid-template-columns: 68px 1fr; }
-  .brand-text, .nav-link .nav-label, .nav-chevron { display: none; }
-  /* 窄屏与折叠态同构：图标大 10% + 行距放宽 + hover 弹大 + 名字气泡
-     （见 .app-shell.collapsed 那段）；账号区同样只留头像。 */
-  .nav-link { justify-content: center; padding: calc(11px * var(--sbs, 1)) calc(8px * var(--sbs, 1)); }
-  .nav-link .nav-icon { width: calc(22px * var(--sbs, 1)); height: calc(22px * var(--sbs, 1)); transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1); }
-  .nav-link:hover .nav-icon { transform: scale(1.28); }
-  .sidebar-user-name { display: none; }
-  .sidebar-user-btn { justify-content: center; padding: 7px 0; }
-  .sidebar-user-wrap .sidebar-user-menu {
-    left: calc(100% + 10px); right: auto; bottom: auto; top: 50%; transform: translateY(-50%);
-  }
   .chat-shell { grid-template-columns: 1fr; }
   .skill-shell { grid-template-columns: 1fr; }
   .collab-shell, .collab-settings { grid-template-columns: 1fr; }

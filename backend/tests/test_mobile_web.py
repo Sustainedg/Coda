@@ -692,18 +692,25 @@ def test_mobile_chat_keeps_a_bare_composer_and_speaks_replies():
         assert symbol in tts, f"lib/tts.ts 缺少 {symbol}"
     assert "removeItem" in tts, "关掉朗读要把存储键删掉（默认关闭只有一个真值来源）"
 
-    # 输入区贴着屏幕底边：底部安全区只补在 padding-bottom 上（基础 6px + 安全区），
-    # 这样输入框下方的用量条不会被 Home 指示条盖住；不能用整段 var(--safe-bottom)
-    # 顶替基础收边，否则 iOS 独立应用里会留出一大条空白。
+    # 输入区贴着屏幕底边：底部只让开 Home 指示条实际占的那一条（--home-bar = min(安全区, 13px)），
+    # 基础 6px 收边照留 —— 这样输入框下方的用量条不会被 Home 指示条盖住；也不能整段照搬
+    # var(--safe-bottom)（iOS 独立应用里是 34px，指示条只占 ~13px），否则底部会留出一截空白。
     css = (MOBILE_SRC / "mobile.css").read_text(encoding="utf-8")
     # 先去掉注释：注释里也可能有花括号，留着会把选择器认错。
     plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
     blocks = [body for selector, body in re.findall(r"([^{}]*)\{([^}]*)\}", plain) if selector.strip() == ".composer"]
     assert blocks, "mobile.css 缺少 .composer 样式"
     assert any(
-        re.search(r"padding-bottom\s*:\s*calc\([^;]*var\(--safe-bottom\)", body)
+        re.search(r"padding-bottom\s*:\s*calc\([^;]*var\(--home-bar\)", body)
         for body in blocks
-    ), "移动端 .composer 要用 calc(基础收边 + var(--safe-bottom)) 补底部安全区，别让用量条被 Home 条盖住"
+    ), "移动端 .composer 要用 calc(基础收边 + var(--home-bar)) 只让开 Home 指示条，别让用量条被盖住"
+    assert "--home-bar: min(var(--safe-bottom), 13px)" in css, (
+        "--home-bar 要按「安全区与 13px 取小」定义：iOS 独立应用的安全区是 34px，"
+        "但指示条只占 ~13px，整段照搬会在底部留出一截空白"
+    )
+    assert not any(
+        re.search(r"padding-bottom\s*:[^;]*var\(--safe-bottom\)", body) for body in blocks
+    ), ".composer 的 padding-bottom 不要整段照搬 --safe-bottom（会留出一截空白），用 --home-bar"
 
     # 抽屉的底部安全区只能算一次：`.m-drawer` 与它最下面的 `.m-drawer-account` 都补一遍的话，
     # 账号头像会被顶到离屏幕底边 ~78px（两遍 34px + 10px 间距），看起来「没到底」。

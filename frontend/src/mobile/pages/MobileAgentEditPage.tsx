@@ -42,10 +42,11 @@ type EditTab = (typeof EDIT_TABS)[number]['id']
  * 交互按触屏重排。原「编辑弹层」改为独立路由页 —— 技能 / MCP / IM / 统计都是
  * 独立的一块设定，弹层塞不下；「新建」也走这页（`/agents/new` 占位路由）。
  */
-export function MobileAgentEditPage() {
+export function MobileAgentEditPage({ creating = false }: { creating?: boolean }) {
   const rawId = useParams<{ agentId: string }>().agentId
-  const creating = rawId === 'new'
-  const agentId = creating ? null : rawId
+  // 与桌面端同理：`/agents/new` 是静态路由，没有 `:agentId` 参数，
+  // 不能靠「id === 'new'」判断，否则新建页会落进加载分支永远转圈。
+  const agentId = creating ? null : rawId ?? null
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const rawTab = params.get('tab')
@@ -56,7 +57,11 @@ export function MobileAgentEditPage() {
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    if (!agentId) return
+    if (!agentId) {
+      // 新建页没有可加载的东西：把 loading 落下来，别停在「正在加载…」。
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
       setAgent(await api.getAgent(agentId))

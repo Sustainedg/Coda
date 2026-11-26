@@ -80,6 +80,33 @@ def test_im_lives_in_the_agent_settings_page():
 
 
 @needs_frontend
+def test_new_agent_route_passes_creating_explicitly():
+    """`/agents/new` 是静态路由，必须**显式**告诉设定页「我在新建」。
+
+    回归点：`/agents/new` 不匹配 `:agentId`，页面里 `useParams().agentId` 是
+    `undefined`；若页面靠 `id === 'new'` 判断，新建分支永远进不去，而 `load()`
+    又因为「没有 id」直接 return、不落 `loading` —— 界面会卡在「正在加载智能体…」。
+    所以路由要传 `creating`，页面也要把 `creating` 当入参而不是自己推断。
+    """
+    desktop_app = (FRONTEND / "src" / "App.tsx").read_text(encoding="utf-8")
+    assert "<AgentEditPage creating />" in desktop_app, "桌面端 /agents/new 要显式传 creating"
+
+    mobile_app = (FRONTEND / "src" / "mobile" / "MobileApp.tsx").read_text(encoding="utf-8")
+    assert "<MobileAgentEditPage creating />" in mobile_app, "移动端 /agents/new 要显式传 creating"
+
+    for page in (
+        FRONTEND / "src" / "pages" / "AgentEditPage.tsx",
+        FRONTEND / "src" / "mobile" / "pages" / "MobileAgentEditPage.tsx",
+    ):
+        source = page.read_text(encoding="utf-8")
+        assert "creating = false" in source, f"{page.name} 要从路由接收 creating"
+        # 只盯代码（注释里也会出现这个字样），不许再从路由参数反推「我在新建」。
+        assert "rawId === 'new'" not in source, f"{page.name} 不能靠 id === 'new' 判断新建（拿不到参数）"
+        assert "const creating = " not in source, f"{page.name} 的 creating 必须来自路由入参"
+        assert "setLoading(false)" in source, f"{page.name} 没有 id 时必须落下 loading"
+
+
+@needs_frontend
 def test_kernel_management_is_not_nested_behind_another_entry():
     """内核管理只有一份，别再嵌套一个「运行时」入口 + 适配器清单。
 

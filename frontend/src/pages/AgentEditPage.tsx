@@ -59,12 +59,13 @@ type EditTab = (typeof EDIT_TABS)[number]['id']
  * IM 与统计都只作用于**这一个**智能体，所以入口收在这里，而不是平台设置页。
  * 「新建智能体」也走这页：先填基础信息保存，再切换到其它标签继续配。
  */
-export function AgentEditPage() {
+export function AgentEditPage({ creating = false }: { creating?: boolean }) {
   const routeParams = useParams<{ agentId: string }>()
   const rawId = routeParams.agentId
-  /** `/agents/new` 是「新建智能体」的占位路由：还没保存过、没有真实 id。 */
-  const creating = rawId === 'new'
-  const agentId = creating ? null : rawId
+  // `creating` 由路由显式传入：`/agents/new` 是一条**静态**路由，它没有 `:agentId`
+  // 参数，`useParams()` 拿到的就是 `undefined` —— 不能靠「id === 'new'」判断，
+  // 否则新建页会落进「加载智能体」分支并永远转圈（见 App.tsx 的注释）。
+  const agentId = creating ? null : rawId ?? null
   const navigate = useNavigate()
   const { tab, setParams } = useSearchParamsOfTab()
 
@@ -73,7 +74,12 @@ export function AgentEditPage() {
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    if (!agentId) return
+    if (!agentId) {
+      // 没有真实 id（新建页）：没有东西可加载，必须把 loading 落下来，
+      // 否则这个组件会永远停在「正在加载智能体…」。
+      setLoading(false)
+      return
+    }
     setLoading(true)
     try {
       setAgent(await api.getAgent(agentId))

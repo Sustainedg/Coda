@@ -53,8 +53,10 @@ export function MobileApp() {
         <Route path="/chat" element={<MobileChatPage />} />
         <Route path="/chat/:conversationId" element={<MobileChatPage />} />
         <Route path="/agents" element={<MobileAgentsPage />} />
-        {/* 智能体设定：整页 + 页内标签（基础信息 / 技能 / MCP / IM / 统计），与桌面端同一组。 */}
-        <Route path="/agents/new" element={<MobileAgentEditPage />} />
+        {/* 智能体设定：整页 + 页内标签（基础信息 / 技能 / MCP / IM / 统计），与桌面端同一组。
+            `/agents/new` 是静态路由、不匹配 `:agentId`，必须显式传 `creating`，
+            否则页面里 `useParams()` 拿不到 id，新建页会永远停在「正在加载…」。 */}
+        <Route path="/agents/new" element={<MobileAgentEditPage creating />} />
         <Route path="/agents/:agentId" element={<MobileAgentEditPage />} />
         <Route path="/gateways" element={<MobileGatewaysPage />} />
         <Route path="/credentials" element={<MobileCredentialsPage />} />

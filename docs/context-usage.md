@@ -16,15 +16,36 @@
 它内部的历史。适配器每发生一次模型请求就上报一条 `context.usage` 事件，
 运行层把它记到 `messages.context_tokens`：
 
-* Claude Code / CodeBuddy：取 `stream_event` 里 `message_start.message.usage` 的
-  `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`，以及完整
-  `assistant` 消息的 `message.usage`；`message_delta.usage` 只有 `output_tokens`，不用于窗口占用；
+* Claude Code / CodeBuddy：取 `stream_event` 里 `message_delta.usage` 的
+  `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`，
+  以及 `message_start.message.usage`、完整 `assistant` 消息的 `message.usage`；
 * API 型内核（OpenAI 兼容 / DeepSeek Harness）：取每一步的 `prompt_tokens`；
 * Codex app-server：取 `thread/tokenUsage/updated` 的 `last.inputTokens`。
 
+> **`message_delta` 才是窗口占用真正的来源**（Claude Code 2.1.327 实测）：`message_start`
+> 的 usage 常常是**全 0**，真实数字推迟到 `message_delta` 才给。早先适配器按旧版行为
+> 直接跳过 `message_delta`（注释写"它只有 output_tokens"），结果就是**内核永远报不出窗口
+> 快照**，面板一直只能显示按内容估算。实测同一轮工具循环：
+>
+> | 帧 | input_tokens | cache_read | 含义 |
+> | --- | --- | --- | --- |
+> | `message_start` | 0 | 0 | 全 0，不可用 |
+> | `message_delta` | 75 | 14848 | 本次请求的窗口占用 ✅ |
+> | `message_start` | 0 | 0 | 全 0，不可用 |
+> | `message_delta` | 232 | 14848 | 第二次请求（多了工具结果）✅ |
+> | `result` | 307 | 29696 | **整轮累计**，不能当窗口占用 |
+>
+> 老内核若 `message_delta` 真的只有 `output_tokens`，`context_tokens()` 会算出 0，不会误报。
+
 下一次估算以**最近一次请求的输入 token** 为基准，再加上此后新增的正文。
-快照在以下情况自动失效：会话被压缩 / 重置（`session_id` 清空）、消息早于最近一次平台压缩、
-消息早于最近一次**内核原生压缩**（见下节）、或快照来自 @ 召唤轮（不写回主场会话记忆）。
+快照在以下情况自动失效：会话被压缩 / 重置（`session_id` 清空）、快照采集时刻早于最近一次
+平台压缩、早于最近一次**内核原生压缩**（见下节）、或快照来自 @ 召唤轮（不写回主场会话记忆）。
+
+> **失效线比的是「快照采集时刻」，不是消息创建时刻**（`messages.context_snapshot_at`）。
+> 本轮消息在轮次开始时就建好了，而快照产生于轮次中间；内核原生压缩后上报的
+> `post_tokens` 正是「消息早、快照晚」的情况。拿 `created_at` 比压缩时刻，会把压缩后
+> 新上报的快照误判成压缩前的旧数据作废，估算回落到「按内容估算」把内核已折叠的历史
+> 又算一遍，用量虚高数倍——反过来触发一次多余的平台压缩。
 
 ### 2. 按内容估算（没有快照时的兜底）
 
@@ -113,10 +134,38 @@ Claude Code 自带 auto-compact（`--autocompact <auto|tokens>`）：上下文�
    内核默认。两套压缩的关系：平台压缩会清 `session_id` 重开会话（换历史注入），内核
    压缩在会话内完成（会话连续）；两者可以并存，互不替代。
 
-「上限对齐」仍是用户自己的取舍：平台上限（默认 128k）是**平台口径**（决定平台压缩
-何时触发），与内核实际窗口（200k / 1M）无关。想让内核压缩先出手，就把平台上限调高
-或给智能体配 `autocompact`；想让平台接管，就保持默认——平台压缩会在内核窗口打满前
-（按平台口径）先把历史折叠掉。
+### 每个内核分别怎么接（不要指望一个适配器通吃）
+
+各内核的 wire 协议不同，必须逐内核对接；下表是**实测过 CLI 二进制 / 官方 schema**
+的现状：
+
+| 内核 | 窗口快照（`context.usage`） | 原生压缩事件（`context.compacted`） | `autocompact` 透传 |
+| --- | --- | --- | --- |
+| Claude Code | `message_start` / `assistant` 的 usage | `system/compact_boundary` + `compact_metadata` | ✅ `--autocompact` |
+| CodeBuddy | 同上（协议同构） | `system/compact_boundary`（`-p` 会话手动 `/compact` 时发出，只带 `trigger` / `pre_tokens`） | ✅ `--autocompact` |
+| Codex app-server | `thread/tokenUsage/updated` 的 `last.inputTokens` | 新协议 `item/completed` 的 `contextCompaction` 条目；老版本 `thread/compacted` 通知（官方标 Deprecated，两个都认） | ✖ 由内核自身配置控制 |
+| DeepSeek Harness / OpenAI Harness | 每一步的 `prompt_tokens`（平台自己发请求，历史全由平台拼） | 无内核原生压缩：平台压缩就是唯一压缩 | — |
+| Antigravity CLI / Custom CLI | ✖ 协议只在终态 `result` 给累计用量，没有「单次请求」窗口占用 | ✖ 无 | — |
+| Doubao CLI | ✖ 现协议不上报 token 用量 | ✖ 无 | — |
+| Hermes | ✖ `stream-json` 只在终态 `result` 给整轮累计 token（`session_input_tokens` 是累计值，不是窗口占用） | ✖ `stream-json` 不暴露其内部 context engine 的压缩 | — |
+
+没有快照的内核不会「假装有数」：`measured` 为 `false`，界面明确显示「按内容估算」，
+阈值判断与压缩决策照常工作。想让某个内核接入，先在它的 wire 协议里找到**单次请求的
+输入 token**（不是整轮累计）与**压缩完成信号**，再按上表的同样两件事补齐。
+
+「上限对齐」现在有两种模式（`context_settings` 的 `limit_mode`）：
+
+* `auto`（默认，新用户）：上限**跟随内核上报的真实窗口**——Codex 的
+  `tokenUsage.modelContextWindow`（官方 schema 里的稳定字段），经新增的 `context.window`
+  事件落到 `conversations.context_kernel_window_tokens`。
+  Claude Code 的解析器也实现了（顶层 `autocompact_state` 帧的 `value.effective_window`），
+  但 2.1.327 的 `-p` print 模式**实测不下发该帧**，所以实际走兜底值。
+  内核没报过就退回用户配置值（默认 128k）。老配置行没有这个键 = 读作 `manual`，
+  升级不会悄悄改掉谁的上限。
+* `manual`：上限永远以用户设定为准，**自动对齐不会覆盖人的选择**。
+
+想让内核压缩先出手：把上限调高或给智能体配 `autocompact`；想让平台接管：手动模式 +
+一个较小的上限——平台压缩会在内核窗口打满前（按平台口径）先把历史折叠掉。
 
 ## 改动文件
 
@@ -124,13 +173,18 @@ Claude Code 自带 auto-compact（`--autocompact <auto|tokens>`）：上下文�
 
 - `backend/app/runtime/context.py`（新增）：估算口径、配置读写与校验、压缩、状态；
 - `backend/app/models.py`：`Conversation` 增加 `context_summary` /
-  `context_compacted_count` / `context_compacted_at`，`Message` 增加
-  `context_tokens`（含旧库补列声明）；
-- `backend/app/agents/events.py`：新增 `context.usage` 事件（单次请求的输入 token）；
+  `context_compacted_count` / `context_compacted_at` / `context_kernel_compacted_at`，
+  `Message` 增加 `context_tokens` / `context_snapshot_at`（含旧库补列声明）；
+- `backend/app/agents/events.py`：新增 `context.usage`（单次请求的输入 token）、
+  `context.window`（内核真实窗口）与 `context.compacted`（内核原生压缩）三个事件；
 - `backend/app/agents/builtin/{claude_code,codebuddy_cli,codex,deepseek_harness,
   openai_harness}.py`：在每次模型请求后上报 `context.usage`；
+  `claude_code` / `codebuddy_cli` 解析 `compact_boundary`，`codex` 解析
+  `contextCompaction` / `thread/compacted`，三者上报 `context.compacted`；
+  `claude_code` / `codebuddy_cli` 支持 `autocompact` 参数透传；
 - `backend/app/runtime/service.py`：`prepare_run` / `regenerate_last` 接入压缩，
-  任务卡与凭据说明并入估算，`context.usage` 落到 `messages.context_tokens`；
+  任务卡与凭据说明并入估算，`context.usage` 落到 `messages.context_tokens` 并记录
+  `context_snapshot_at`，`context.compacted` 记录 `context_kernel_compacted_at`；
 - `backend/app/api/conversations.py`：`GET /conversations/{id}/context`；
   `/clear` 与删除对话时清理压缩状态；
 - `backend/app/api/system.py`：`GET/PUT /system/context`；
@@ -146,6 +200,8 @@ Claude Code 自带 auto-compact（`--autocompact <auto|tokens>`）：上下文�
   接入输入框上方；
 - `frontend/src/index.css`、`frontend/src/mobile/mobile.css`：两端样式（共享段逐字一致；
   移动端在共享段之后补了一条「面板输入框 16px」的微调，避免 iOS 聚焦时强制放大页面）。
+
+面向使用者的完整功能说明见 `docs/功能文档/上下文窗口与自动压缩.md`。
 
 ## 手动验证
 

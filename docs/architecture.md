@@ -101,6 +101,7 @@ collab.engine.consume_turn()  ── 取就绪工单跑一步（max_parallel>1 �
 | `tool.result` | `call_id`, `payload.output`, `payload.is_error` | 工具结果 |
 | `usage` | 任意数值 | 整轮累计的 token / 费用 / 耗时（计费口径） |
 | `context.usage` | `payload.tokens` | **单次请求**的输入 token（上下文窗口占用，落 `messages.context_tokens`） |
+| `context.window` | `payload.tokens` | 内核上报的**真实上下文窗口大小**（落 `conversations.context_kernel_window_tokens`；平台上限设为「自动」时跟随它） |
 | `context.compacted` | `payload.trigger/pre_tokens/post_tokens/messages_summarized…` | 内核侧**原生压缩**通知（如 Claude Code auto-compact）；运行层发日志提醒并使压缩前的快照失效 |
 | `session` | `payload.session_id` | 智能体侧会话 id，落库以支持多轮 |
 | `log` | `text`, `payload.level` | 命令回显、诊断信息 |
@@ -605,13 +606,19 @@ agent_profiles(id, name, avatar, avatar_preset, avatar_file, tagline, descriptio
 credentials(id, name, description, value_encrypted, created_at, updated_at, deleted_at, owner_id)
 agent_credentials(agent_profile_id→agent_profiles, credential_id→credentials，复合主键 + position)
 conversations(id, title, agent_profile_id→agent_profiles, session_id, workspace_dir, model, archived,
-              last_read_at, context_summary, context_compacted_count, context_compacted_at, owner_id)
+              last_read_at, context_summary, context_compacted_count, context_compacted_at,
+              context_kernel_compacted_at, context_kernel_window_tokens, owner_id)
               # last_read_at 为空 = 升级前的旧对话，一律当已读
               # context_summary / context_compacted_count 是自动压缩的摘要与已折叠条数（原文仍全在 messages）
+              # context_kernel_compacted_at = 内核原生压缩的时刻（让压缩前的窗口快照失效）
+              # context_kernel_window_tokens = 内核上报的真实窗口（上限「自动」模式跟随它）
 messages(id, conversation_id→conversations, role, content, parts JSON, usage JSON, status, error,
-         agent_profile_id, context_tokens)   # agent_profile_id 为空 = 对话归属的智能体；非空 = @ 召唤的智能体
+         agent_profile_id, context_tokens, context_snapshot_at)
+                               # agent_profile_id 为空 = 对话归属的智能体；非空 = @ 召唤的智能体
                                # 回答的那一轮（消息仍在对话流里，归属与主场会话记忆不变）
                                # context_tokens = 本轮最后一次模型请求的输入 token（上下文窗口快照）
+                               # context_snapshot_at = 该快照的**采集时刻**（≠ 消息创建时刻；
+                               #   快照失效判定比它，比 created_at 会误杀压缩后新上报的快照）
 task_cards(id, conversation_id→conversations UNIQUE, anchor_message_id, title, items JSON,
            version, last_run_id, created_at, updated_at)
            # 一个对话最多一张；items = [{id,text,done,done_at,updated_at}]

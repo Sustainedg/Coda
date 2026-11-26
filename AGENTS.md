@@ -148,11 +148,12 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
 ## 3. 核心契约（改动这些等于改公共 API）
 
 ### 3.1 规范化事件协议（`agents/events.py`）
-`run.started · message.delta · thinking.delta · tool.call · tool.result · usage · context.usage · context.compacted · session · log · error · run.finished`
+`run.started · message.delta · thinking.delta · tool.call · tool.result · usage · context.usage · context.window · context.compacted · session · log · error · run.finished`
 外加传输层自有的 `turn.started`（`runtime/service.start_run()` 在启动后台运行前同步发出，携带 run_id 与消息 id）
 与 `stream.closed`（`transport/sse.py` 收尾）。
-**适配器只能产出前 12 种**；`turn.started`/`stream.closed` 由框架产出，适配器不得越权。
-新增事件类型必须走铁律 5 的四步同步改动。
+**适配器只能产出前 12 种**（`run.started` / `run.finished` 由运行层产出）；`turn.started`/`stream.closed` 由框架产出，适配器不得越权。
+新增事件类型必须走铁律 5 的四步同步改动（**事件表有两份**：`docs/architecture.md` 与
+`docs/ai-coding-standard.md` §4.1，两处都要改）。
 框架自有的旁路信封**不属于**本协议：协作域是 `collab.*`（`collab/protocol.py`），
 「内核管理」页（设置 → 内核管理）的安装 / 更新 / 卸载是 `provision.*`（`runtime/provisioning.py`）——
 两者只在各自的页面内部消费，由框架层产出，不参与铁律 5 的四处同步。
@@ -659,7 +660,8 @@ curl -s http://127.0.0.1:8010/api/health
 | 你改了 | 必须同步检查 |
 | --- | --- |
 | `agents/base.py` 契约 | 全部内置适配器 + 测试 |
-| `agents/events.py` | `runtime/service.consume_run`、前端 `applyEvent` + `types.ts`、`docs/architecture.md` |
+| `agents/events.py` | `runtime/service.consume_run`、前端 `applyEvent` + `types.ts`、`docs/architecture.md` **与 `docs/ai-coding-standard.md` §4.1 两张事件表**（两处各有一份，容易只改一处） |
+| `runtime/context.py`（上下文口径：计量 / 快照失效 / 压缩 / 上限） | `runtime/service.py`（落库与压缩触发点）、`api/conversations.py` + `api/system.py`、前端 `ContextMeter` + `lib/contextUsage` + `lib/types.ts`、`models.ADDITIVE_COLUMNS`（新列必须登记）、`docs/architecture.md` 事件表、`docs/功能文档/上下文窗口与自动压缩.md`、`tests/test_context.py`；**新增 / 修改内核适配器**还要同步 `tests/test_adapters.py` 与该功能文档 §6.1 的「各内核对接现状」矩阵（逐内核实测，别照抄） |
 | `agents/skills.py` / 技能契约 | 全部声明 `skills=True` 的适配器 + `runtime/skills.py` + `tests/test_skills.py` |
 | `runtime/skills.py` | 智能体分配接口、`service.prepare_run` 的物化步骤、前端技能页与智能体设定页 |
 | `agents/mcp.py` / MCP 契约 | 全部声明 `mcp=True` 的适配器 + `runtime/mcp.py` + `api/mcp.py` + `tests/test_mcp.py` |

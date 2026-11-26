@@ -1,11 +1,70 @@
 from __future__ import annotations
 
-__version__ = "V0.1.7"
+__version__ = "V0.1.8"
 
 #: 版本记录（最新在前）。版本号只在公开发版时递增，日常提交不动版本号。
 #: 版本号采用「V主.次.修订」三段式：V0.1 是首个公开版本，后续修订顺延。
 #: 此前的 V0.01–V0.43 为内部迭代编号，不再逐条单列。
 VERSION_HISTORY: tuple[dict[str, object], ...] = (
+    {
+        "version": "V0.1.8",
+        "date": "2026-11-26",
+        "title": "技能机制升级 · 上下文计量修复 · 头像只留头像包",
+        "highlights": (
+            "【修复】上下文计量在真实内核上一直没生效：Claude Code 2.1.327 的 "
+            "message_start.usage 恒为全 0，真实输入 token 推迟到 message_delta；此前的适配器"
+            "按旧版行为跳过 message_delta，于是内核明明报了数、平台却永远拿不到窗口快照，"
+            "面板长期只能显示「按内容估算」。现改从 message_delta.usage 取单次请求的输入侧 "
+            "token（input + cache_read + cache_creation），Claude Code 与 CodeBuddy 同步修复；"
+            "实测同一轮两次请求各报各的（75+14848、232+14848），而 result 是整轮累计"
+            "（307+29696），不能混用",
+            "【修复】内核原生压缩后的新快照被自己的失效线误杀：压缩发生在轮次中间，"
+            "旧逻辑拿 message.created_at（轮次开始时刻）比压缩时刻，必然判定为过期；"
+            "估算回落到「按内容估算」时又把内核已折叠的旧历史算了一遍（实测 5000 → 30131，"
+            "虚高 6 倍），反过来触发一次多余的平台压缩、清掉 session_id。"
+            "新增 messages.context_snapshot_at 记录快照的**采集时刻**，失效判定改比它",
+            "【功能】平台上限可跟随内核真实窗口：新增 context.window 事件与 "
+            "conversations.context_kernel_window_tokens；Codex 取 tokenUsage.modelContextWindow，"
+            "Claude Code 解析 autocompact_state.effective_window（2.1.327 的 -p print 模式"
+            "实测不下发，故实际多走兜底值）。ContextSettings 增加 limit_mode：auto 跟随内核、"
+            "manual 永远以用户为准；老配置行读作 manual，升级不会悄悄改掉用户设过的上限。"
+            "上下文面板新增「跟随内核 / 手动设置」开关与「内核窗口」行",
+            "【功能】对接 Claude Code 原生压缩：解析 system/compact_boundary 并上报 "
+            "context.compacted（元数据按白名单透传），压缩后让旧快照失效；"
+            "智能体配置新增 autocompact（高级）透传 --autocompact",
+            "【功能】Codex 接入内核原生压缩通知：新协议 item/completed 的 contextCompaction "
+            "条目，以及老版本 thread/compacted 通知（官方标 Deprecated，两个入口都认）",
+            "【功能】CodeBuddy 接入 system/compact_boundary（-p 会话执行 /compact 时发出）"
+            "与 --autocompact 参数透传（高级配置，留空走内核默认）",
+            "【功能】技能机制升级（P3）：物化优先用硬链接（零拷贝，源目录不可写也不影响），"
+            "写回前先断链保护原件；新增 manifest 快速路径——本轮分配与上一轮逐字节一致时"
+            "直接复用，不再重抄整个 skills 目录；目录符号链接按跟随复制，既保留链接语义也"
+            "不丢内容",
+            "【功能】跨内核批量挂载与实体聚合：同一本技能只存一份实体，在 .mounts.json 里"
+            "登记挂载到多个内核（如 Claude Code 与 Codex 共用），更新一次全体生效；"
+            "技能页新增「挂载到全部内核」一键操作，撞名自动跳过并汇报",
+            "【功能】技能列表双视图：默认平铺（库技能按实体聚合，避免同一本书重复出现），"
+            "可切回按内核分组查看；新增 docs/skills-mechanism.md 功能手册",
+            "【功能】智能体设定页拆分，信息密度更合理；内核账号支持多账号槽位（登录态可"
+            "存档 / 切换 / 删除），技能市场安装改为对全部内核生效，编辑页可直接更换内核",
+            "【修复】头像只保留头像包：移除 emoji 快选池与回退逻辑，AgentAvatar 按智能体 id "
+            "稳定兜底一张头像包图片；消息、协作、工单、技能等展示统一收口",
+            "【修复】移动端底部空白：iOS 独立应用的安全区约 34px，但 Home 指示条本身只占 "
+            "~13px，整段照搬会在输入区、弹层脚、抽屉底部留出一截空白。新增 "
+            "--home-bar = min(var(--safe-bottom), 13px)，钉在屏幕底边的面统一让开这一条",
+            "【修复】macOS 豆包对话报「安全存储不可用」：隔离 HOME 时补链 mssdk；"
+            "窄窗侧边栏无法展开：按钮常驻 + 展开时聊天区让位",
+            "【优化】新增 docs/功能文档/上下文窗口与自动压缩.md（12 章）：用户视角、两档计量"
+            "口径、快照失效规则、平台压缩、上限 auto/manual、逐内核对接矩阵、接口与数据模型、"
+            "新内核接入四步法、排错表；并把「实机实测 / 二进制与官方 schema / 尚未实机触发」"
+            "三类结论分开标注。三处事件表（architecture.md、ai-coding-standard.md §4.1、"
+            "AGENTS.md §3.1）补齐 context.window",
+            "【优化】规范审计修正：技能复制改为跟随目录符号链接、内核徽章显示真名、"
+            "flattenSkills 注释与实现判据对齐、测试断言收紧",
+            "【其他】桌面端与网页/后端同版本 0.1.8；PWA 缓存版本按前端改动 +1"
+            "（shell v138 / assets v137）",
+        ),
+    },
     {
         "version": "V0.1.7",
         "date": "2026-11-24",

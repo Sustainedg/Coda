@@ -350,3 +350,107 @@ def test_link_macos_data_noop_outside_darwin(tmp_path, monkeypatch):
     monkeypatch.setattr(doubao_cli.sys, "platform", "linux")
     doubao_cli._link_macos_data(str(tmp_path / "isolated-home"))
     assert not (tmp_path / "isolated-home" / "Library").exists()
+
+
+def test_link_windows_data_links_real_data_dirs(tmp_path, monkeypatch):
+    """Windows：隔离目录里要把真实数据目录接进来。
+
+    Windows 原生程序按「用户文件夹」解析数据根（``SHGetFolderPath`` /
+    ``SHGetKnownFolderPath``），而它优先认进程里的 ``USERPROFILE``。隔离 HOME 改了
+    ``USERPROFILE`` 之后，原生程序就会去隔离目录里另起一份数据：找不到真实登录态，
+    还会重建设备身份（报「无法访问用于保存设备身份的安全存储」）。
+    """
+    from app.agents.builtin import doubao_cli
+
+    real_local = tmp_path / "AppData" / "Local"
+    (real_local / "doubao_cli").mkdir(parents=True)
+    (real_local / "mssdk").mkdir(parents=True)
+    isolated_home = tmp_path / "isolated-home"
+    linked: list[tuple[Path, Path]] = []
+
+    monkeypatch.setattr(doubao_cli.sys, "platform", "win32")
+    monkeypatch.setattr(
+        doubao_cli.os, "environ", {**os.environ, "LOCALAPPDATA": str(real_local)}
+    )
+
+    doubao_cli._link_windows_data(
+        str(isolated_home), link_dir=lambda link, target: linked.append((link, target))
+    )
+
+    # 隔离目录里这两个名字都要接到真实目录（否则原生程序会去另起一份数据）。
+    assert [(link.name, target) for link, target in linked] == [
+        ("doubao_cli", real_local / "doubao_cli"),
+        ("mssdk", real_local / "mssdk"),
+    ]
+    assert all(link.parent == isolated_home / "AppData" / "Local" for link, _ in linked)
+
+
+def test_link_windows_data_noop_without_localappdata(tmp_path, monkeypatch):
+    """拿不到 ``LOCALAPPDATA`` 时不乱建目录：让内核自己报「无法创建应用数据目录」。"""
+    from app.agents.builtin import doubao_cli
+
+    monkeypatch.setattr(doubao_cli.sys, "platform", "win32")
+    without_local = {k: v for k, v in os.environ.items() if k != "LOCALAPPDATA"}
+    monkeypatch.setattr(doubao_cli.os, "environ", without_local)
+
+    doubao_cli._link_windows_data(str(tmp_path / "isolated-home"))
+
+    assert not (tmp_path / "isolated-home" / "AppData").exists()
+
+
+def test_windows_env_keeps_localappdata_and_drops_xdg(tmp_path, monkeypatch):
+    """Windows 上原生程序不认 ``XDG_DATA_HOME``，认的是「用户文件夹」。
+
+    所以 Windows 分支不该再设 ``XDG_DATA_HOME``（那是 Linux 的旋钮，设了也白设），
+    而要把真实 ``LOCALAPPDATA`` 原样传下去，让它找到真实的数据与登录态。
+    """
+    from app.agents.builtin import doubao_cli
+
+    definition = get_agent("doubao-cli")
+    real_local = tmp_path / "AppData" / "Local"
+    (real_local / "doubao_cli").mkdir(parents=True)
+
+    monkeypatch.setattr(doubao_cli.sys, "platform", "win32")
+    monkeypatch.setattr(
+        doubao_cli.os, "environ", {**os.environ, "LOCALAPPDATA": str(real_local)}
+    )
+
+    ctx = make_ctx(tmp_path, home_dir=str(tmp_path / "doubao-home"))
+    invocation = definition.build_invocation(ctx)
+
+    assert "XDG_DATA_HOME" not in invocation.env
+    assert invocation.env["USERPROFILE"] == ctx.home_dir
+    assert invocation.env["LOCALAPPDATA"] == str(real_local)
+
+
+def test_posix_env_still_points_xdg_data_home_at_real_dir(tmp_path, monkeypatch):
+    """Linux 保持原样：``XDG_DATA_HOME`` 指向真实 ``~/.local/share``（登录态共享）。"""
+    from app.agents.builtin import doubao_cli
+
+    definition = get_agent("doubao-cli")
+    monkeypatch.setattr(doubao_cli.sys, "platform", "linux")
+    monkeypatch.setattr(doubao_cli.os, "environ", {**os.environ, "HOME": str(tmp_path / "home")})
+
+    ctx = make_ctx(tmp_path, home_dir=str(tmp_path / "doubao-home"))
+    invocation = definition.build_invocation(ctx)
+
+    assert invocation.env["XDG_DATA_HOME"] == str(tmp_path / "home" / ".local" / "share")
+    assert invocation.env["HOME"] == ctx.home_dir
+
+
+def test_auth_argv_on_windows_passes_one_command_string(monkeypatch):
+    """Windows 上探测命令要走 ``cmd.exe``，且与真实运行用同一套拼法。
+
+    平台里 npm 垫片只有 ``subprocess.list2cmdline`` 拼整串这一种形态
+    （``runtime/runner.py:_spawn_argv`` 及其单测钉着它）。探测另起一种拼法，
+    就会在引号 / 空格上出现两套行为：装得下却探不到登录态。
+    """
+    from app.agents.builtin import doubao_cli
+
+    monkeypatch.setattr(doubao_cli.sys, "platform", "win32")
+    exe = r"C:\Users\John Doe\AppData\Roaming\Coda\node\global\doubao.cmd"
+
+    argv = doubao_cli._auth_argv(exe)
+
+    assert argv[:4] == [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c"]
+    assert argv[4] == subprocess.list2cmdline([exe, "auth", "status"])

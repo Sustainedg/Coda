@@ -164,6 +164,18 @@ doubao -C <工作目录> --output-format stream-json -p -
   只链 `doubao_cli` 漏掉 `mssdk` 时，每次运行都会在隔离目录重建设备身份，
   报 `auth_unavailable: 无法访问用于保存设备身份的安全存储`，对话直接起不来
   —— macOS 真机踩过的坑，适配器 `_link_macos_data` 两个目录一起链。
+- Windows 同样没有 `XDG_DATA_HOME`（二进制里搜不到这个变量名）：它按「用户文件夹」
+  解析数据根（`SHGetFolderPath` / Known Folder API），但**优先认进程里的
+  `USERPROFILE`**（`agent_infra.dll` 里那条 `USERPROFILE` → `HOMEDRIVE` → `HOMEPATH`
+  的 UTF-16 回退链就是证据）。
+  于是隔离 HOME 一改 `USERPROFILE`，原生程序就会去隔离目录里另起一份数据：
+  报 `doubao: 无法创建应用数据目录，请检查该目录的写入权限`，且登录态与设备身份
+  全部对不上。
+  修法与 macOS 同源：`_link_windows_data` 在隔离目录里建出
+  `AppData\Local/{doubao_cli,mssdk}` 并**接到真实的 `%LOCALAPPDATA%` 同名目录**
+  （目录联接优先，符号链接兜底），同时把真实 `LOCALAPPDATA` 原样传进子进程 env
+  ——`runtime.cjs` 在 win32 上就是按 `process.env.LOCALAPPDATA` 找原生程序的，
+  这个变量被换掉就会「已安装但找不到运行时」。
 - 控制通道在 `/tmp/dcli-<uid>`，实例锁 `doubao-cli-instance.lock` 在数据目录。
   **并发运行是否互相打架必须实测**（协作域会并行跑多个智能体）。
 
@@ -275,14 +287,24 @@ env.setdefault("DOUBAO_CLI_NO_UPDATE_CHECK", "1")      # 无人值守不弹更�
 if ctx.home_dir:
     real_home = os.environ.get("HOME", "")
     env["HOME"] = ctx.home_dir                          # 技能根隔离
-    # app 与登录态留在真实数据目录
-    env.setdefault(
-        "XDG_DATA_HOME",
-        os.environ.get("XDG_DATA_HOME") or str(Path(real_home) / ".local" / "share"),
-    )
+    if sys.platform == "win32":
+        # Windows 原生程序按「用户文件夹」解析数据根，且优先认 USERPROFILE。
+        # 隔离 HOME 改了 USERPROFILE 之后，它会在隔离目录里另起一份数据：
+        # 找不到真实登录态，还会重建设备身份（报「无法访问用于保存设备身份的安全存储」）。
+        env["USERPROFILE"] = ctx.home_dir
+        _link_windows_data(ctx.home_dir)                  # 把真实数据目录接进隔离目录
+        real_local = os.environ.get("LOCALAPPDATA")
+        if real_local:
+            env["LOCALAPPDATA"] = real_local             # 原生程序与登录态留在真实目录
+    else:
+        # app 与登录态留在真实数据目录
+        env.setdefault(
+            "XDG_DATA_HOME",
+            os.environ.get("XDG_DATA_HOME") or str(Path(real_home) / ".local" / "share"),
+        )
     # HOME 换了之后 runner 补的是隔离目录下的 .local/bin；真实安装目录要自己保住
     real_bin = str(Path(real_home) / ".local" / "bin")
-    env["PATH"] = f"{real_bin}:{os.environ.get('PATH', '')}"
+    env["PATH"] = f"{real_bin}{os.pathsep}{os.environ.get('PATH', '')}"
 return Invocation(argv=argv, env=env, cwd=ctx.workspace_dir, stdin=prompt)
 ```
 

@@ -255,7 +255,9 @@ async def stream_cli_run(
         local_bin = os.path.join(home, ".local", "bin")
         path = env.get("PATH", "")
         if local_bin not in path:
-            env["PATH"] = f"{local_bin}:{path}" if path else local_bin
+            # 分隔符必须走 os.pathsep：Windows 上是分号，写死冒号会把整条 PATH
+            # 粘成一条，内核连同 node 都找不到（路径里出现「C:\x:C:\y」这种）。
+            env["PATH"] = f"{local_bin}{os.pathsep}{path}" if path else local_bin
     env = {k: v.replace("{{RUN_DIR}}", str(run_dir)) for k, v in env.items()}
 
     executable = shutil.which(invocation.argv[0]) if invocation.argv else None

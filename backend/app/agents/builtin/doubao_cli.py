@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from ..base import (
     AgentContext,
@@ -77,6 +77,23 @@ def _probe_env() -> dict[str, str]:
 #: 触发 ``auth_unavailable: 无法访问用于保存设备身份的安全存储``，对话直接起不来。
 _MACOS_DATA_NAMES = ("doubao_cli", "mssdk")
 
+#: Windows 上随用户目录解析、必须接到真实目录的豆包数据目录。
+#:
+#: Windows 原生程序（``doubao.exe``）**不认** ``XDG_DATA_HOME``，也**不认** ``HOME``：
+#: 它走 ``SHGetFolderPath`` / Known Folder API 按「用户文件夹」解析
+#: （实测二进制里带 ``FOLDERID_Profile`` GUID 与 ``SHGetFolderPathW`` 导入）。
+#: 而 ``agent_infra.dll`` 里那串 ``USERPROFILE`` → ``HOMEDRIVE`` → ``HOMEPATH``
+#: 的 UTF-16 回退链说明：它解析「用户目录」时会**先看环境变量**，取不到才退回系统 API。
+#:
+#: 于是隔离 HOME 一旦把 ``USERPROFILE`` 指到隔离目录，原生程序就会去
+#: ``<隔离目录>\AppData\Local\doubao_cli`` 建数据目录 —— 那条路径在隔离目录里
+#: 并不存在，且原生程序建目录失败时只会抛「无法创建应用数据目录」这一句，
+#: 不会提示真正的原因（技能根隔离顺手把用户目录也改了）。
+#:
+#: 修法与 macOS 同源：把真实目录**接进**隔离目录（Windows 上是目录联接 / junction），
+#: 让原生程序在隔离目录里照样看到真实的数据与登录态。
+_WINDOWS_DATA_NAMES = ("doubao_cli", "mssdk")
+
 
 def _link_macos_data(home_dir: str) -> None:
     """macOS：把隔离 HOME 里的豆包数据目录软链到真实目录。
@@ -85,8 +102,8 @@ def _link_macos_data(home_dir: str) -> None:
     与登录态，而 Node 的 ``os.homedir()`` 认的是 ``HOME``。技能隔离要求把 HOME 换掉，
     不补这条链接，豆包会「已安装但找不到运行时」；设备身份（``mssdk``）也按同一根解析，
     不链的话登录态与设备身份会分家，报「安全存储不可用」。Linux 有 ``XDG_DATA_HOME``
-    （豆包原生程序与 ``mssdk`` 都认它，适配器已显式指向真实目录）、Windows 有
-    ``LOCALAPPDATA``，都不受影响。
+    （豆包原生程序与 ``mssdk`` 都认它，适配器已显式指向真实目录），Windows 则由
+    :func:`_link_windows_data` 负责。
     """
     if sys.platform != "darwin":
         return
@@ -105,15 +122,98 @@ def _link_macos_data(home_dir: str) -> None:
             continue
 
 
+def _link_windows_data(
+    home_dir: str,
+    *,
+    link_dir: Callable[[Path, Path], None] | None = None,
+) -> None:
+    """Windows：把隔离目录里的豆包数据目录接到真实目录（目录联接 / 符号链接）。
+
+    Windows 原生程序按「用户文件夹」解析数据根（见 :data:`_WINDOWS_DATA_NAMES` 的说明），
+    隔离 HOME 改了 ``USERPROFILE`` 之后它就会在隔离目录里另起一份数据：
+    既找不到真实登录态，也会因为设备身份（``mssdk``）落在陌生目录而触发
+    「无法访问用于保存设备身份的安全存储」。
+
+    这里在隔离目录下建出与真实布局同名的目录，并**接到真实目录**上：
+    优先用目录联接（junction，不需要管理员权限），失败再退回符号链接
+    （同样失败就跳过——让内核自己报「无法创建应用数据目录」，不要阻断启动命令）。
+
+    ``link_dir`` 只为单测注入：真实路径是 :func:`_windows_link_dir`。
+    """
+    if sys.platform != "win32":
+        return
+    real_local = os.environ.get("LOCALAPPDATA")
+    if not real_local:
+        return
+    link = link_dir or _windows_link_dir
+    base = Path(home_dir) / "AppData" / "Local"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # 骨架建不出来就不必再谈链接：运行时的报错会说明问题（尽力而为，不阻断启动）。
+        return
+    for name in _WINDOWS_DATA_NAMES:
+        real = Path(real_local) / name
+        target = base / name
+        try:
+            if target.exists() or target.is_symlink():
+                continue
+            link(target, real)
+        except (OSError, subprocess.SubprocessError):
+            # 尽力而为：链接建不出来（含 mklink 超时）时内核会自己报
+            # 「无法创建应用数据目录」，比在这里打断整次运行更接近用户能自己修的状态。
+            continue
+
+
+def _windows_link_dir(link: Path, target: Path) -> None:
+    """在 Windows 上把 ``link`` 接到目录 ``target``。
+
+    优先用目录联接（``mklink /J``）：它不需要管理员权限，也不会被内核当成
+    「符号链接」而被安全检查拒掉。联接建不起来时退回符号链接（需要开发者模式）；
+    两条路都走不通就抛出，由调用方跳过——宁可让内核报「无法创建应用数据目录」，
+    也不要造一个假的空目录把登录态静默丢掉。
+    """
+    if target.is_dir() and sys.platform == "win32":
+        result = subprocess.run(
+            [
+                os.environ.get("COMSPEC", "cmd.exe"),
+                "/d",
+                "/c",
+                "mklink",
+                "/J",
+                str(link),
+                str(target),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            # 联接是本机瞬时操作；给个上限，免得异常环境把对话启动挂死（铁律 10）。
+            timeout=10,
+        )
+        if result.returncode == 0 and link.exists():
+            return
+    link.symlink_to(target, target_is_directory=True)
+
+
 def _auth_argv(exe: str) -> list[str]:
     """``doubao auth status`` 的实际启动形态。
 
     Windows 上 npm 给的是 ``doubao.cmd``，``subprocess`` 不能直接执行，要交给
     ``cmd.exe /d /s /c``；POSIX 原样执行。
+
+    拼法与 ``runtime/runner.py:_spawn_argv`` 完全一致：整条命令交给
+    ``subprocess.list2cmdline`` 拼成一个字符串。平台里 npm 垫片只有这一种拼法
+    （单测也钉着它），探测和真实运行才不会在引号 / 空格上产生两种行为。
     """
     args = [exe, "auth", "status"]
-    if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", *args]
+    if sys.platform == "win32" and exe.lower().endswith((".cmd", ".bat")):
+        return [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/s",
+            "/c",
+            subprocess.list2cmdline(args),
+        ]
     return args
 
 
@@ -359,14 +459,25 @@ class DoubaoCliAgent(AgentDefinition):
             _link_macos_data(ctx.home_dir)
             # 技能根跟着 HOME 走：隔离目录里只有分配到的技能。
             env["HOME"] = ctx.home_dir
-            if os.name == "nt":
+            if sys.platform == "win32":
                 # Windows 上 Node / Rust 取「用户主目录」认 USERPROFILE，不认 HOME。
                 env["USERPROFILE"] = ctx.home_dir
-            # 原生程序与登录态在 XDG_DATA_HOME 下，必须显式指向真实目录。
-            env.setdefault(
-                "XDG_DATA_HOME",
-                os.environ.get("XDG_DATA_HOME") or str(Path(real_home) / ".local" / "share"),
-            )
+                # 原生程序按「用户文件夹」解析数据根，而它优先读 USERPROFILE：
+                # 隔离 HOME 改了它就会去隔离目录里另起一份数据（找不到登录态，
+                # 还会重建设备身份）。把真实数据目录接到隔离目录里，让它照样看到。
+                _link_windows_data(ctx.home_dir)
+                # 真实 LOCALAPPDATA 原样传下去：内核的 npm 垫片（runtime.cjs）在
+                # win32 上就是按 ``process.env.LOCALAPPDATA`` 找原生程序的，
+                # 这个变量被换掉就会「已安装但找不到运行时」。
+                real_local = os.environ.get("LOCALAPPDATA")
+                if real_local:
+                    env["LOCALAPPDATA"] = real_local
+            else:
+                # 原生程序与登录态在 XDG_DATA_HOME 下，必须显式指向真实目录。
+                env.setdefault(
+                    "XDG_DATA_HOME",
+                    os.environ.get("XDG_DATA_HOME") or str(Path(real_home) / ".local" / "share"),
+                )
             # HOME 换了之后运行器补的是隔离目录的 .local/bin，真实安装目录自己保住。
             # 分隔符必须走 os.pathsep：Windows 上是分号，写死冒号会把整条 PATH 拼坏。
             real_bin = str(Path(real_home) / ".local" / "bin")

@@ -192,16 +192,19 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _spawn_argv(exe: str) -> list[str]:
-    """Windows 上 npm 给的是 ``.cmd`` 垫片，``subprocess`` 不能直接执行。"""
-    if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", exe]
-    return [exe]
-
-
 def _serve_argv(exe: str, port: int) -> list[str]:
-    return [
-        *_spawn_argv(exe),
+    """启动 ``codebuddy --serve`` 的完整命令。
+
+    Windows 上 npm 给的是 ``.cmd`` 垫片，``subprocess`` 不能直接执行，必须交给
+    ``cmd.exe /d /s /c`` 解释。
+
+    拼法与 ``runtime/runner.py:_spawn_argv`` 保持一致：用
+    ``subprocess.list2cmdline`` 把整条命令（含 ``--serve`` 那一串参数）拼成一个
+    字符串再交给 ``cmd``。平台里 npm 垫片只有这一种拼法（单测钉着它），
+    登录助手与真实运行才不会在引号 / 空格上产生两套行为。
+    """
+    args = [
+        exe,
         "--serve",
         "--host",
         "127.0.0.1",
@@ -211,6 +214,15 @@ def _serve_argv(exe: str, port: int) -> list[str]:
         "--auth",
         "none",
     ]
+    if sys.platform == "win32" and exe.lower().endswith((".cmd", ".bat")):
+        return [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/s",
+            "/c",
+            subprocess.list2cmdline(args),
+        ]
+    return args
 
 
 def _serve_env() -> dict[str, str]:

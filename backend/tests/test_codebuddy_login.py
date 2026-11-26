@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -291,3 +293,39 @@ def test_module_import_has_no_side_effects():
     """适配器目录会被自动 import：助手模块只能定义函数，不能有启动副作用。"""
     assert Path(codebuddy_login.__file__).name == "codebuddy_login.py"
     assert callable(codebuddy_login.main)
+
+
+def test_serve_argv_on_windows_passes_one_command_string(monkeypatch):
+    """Windows 上登录服务要走 ``cmd.exe``，且与真实运行用同一套拼法。
+
+    平台里 npm 垫片只有 ``subprocess.list2cmdline`` 拼整串这一种形态
+    （``runtime/runner.py:_spawn_argv`` 及其单测钉着它）。助手另起一种拼法，
+    就会在引号 / 空格上出现两套行为：登录服务起不来，扫码永远完不成。
+    """
+    monkeypatch.setattr(codebuddy_login.sys, "platform", "win32")
+    exe = r"C:\Users\John Doe\AppData\Roaming\Coda\node\global\codebuddy.cmd"
+
+    argv = codebuddy_login._serve_argv(exe, 54321)
+
+    assert argv[:4] == [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c"]
+    # 整条命令作为一个参数交给 cmd.exe，参数里的空格不会被拆开
+    assert argv[4] == subprocess.list2cmdline(
+        [exe, "--serve", "--host", "127.0.0.1", "--port", "54321", "--auth", "none"]
+    )
+
+
+def test_serve_argv_on_posix_keeps_plain_argv(monkeypatch):
+    """POSIX 上直接 exec，不经 cmd.exe。"""
+    monkeypatch.setattr(codebuddy_login.sys, "platform", "linux")
+    exe = "/usr/local/bin/codebuddy"
+
+    assert codebuddy_login._serve_argv(exe, 54321) == [
+        exe,
+        "--serve",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "54321",
+        "--auth",
+        "none",
+    ]

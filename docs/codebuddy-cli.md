@@ -319,6 +319,24 @@ def mcp_mount(self, ctx):         # McpMount(home_name="codebuddy-home",
 > 为什么不用 TUI 的 `/login`：headless 没有 TTY，也驱动不了斜杠命令；`--serve` 的 HTTP API
 > 是官方提供的公开入口（`docs/http-api.md`），比 PTY 注入稳定得多。
 
+> **Windows 上的两个坑**（依据 2.186.0 包内代码与平台既有启动约定）：
+>
+> 1. **起服务必须与真实运行用同一套拼法**。npm 在 Windows 上给的是 `.cmd` 垫片，
+>    `subprocess` 不能直接执行，得经 `cmd.exe /d /s /c`。平台里这条链路只有一个
+>    既定形态：`runtime/runner.py:_spawn_argv` 用 `subprocess.list2cmdline` 把整条
+>    命令拼成一个字符串再交给 `cmd`（单测钉着它）。登录助手若另写一套拼法，
+>    引号 / 空格上就会出现两套行为——服务起不来，扫码自然永远完不成，对话只剩一句
+>    「Authentication required」。故 `_serve_argv` 复用同一套写法。
+> 2. **登录态落盘位置跟着「用户文件夹」走**。内核的 `FilePathServiceImpl.getBasePath()`
+>    在 win32 上是 `os.homedir()` + `AppData\Local`，而 Windows 的「用户文件夹」
+>    由 Known Folder API 解析。平台**不改** `USERPROFILE`，因此登录态与对话看到的是
+>    同一份 —— 这一点与豆包相反：豆包要隔离 HOME，所以必须额外把真实数据目录接进去
+>    （见 `docs/doubao-cli.md` §2.7）。
+>
+> 另外，内核抛「未登录」时用的是一句英文（`Authentication required. Please use /login
+> command to sign in to your account`）。平台在 `parse_line` 里把它翻成中文并指明
+> 「内核管理 → CodeBuddy CLI → 登录」，其余报错原样透出（内核自己的信息通常更准）。
+
 ### 3.8 多账号：登录几个账号、随时切换（`codebuddy_accounts.py`）
 
 内核是**单账号**模型：`FileAuthenticationStorage` 只保留一份 session

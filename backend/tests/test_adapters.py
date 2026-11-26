@@ -1471,3 +1471,40 @@ def test_claude_code_message_delta_without_input_tokens_is_not_reported():
         )
     )
     assert events == []
+
+
+def test_codebuddy_auth_required_error_is_translated_to_chinese():
+    """内核的「未登录」英文报错要翻成中文，并指明去哪儿登录。
+
+    Windows 上内核找不到本机登录态时抛的是这句英文；平台不翻译的话，
+    用户只看到一句看不懂的话，也不知道该去「内核管理」登录。
+    """
+    definition = get_agent("codebuddy-cli")
+    run = definition.create_run(ctx())
+    raw = "Authentication required. Please use /login command to sign in to your account"
+    lines = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": raw}]}},
+        {"type": "result", "subtype": "error_during_execution", "is_error": True, "errors": [raw]},
+    ]
+
+    events = [e for line in lines for e in run.feed(json.dumps(line))]
+
+    assert raw not in run.emitted_text  # 英文原文不再直接透给用户
+    errors = [e for e in events if e.type.value == "error"]
+    assert errors, "未登录必须产出错误事件"
+    assert "内核管理" in errors[0].text
+    assert raw not in errors[0].text
+
+
+def test_codebuddy_other_errors_keep_kernel_text():
+    """其他错误原样透出：内核自己的报错信息通常比平台翻译更准。"""
+    definition = get_agent("codebuddy-cli")
+    run = definition.create_run(ctx())
+    raw = "workspace is not writable"
+
+    events = list(run.feed(json.dumps(
+        {"type": "result", "subtype": "error_during_execution", "is_error": True, "errors": [raw]}
+    )))
+
+    errors = [e for e in events if e.type.value == "error"]
+    assert [e.text for e in errors] == [raw]

@@ -163,7 +163,8 @@ async def _provision_env() -> dict[str, str]:
         local_bin = os.path.join(home, ".local", "bin")
         path = env.get("PATH", "")
         if local_bin not in path:
-            env["PATH"] = f"{local_bin}:{path}" if path else local_bin
+            # 分隔符必须走 os.pathsep：Windows 上是分号，写死冒号会把整条 PATH 粘成一条。
+            env["PATH"] = f"{local_bin}{os.pathsep}{path}" if path else local_bin
     #: 从数据库读取代理设置，注入到子进程环境变量里，
     #: 让安装 / 更新 / 查询版本等命令能通过代理访问 GitHub / npm registry 等。
     try:

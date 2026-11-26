@@ -129,6 +129,32 @@ _MARKET_DIRNAME = ".skillhub"
 #: 已安装插件内部的技能深度：``<插件根>/skills/<技能>/SKILL.md``。
 _PLUGIN_SKILL_DEPTH = 2
 
+#: 内核在「本机没有可用登录态」时抛的英文原文（实测来自 ``codebuddy.js`` 的常量）。
+#: 它出现在 ``result.errors`` 与 assistant 文本里，是「登录助手没能把登录态写下来」
+#: 的最终表现——平台侧不翻译的话，用户只看到一句英文，不知道该去哪儿登录。
+_AUTH_REQUIRED_TEXT = (
+    "Authentication required. Please use /login command to sign in to your account"
+)
+
+#: 给用户看的中文提示：说清「去哪儿登录」与「登录态保存在哪台机器上」。
+_AUTH_REQUIRED_HINT = (
+    "CodeBuddy 尚未登录：请到「内核管理 → CodeBuddy CLI」点「登录」，"
+    "用手机扫码完成授权后重试（登录态保存在本机，所有对话共用）。"
+)
+
+
+def _translate_auth_error(text: Any) -> str:
+    """把内核的「未登录」英文报错换成中文指引。
+
+    其他错误原样透出——内核自己的报错信息通常比平台翻译更准。
+    ``result`` 在不同版本里可能是字符串、字典或数组，先统一成字符串再判断，
+    免得 ``in`` 在非字符串上抛 ``TypeError`` 把整轮运行打断。
+    """
+    detail = text if isinstance(text, str) else str(text or "")
+    if _AUTH_REQUIRED_TEXT in detail:
+        return _AUTH_REQUIRED_HINT
+    return detail
+
 
 def config_dir(home: str | Path | None = None) -> Path:
     """CodeBuddy 的配置目录（默认 ``~/.codebuddy``，可用 ``CODEBUDDY_CONFIG_DIR`` 覆盖）。"""
@@ -797,7 +823,7 @@ class CodeBuddyCliAgent(AgentDefinition):
             if block.get("type") == "text" and block.get("text"):
                 # 已有逐字增量，不再重复输出整段文本。
                 if not run.state.get("partial"):
-                    yield text_delta(block["text"])
+                    yield text_delta(_translate_auth_error(block["text"]))
             elif block.get("type") == "tool_use":
                 yield tool_call(
                     block.get("name") or "tool", block.get("id"), **(block.get("input") or {})
@@ -827,4 +853,10 @@ class CodeBuddyCliAgent(AgentDefinition):
                 run.result[dst] = payload[src]
         run.state["is_error"] = bool(payload.get("is_error"))
         if payload.get("is_error"):
-            yield error(payload.get("result") or "CodeBuddy 报告了一个错误")
+            detail = payload.get("result")
+            if not detail:
+                # 部分版本把原因放在 errors 数组里（实测「未登录」就是这么报的）。
+                errors = payload.get("errors")
+                if isinstance(errors, list) and errors:
+                    detail = "; ".join(str(item) for item in errors)
+            yield error(_translate_auth_error(detail or "CodeBuddy 报告了一个错误"))

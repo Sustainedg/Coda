@@ -244,6 +244,9 @@ async def _auto_compact_context(
     （以及正在推送的 SSE）堵住。
     """
     active = context_service.active_messages(rows, conversation)
+    # 上限按「自动模式跟随内核真实窗口」解析：内核报的是模型真正的上限，
+    # 平台默认 128k 只是不知道时的保守值（用户显式设过上限时以用户为准）。
+    settings = settings.for_window(conversation.context_kernel_window_tokens)
     # 与面板展示同一个入口：有内核上报的快照就用快照，没有才按内容估算。
     used, _ = await run_in_threadpool(
         context_service.estimate_conversation,
@@ -724,9 +727,14 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
     error_text: str | None = None
     #: 本轮最后一次模型请求的输入 token（上下文窗口真实占用）；没有上报就留空。
     context_tokens: int | None = None
+    #: 上面那个快照的采集时刻。必须记「事件到达的时刻」而不是消息创建时刻——本轮消息
+    #: 在开始时就建好了，而快照在本轮中间才产生（见 models.Message.context_snapshot_at）。
+    context_snapshot_at: datetime | None = None
     #: 本轮内内核是否发生了原生压缩（Claude Code auto-compact 等）；落库后用于
     #: 让旧快照失效（压缩前的 context_tokens 不再代表当前窗口）。
-    kernel_compacted = False
+    kernel_compacted_at: datetime | None = None
+    #: 内核上报的真实上下文窗口（tokens）。上限设为「自动」时跟随它。
+    kernel_window: int | None = None
 
     for warning in prepared.skill_warnings:
         yield log(f"技能：{warning}", "warn")
@@ -772,11 +780,26 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
                     and tokens > 0
                 ):
                     context_tokens = int(tokens)
+                    context_snapshot_at = datetime.now(timezone.utc)
+            elif event.type is EventType.CONTEXT_WINDOW:
+                # 内核上报的真实上下文窗口（Claude Code effective_window / Codex
+                # modelContextWindow）。上限设为「自动」时平台跟着它走，避免在 200k / 1M
+                # 窗口的内核上仍按 128k 默认值提前压缩。非法值不污染落库。
+                window = (event.payload or {}).get("tokens")
+                if (
+                    isinstance(window, (int, float))
+                    and not isinstance(window, bool)
+                    and window >= 1
+                ):
+                    kernel_window = int(window)
             elif event.type is EventType.CONTEXT_COMPACTED:
                 # 内核原生压缩（如 Claude Code auto-compact）：旧消息已在内核侧折叠成摘要。
                 # 快照口径必须重置——之前上报的 context_tokens 已不代表压缩后的窗口，
                 # 下一轮估算回落到「按内容估算」档，避免面板拿着旧快照说「已用 150k」。
-                kernel_compacted = True
+                #
+                # 时间戳取**事件到达时刻**（而不是本轮收尾时刻）：失效判定要和快照的
+                # 采集时刻比大小，用收尾时刻会把本轮压缩后重新上报的快照一起误杀。
+                kernel_compacted_at = datetime.now(timezone.utc)
                 # 压缩后的窗口占用若内核有报（post_tokens），它就是最新快照。
                 post = (event.payload or {}).get("post_tokens")
                 if (
@@ -785,6 +808,7 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
                     and post > 0
                 ):
                     context_tokens = int(post)
+                    context_snapshot_at = datetime.now(timezone.utc)
                 yield log(_kernel_compact_notice(event), "info")
             elif event.type is EventType.SESSION:
                 # 只有主场运行才把内核回报的会话 id 写回对话；@ 召唤轮回报的
@@ -831,12 +855,16 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
         message.parts = parts
         message.usage = usage_totals
         message.context_tokens = context_tokens
+        message.context_snapshot_at = context_snapshot_at
         message.error = error_text
         message.status = "error" if status == "error" else ("interrupted" if status == "cancelled" else "complete")
-        if kernel_compacted:
-            # 内核压缩发生在本轮：记下时间戳，估算层据此让更早的快照失效
-            # （见 runtime/context._snapshot_index 的第三个失效条件）。
-            prepared.conversation.context_kernel_compacted_at = datetime.now(timezone.utc)
+        if kernel_compacted_at is not None:
+            # 内核压缩发生在本轮：记下事件时刻，估算层据此让更早的快照失效
+            # （见 runtime/context._snapshot_index 的内核压缩失效线）。
+            prepared.conversation.context_kernel_compacted_at = kernel_compacted_at
+        if kernel_window is not None:
+            # 内核窗口（模型真正的上限）：落库后「自动」模式下限跟随它。
+            prepared.conversation.context_kernel_window_tokens = kernel_window
         prepared.conversation.updated_at = datetime.now(timezone.utc)
         session.add(message)
         session.add(prepared.conversation)

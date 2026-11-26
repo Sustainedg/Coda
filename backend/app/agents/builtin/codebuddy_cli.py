@@ -42,6 +42,7 @@ from ..base import (
 )
 from ..events import (
     AgentEvent,
+    context_compacted,
     context_usage,
     error,
     log,
@@ -81,6 +82,18 @@ from .util import (
     truthy,
 )
 
+
+#: ``compact_boundary`` 事件里 ``compact_metadata`` 的字段白名单（与 Claude Code 同一套
+#: 官方 stream-json 协议，键为蛇形命名）。CodeBuddy 的 ``-p`` 会话在手动 ``/compact`` 后
+#: 会发这条事件，只带 ``trigger`` / ``pre_tokens``；其余字段若将来出现也一并透传。
+_COMPACT_FIELDS = (
+    "trigger",
+    "pre_tokens",
+    "post_tokens",
+    "messages_summarized",
+    "cumulative_dropped_tokens",
+    "duration_ms",
+)
 
 #: 分配到的 MCP 服务器写成的独立配置文件（隔离目录内），配合 ``--mcp-config`` 使用。
 _MCP_FILE = "mcp.json"
@@ -353,6 +366,18 @@ class CodeBuddyCliAgent(AgentDefinition):
         ),
         ConfigField("partial_messages", "逐字流式输出", FieldType.BOOLEAN, default=True),
         ConfigField(
+            "autocompact",
+            "原生自动压缩窗口",
+            FieldType.STRING,
+            advanced=True,
+            placeholder="auto 或 ≥100k 的 token 数（如 400k / 400000）",
+            help=(
+                "透传给 CodeBuddy 的 --autocompact：上下文逼近该窗口时由内核自己把旧对话"
+                "折叠成摘要。留空 = 用内核默认；填 auto = 跟随模型窗口。注意与平台「上下文」"
+                "面板里的压缩是两套机制：平台压缩会重开会话，内核压缩在会话内完成。"
+            ),
+        ),
+        ConfigField(
             "allowed_tools",
             "工具白名单",
             FieldType.STRING_LIST,
@@ -597,6 +622,11 @@ class CodeBuddyCliAgent(AgentDefinition):
         if ctx.session_id:
             argv += ["--resume", ctx.session_id]
 
+        # 原生 auto-compact 窗口：配置了才传，未配置走 CodeBuddy 自己的默认。
+        autocompact = options.get("autocompact")
+        if autocompact not in (None, ""):
+            argv += ["--autocompact", str(autocompact)]
+
         if options.get("allowed_tools"):
             argv += ["--allowedTools", *as_list(options["allowed_tools"])]
         if options.get("disallowed_tools"):
@@ -707,6 +737,18 @@ class CodeBuddyCliAgent(AgentDefinition):
             yield from self._from_result(payload, run)
         elif kind == "system":
             subtype = payload.get("subtype")
+            if subtype == "compact_boundary":
+                # 内核原生压缩的分界事件（CodeBuddy 在 ``-p`` 会话执行 ``/compact`` 后发出）：
+                # 旧消息已被折叠成摘要，窗口占用随之下降。与 Claude Code 同一套协议，
+                # 元数据白名单透传；运行层据此提醒用户并让压缩前的快照失效。
+                metadata = payload.get("compact_metadata") or {}
+                if isinstance(metadata, dict):
+                    yield context_compacted(
+                        **{k: v for k, v in metadata.items() if k in _COMPACT_FIELDS}
+                    )
+                else:
+                    yield context_compacted()
+                return
             if subtype == "init":
                 run.state["model"] = payload.get("model")
                 tools = payload.get("tools") or []
@@ -727,7 +769,14 @@ class CodeBuddyCliAgent(AgentDefinition):
                 yield context_usage(tokens)
             return
         if kind == "message_delta":
-            # ``message_delta.usage`` 只有 output_tokens，不代表窗口输入。
+            # 窗口占用真正的来源：message_delta.usage 带的是「本次请求」的输入侧 token
+            # （input + cache_read + cache_creation），同一轮工具循环里每次请求各报各的；
+            # 而 result 里的是整轮累计，不能当窗口占用。早先这里直接跳过（以为它只有
+            # output_tokens），那会让内核永远报不出窗口快照、界面只能一直显示按内容估算。
+            # 若某个版本确实只有 output_tokens，context_tokens() 会算出 0，不会误报。
+            tokens = context_tokens(event.get("usage") or {})
+            if tokens:
+                yield context_usage(tokens)
             return
         if kind != "content_block_delta":
             return

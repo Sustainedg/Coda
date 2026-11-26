@@ -12,7 +12,7 @@
  * 打开面板 / 保存配置都不会禁用输入框 —— 用户随时可以继续打字。
  */
 import { useEffect, useRef, useState } from 'react'
-import { checkContextInput, formatTokenCount } from '../lib/contextUsage'
+import { checkContextInput, checkThresholdInput, formatTokenCount } from '../lib/contextUsage'
 import type { ContextSettings, ContextUsage } from '../lib/types'
 import { UsageIcon } from './Icons'
 
@@ -27,7 +27,7 @@ interface Props {
   saveError?: string | null
   /** 保存成功的一次性提示 */
   notice?: string | null
-  onSave: (limitTokens: number, thresholdRatio: number) => Promise<boolean>
+  onSave: (limitTokens: number, thresholdRatio: number, limitMode?: 'auto' | 'manual') => Promise<boolean>
   disabled?: boolean
 }
 
@@ -55,6 +55,8 @@ export function ContextMeter({
   const [limitText, setLimitText] = useState('')
   const [thresholdText, setThresholdText] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
+  /** 上限模式：auto = 跟随内核上报的真实窗口；manual = 用户显式设定。 */
+  const [mode, setMode] = useState<'auto' | 'manual'>('manual')
   const wrapperRef = useRef<HTMLDivElement | null>(null)
   /** 表单是否已经用当前配置填过一次：只填一次，避免轮询刷新把用户正在编辑的输入框覆盖掉。 */
   const formSeeded = useRef(false)
@@ -82,6 +84,7 @@ export function ContextMeter({
     const ratio = usage?.threshold_ratio ?? settings?.threshold_ratio
     setLimitText(limit ? String(limit) : '')
     setThresholdText(ratio !== undefined ? String(Math.round(ratio * 100)) : '')
+    setMode(settings?.limit_mode ?? usage?.limit_mode ?? 'manual')
     formSeeded.current = Boolean(limit && ratio !== undefined)
     setFormError(null)
     setOpen(true)
@@ -93,11 +96,37 @@ export function ContextMeter({
     if (!open || !usage || formSeeded.current) return
     setLimitText(String(usage.limit_tokens))
     setThresholdText(String(Math.round(usage.threshold_ratio * 100)))
+    setMode(settings?.limit_mode ?? usage.limit_mode ?? 'manual')
     formSeeded.current = true
-  }, [open, usage])
+  }, [open, usage, settings])
+
+  /** 切到「跟随内核」：上限输入框变成只读，直接显示内核窗口（没有就显示当前生效值）。 */
+  const switchMode = (next: 'auto' | 'manual') => {
+    setMode(next)
+    setFormError(null)
+    if (next === 'auto') {
+      const effective = usage?.limit_tokens ?? settings?.limit_tokens
+      if (effective) setLimitText(String(effective))
+    } else {
+      // 手动模式回到用户自己填过的值（没有就用当前生效值当起点）。
+      const configured = usage?.configured_limit_tokens ?? settings?.limit_tokens
+      if (configured) setLimitText(String(configured))
+    }
+  }
 
   const submit = async () => {
     if (!usage || !settings) return
+    if (mode === 'auto') {
+      // 上限不由用户填（跟随内核真实窗口）：只校验阈值，上限用当前生效值。
+      const checked = checkThresholdInput(thresholdText)
+      if (!checked.ok) {
+        setFormError(checked.error)
+        return
+      }
+      setFormError(null)
+      await onSave(usage.limit_tokens, checked.ratio, 'auto')
+      return
+    }
     const checked = checkContextInput(
       limitText,
       thresholdText,
@@ -109,7 +138,7 @@ export function ContextMeter({
       return
     }
     setFormError(null)
-    await onSave(checked.limit, checked.ratio)
+    await onSave(checked.limit, checked.ratio, 'manual')
   }
 
   const used = usage?.used_tokens ?? 0
@@ -196,6 +225,14 @@ export function ContextMeter({
                   <dd>{limit.toLocaleString()} tokens</dd>
                 </div>
                 <div>
+                  <dt>内核窗口</dt>
+                  <dd>
+                    {usage.kernel_window_tokens
+                      ? `${usage.kernel_window_tokens.toLocaleString()} tokens`
+                      : '内核未上报'}
+                  </dd>
+                </div>
+                <div>
                   <dt>触发阈值</dt>
                   <dd>
                     {(usage.threshold_tokens ?? 0).toLocaleString()} tokens（{thresholdPercent}%）
@@ -226,6 +263,24 @@ export function ContextMeter({
                   void submit()
                 }}
               >
+                <div className="ctx-mode" role="group" aria-label="上限来源">
+                  <button
+                    type="button"
+                    className={mode === 'auto' ? 'ctx-mode-btn on' : 'ctx-mode-btn'}
+                    onClick={() => switchMode('auto')}
+                    aria-pressed={mode === 'auto'}
+                  >
+                    跟随内核
+                  </button>
+                  <button
+                    type="button"
+                    className={mode === 'manual' ? 'ctx-mode-btn on' : 'ctx-mode-btn'}
+                    onClick={() => switchMode('manual')}
+                    aria-pressed={mode === 'manual'}
+                  >
+                    手动设置
+                  </button>
+                </div>
                 <label className="ctx-field">
                   <span>上限（tokens）</span>
                   <input
@@ -234,6 +289,7 @@ export function ContextMeter({
                     value={limitText}
                     onChange={(event) => setLimitText(event.target.value)}
                     aria-label="上下文上限（tokens）"
+                    disabled={mode === 'auto'}
                   />
                 </label>
                 <label className="ctx-field">
@@ -250,6 +306,18 @@ export function ContextMeter({
                   {saving ? '保存中…' : '保存'}
                 </button>
               </form>
+
+              {mode === 'auto' && (
+                <p className="ctx-note">
+                  {usage.kernel_window_tokens
+                    ? `上限自动跟随内核上报的窗口（${usage.kernel_window_tokens.toLocaleString()} tokens）；内核没上报时按 ${(
+                        usage.configured_limit_tokens ?? limit
+                      ).toLocaleString()} tokens 计。`
+                    : `该内核没有上报真实窗口，上限按 ${(
+                        usage.configured_limit_tokens ?? limit
+                      ).toLocaleString()} tokens 计；切到「手动设置」可自己指定。`}
+                </p>
+              )}
 
               {(formError || saveError) && (
                 <div className="ctx-error">{formError || saveError}</div>

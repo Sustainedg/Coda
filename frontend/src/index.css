@@ -934,12 +934,20 @@ code, pre, .mono { font-family: var(--mono); }
 .ctx-status.error { background: rgba(248, 113, 113, 0.12); color: var(--danger); }
 .ctx-status.busy { color: var(--accent); }
 .ctx-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 8px; }
+/* 上限来源切换：跟随内核真实窗口 / 手动设置 */
+.ctx-mode { display: flex; gap: 6px; flex: 1 1 100%; }
+.ctx-mode-btn {
+  flex: 1; padding: 5px 8px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-input); color: var(--text-dim); font: inherit; cursor: pointer;
+}
+.ctx-mode-btn.on { border-color: var(--brand); color: var(--brand); }
 .ctx-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 110px; color: var(--text-dim); }
 .ctx-field input {
   width: 100%; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg-input); color: var(--text); font: inherit;
 }
 .ctx-field input:focus { outline: none; border-color: var(--brand); }
+.ctx-field input:disabled { opacity: 0.65; cursor: default; }
 .ctx-save {
   flex: none; padding: 6px 14px; border: 1px solid var(--brand); border-radius: 999px;
   background: var(--brand); color: #fff; font: inherit; cursor: pointer;

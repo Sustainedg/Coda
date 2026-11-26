@@ -89,17 +89,55 @@ class ContextSettingsError(ValueError):
     """上限 / 阈值不合法：消息给用户看，调用方按 422 返回。"""
 
 
+#: 上限模式：``auto`` = 跟随内核上报的真实窗口（没报过就回退到配置值），
+#: ``manual`` = 用户显式设定的上限。旧配置行没有这个键 = ``manual``（他们是显式设过的）。
+LIMIT_MODE_AUTO = "auto"
+LIMIT_MODE_MANUAL = "manual"
+VALID_LIMIT_MODES = (LIMIT_MODE_AUTO, LIMIT_MODE_MANUAL)
+
+
 @dataclass(slots=True)
 class ContextSettings:
     """上下文窗口配置；缺省值就是仓库约定的默认值。"""
 
     limit_tokens: int = DEFAULT_LIMIT_TOKENS
     threshold_ratio: float = DEFAULT_THRESHOLD_RATIO
+    #: 见 :data:`LIMIT_MODE_AUTO` / :data:`LIMIT_MODE_MANUAL`。
+    limit_mode: str = LIMIT_MODE_AUTO
 
     @property
     def threshold_tokens(self) -> int:
         """达到这个估算值就触发压缩；永远至少 1，避免除零式的「永远触发」。"""
         return max(1, int(math.floor(self.limit_tokens * self.threshold_ratio)))
+
+    def for_window(self, kernel_window: int | None) -> ContextSettings:
+        """返回一条对话实际生效的配置：自动模式下上限跟随内核真实窗口。
+
+        内核窗口（Claude Code ``effective_window`` / Codex ``modelContextWindow``）才是
+        模型真正的上限；平台默认 128k 只是不知道时的保守值。用户显式设过上限（manual）
+        时**永远以用户的为准**——自动对齐不能反过来覆盖人的选择。
+        """
+        if (
+            self.limit_mode == LIMIT_MODE_AUTO
+            and isinstance(kernel_window, int)
+            and kernel_window >= MIN_LIMIT_TOKENS
+        ):
+            return ContextSettings(
+                limit_tokens=kernel_window,
+                threshold_ratio=self.threshold_ratio,
+                limit_mode=self.limit_mode,
+            )
+        return self
+
+    def limit_source(self, kernel_window: int | None) -> str:
+        """上限来源：``kernel`` / ``user`` / ``default``（给界面解释这个数从哪来）。"""
+        if (
+            self.limit_mode == LIMIT_MODE_AUTO
+            and isinstance(kernel_window, int)
+            and kernel_window >= MIN_LIMIT_TOKENS
+        ):
+            return "kernel"
+        return "user" if self.limit_mode == LIMIT_MODE_MANUAL else "default"
 
 
 @dataclass(slots=True)
@@ -213,6 +251,16 @@ def _aware(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=timezone.utc)
 
 
+def _snapshot_time(message: Message) -> datetime | None:
+    """快照的采集时刻：优先 ``context_snapshot_at``，老行回退到 ``created_at``。
+
+    不能直接用 ``created_at`` 当采集时刻：本轮的消息在**轮次开始时**就建好了，而
+    快照产生于**本轮中间**某次 API 调用。内核原生压缩后上报的 ``post_tokens`` 正是
+    这种情况 —— 用 ``created_at`` 判定会让压缩后的新快照被自己的失效线误杀。
+    """
+    return _aware(message.context_snapshot_at) or _aware(message.created_at)
+
+
 def _snapshot_index(active: list[Message], conversation: Conversation) -> int | None:
     """最近一条可用的内核上下文快照下标；没有就返回 None。
 
@@ -221,7 +269,9 @@ def _snapshot_index(active: list[Message], conversation: Conversation) -> int | 
     * 快照来自本对话的主场智能体（@ 召唤轮不写回会话记忆，不能拿它的数）；
     * 快照晚于最近一次平台压缩（压缩会清 session_id，旧快照随之失效）；
     * 快照晚于最近一次内核原生压缩（内核压缩不动会话，但压缩前的窗口占用
-      已不代表当前上下文；快照若晚于它则是内核压缩后重新上报的，仍然可用）。
+      已不代表当前上下文）。**比的是快照采集时刻，不是消息创建时刻** ——
+      压缩发生在轮次中间时，本轮消息的 ``created_at`` 早于压缩，拿它比较会把
+      压缩后新上报的 ``post_tokens`` 一起作废（见 :func:`_snapshot_time`）。
     """
     if not conversation.session_id or not active:
         return None
@@ -233,9 +283,16 @@ def _snapshot_index(active: list[Message], conversation: Conversation) -> int | 
             continue
         if message.agent_profile_id and message.agent_profile_id != conversation.agent_profile_id:
             continue
-        if compacted_at is not None and _aware(message.created_at) <= compacted_at:
+        taken_at = _snapshot_time(message)
+        if compacted_at is not None and taken_at is not None and taken_at <= compacted_at:
             continue
-        if kernel_compacted_at is not None and _aware(message.created_at) <= kernel_compacted_at:
+        # 严格早于压缩时刻才算过期：压缩事件之后（同一轮内）上报的 post_tokens
+        # 与压缩时刻几乎相同，它代表压缩**后**的窗口，必须保留。
+        if (
+            kernel_compacted_at is not None
+            and taken_at is not None
+            and taken_at < kernel_compacted_at
+        ):
             continue
         return index
     return None
@@ -290,7 +347,11 @@ def _setting_key(owner_id: str | None) -> str:
     return f"{_SETTING_PREFIX}{owner_id or 'default'}"
 
 
-def validate_settings(limit_tokens: object, threshold_ratio: object) -> ContextSettings:
+def validate_settings(
+    limit_tokens: object,
+    threshold_ratio: object,
+    limit_mode: object = LIMIT_MODE_MANUAL,
+) -> ContextSettings:
     """校验并归一化配置；非法输入抛 :class:`ContextSettingsError`，调用方**不得落盘**。"""
     if isinstance(limit_tokens, bool) or not isinstance(limit_tokens, int):
         raise ContextSettingsError("上下文上限必须是整数（tokens）")
@@ -303,7 +364,11 @@ def validate_settings(limit_tokens: object, threshold_ratio: object) -> ContextS
     ratio = float(threshold_ratio)
     if not (0 < ratio <= 1):
         raise ContextSettingsError("触发阈值必须满足 0 < 阈值 ≤ 上限（比例在 0 到 1 之间）")
-    return ContextSettings(limit_tokens=limit_tokens, threshold_ratio=ratio)
+    if limit_mode not in VALID_LIMIT_MODES:
+        raise ContextSettingsError("上限模式只能是 auto（跟随内核窗口）或 manual（手动设置）")
+    return ContextSettings(
+        limit_tokens=limit_tokens, threshold_ratio=ratio, limit_mode=str(limit_mode)
+    )
 
 
 async def read_settings(session: AsyncSession, owner_id: str | None) -> ContextSettings:
@@ -318,7 +383,10 @@ async def read_settings(session: AsyncSession, owner_id: str | None) -> ContextS
     try:
         data = json.loads(row.value)
         return validate_settings(
-            int(data["limit_tokens"]), float(data["threshold_ratio"])
+            int(data["limit_tokens"]),
+            float(data["threshold_ratio"]),
+            # 升级前保存的行没有 limit_mode：那时用户是显式设上限的，按 manual 读。
+            data.get("limit_mode", LIMIT_MODE_MANUAL),
         )
     except (ValueError, KeyError, TypeError):
         # 坏数据不能让设置页 / 输入区直接崩：按默认值继续，日志留痕。
@@ -332,7 +400,11 @@ async def write_settings(
     """保存配置（调用前必须已 :func:`validate_settings`）。"""
     key = _setting_key(owner_id)
     value = json.dumps(
-        {"limit_tokens": settings.limit_tokens, "threshold_ratio": settings.threshold_ratio},
+        {
+            "limit_tokens": settings.limit_tokens,
+            "threshold_ratio": settings.threshold_ratio,
+            "limit_mode": settings.limit_mode,
+        },
         ensure_ascii=False,
     )
     row = (
@@ -562,14 +634,22 @@ def usage_view(
     measured: bool = False,
 ) -> dict:
     """界面需要的上下文用量视图（展示与压缩决策共用同一份口径）。"""
-    limit = settings.limit_tokens
+    kernel_window = conversation.context_kernel_window_tokens
+    effective = settings.for_window(kernel_window)
+    limit = effective.limit_tokens
     # 真实百分比（可能超过 100，说明已经超限）；进度条宽度由界面自己截断。
     percent = round((used_tokens / limit * 100) if limit > 0 else 0.0, 2)
     return {
         "used_tokens": used_tokens,
         "limit_tokens": limit,
-        "threshold_tokens": settings.threshold_tokens,
+        "threshold_tokens": effective.threshold_tokens,
         "threshold_ratio": settings.threshold_ratio,
+        # 上限从哪来：内核真实窗口（kernel）/ 用户设定（user）/ 平台默认（default）。
+        "limit_mode": settings.limit_mode,
+        "limit_source": settings.limit_source(kernel_window),
+        "configured_limit_tokens": settings.limit_tokens,
+        # 内核上报的真实窗口；为空 = 该内核没报过。
+        "kernel_window_tokens": kernel_window,
         "percent": percent,
         # 是否以内核上报的真实请求 token 为准（False = 按内容估算）。
         "measured": measured,

@@ -21,7 +21,9 @@ from ..base import (
 )
 from ..events import (
     AgentEvent,
+    context_compacted,
     context_usage,
+    context_window,
     error,
     log,
     session,
@@ -586,6 +588,21 @@ class CodexAgent(AgentDefinition):
                 window = context_tokens(counters)
                 if window:
                     yield context_usage(window)
+            # 模型真正的上下文窗口：上限设为「自动」时平台跟随它。
+            model_window = (params.get("tokenUsage") or {}).get("modelContextWindow")
+            if (
+                isinstance(model_window, (int, float))
+                and not isinstance(model_window, bool)
+                and model_window >= 1
+            ):
+                yield context_window(int(model_window))
+            return
+
+        if method == "thread/compacted":
+            # 官方 schema 标为 Deprecated（改用 item/completed 的 contextCompaction），
+            # 但老版本 app-server 仍会发；两个入口都认，避免内核升级前后漏接。
+            # 载荷只有 threadId / turnId，没有压缩前后的 token 数。
+            yield context_compacted()
             return
 
         if method == "turn/completed":
@@ -749,6 +766,13 @@ class CodexAgent(AgentDefinition):
         state = run.state.setdefault("appserver", {})
         state.setdefault("text_items", set())
         state.setdefault("reasoning_items", set())
+
+        if item_type == "contextCompaction":
+            # 内核原生压缩（自动或手动 /compact）完成的条目。只在 completed 上报一次：
+            # started 时压缩还没落地，此时让快照失效没有意义。
+            if kind == "completed":
+                yield context_compacted()
+            return
 
         if item_type == "agentMessage":
             # 有逐字增量时不再补发整段，避免内容翻倍。

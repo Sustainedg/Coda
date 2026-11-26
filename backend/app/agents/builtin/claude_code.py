@@ -22,6 +22,7 @@ from ..events import (
     AgentEvent,
     context_compacted,
     context_usage,
+    context_window,
     error,
     log,
     session,
@@ -610,6 +611,25 @@ class ClaudeCodeAgent(AgentDefinition):
             run.state["session"] = sid
             yield session(sid)
 
+        if kind == "autocompact_state":
+            # 内核自报的上下文窗口（顶层帧）：value.effective_window 是内核解析后的
+            # auto-compact 窗口（已按 /autocompact、模型窗口等夹取）。平台上限设为
+            # 「自动」时跟随它，就不用在 200k / 1M 窗口的内核上仍按 128k 默认值提前压缩。
+            #
+            # 注意：2.1.327 的 ``-p`` print 模式**实测不下发**该帧（只出现在 SDK / 云端
+            # 会话路径），所以现在多数情况下仍走兜底值。解析器留着：一旦某个版本或模式
+            # 开始下发，无需改平台即可自动接上；接不上也不影响任何行为。
+            value = payload.get("value")
+            if isinstance(value, dict):
+                window = value.get("effective_window")
+                if (
+                    isinstance(window, (int, float))
+                    and not isinstance(window, bool)
+                    and window >= 1
+                ):
+                    yield context_window(int(window))
+            return
+
         if kind == "stream_event":
             yield from self._from_stream_event(payload.get("event") or {}, run)
         elif kind == "assistant":
@@ -652,13 +672,24 @@ class ClaudeCodeAgent(AgentDefinition):
         if kind == "message_start":
             # 单次请求的输入 token 在 ``message_start.message.usage`` 里（不是 ``event.usage``），
             # 它比 result 里的整轮累计更能代表「当前上下文离上限还有多远」（见 runtime.context）。
+            # 注意：2.1.327 起 message_start 的 usage 常常是全 0（真实数字推迟到
+            # message_delta 才给），所以这里取到 0 是正常的，由下面的 message_delta 兜底。
             tokens = context_tokens((event.get("message") or {}).get("usage") or {})
             if tokens:
                 yield context_usage(tokens)
             return
         if kind == "message_delta":
-            # ``message_delta.usage`` 只有 output_tokens，不代表窗口输入；窗口占用由
-            # message_start / 完整的 assistant 消息上报。
+            # **窗口占用真正的来源**：Claude Code 2.1.327 的 message_delta.usage 带的是
+            # 「本次请求」的输入侧 token（input + cache_read + cache_creation），
+            # 同一轮工具循环里每次请求各报各的（实测：第 1 次 75+14848、第 2 次 232+14848，
+            # 而 result 里是整轮累计 307+29696）。
+            #
+            # 早先这里直接跳过 message_delta（注释说"它只有 output_tokens"）——那是旧版行为；
+            # 按现在的内核，跳过它就等于**永远拿不到窗口快照**，界面只能一直显示按内容估算。
+            # 老内核若确实只有 output_tokens，context_tokens() 会算出 0，不会误报。
+            tokens = context_tokens(event.get("usage") or {})
+            if tokens:
+                yield context_usage(tokens)
             return
         if kind != "content_block_delta":
             return

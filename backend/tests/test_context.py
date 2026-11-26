@@ -555,6 +555,88 @@ async def test_kernel_compact_event_logs_and_invalidates_snapshot(
     assert view["used_tokens"] < 1000
 
 
+async def test_kernel_compact_post_tokens_becomes_live_snapshot(
+    client: httpx.AsyncClient, monkeypatch
+):
+    """内核压缩后上报的 post_tokens 必须成为**可用**快照（回归：曾被自己的失效线误杀）。
+
+    场景还原：本轮消息在轮次开始时就建好了（created_at 早于压缩），内核在轮次中间
+    折叠历史并上报 post_tokens。若失效判定拿 ``created_at`` 比压缩时刻，这份压缩**后**
+    的新快照会被判成"压缩前的旧数据"作废，估算回落到按内容估算——而内容里还包含
+    内核已经折叠掉的历史，于是用量虚高数倍，反过来触发一次多余的平台压缩。
+    """
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+
+    async with SessionLocal() as session:
+        conv = await session.get(Conversation, conversation["id"])
+        # 会话型内核：必须有 session_id 才会走快照档（否则一直是按内容估算）。
+        conv.session_id = "sess-live"
+        # 30 条历史，每条约 1000 token（4000 字符）——内核随后会把它们折叠掉。
+        for i in range(30):
+            session.add(
+                Message(
+                    conversation_id=conv.id,
+                    role="user" if i % 2 == 0 else "assistant",
+                    content="x" * 4000,
+                    # 压缩前的旧快照：5 万 token。修复必须让它失效，不能反过来把它选出来。
+                    context_tokens=50_000 if i == 29 else None,
+                )
+            )
+        session.add(conv)
+        await session.commit()
+
+        user = Message(conversation_id=conv.id, role="user", content="继续")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        # 本轮助手消息在轮次开始时建好：它的 created_at 一定早于稍后的压缩事件。
+        assistant = Message(conversation_id=conv.id, role="assistant", content="")
+        session.add(assistant)
+        await session.commit()
+        await session.refresh(assistant)
+
+        run = ActiveRun(id="run-live", conversation_id=conv.id, agent_name="假智能体")
+        prepared = runtime_service.PreparedRun(
+            conversation=conv,
+            profile=None,  # type: ignore[arg-type]
+            gateway=None,
+            definition=None,  # type: ignore[arg-type]
+            ctx=None,  # type: ignore[arg-type]
+            run=run,
+            user_message=user,
+            assistant_message=assistant,
+        )
+
+        async def fake_stream(definition, ctx, active_run):
+            # 内核折叠 30 条历史，窗口降到 5k，并上报压缩后的占用。
+            yield context_compacted(
+                trigger="auto",
+                pre_tokens=31_000,
+                post_tokens=5_000,
+                messages_summarized=30,
+            )
+            yield text_delta("好")
+
+        monkeypatch.setattr(runtime_service, "stream_run", fake_stream)
+        async for _ in runtime_service.consume_run(session, prepared):
+            pass
+
+        await session.refresh(assistant)
+        await session.refresh(conv)
+        assert assistant.context_tokens == 5_000
+        # 关键：快照采集时刻晚于压缩时刻，才不会被失效线误杀。
+        assert assistant.context_snapshot_at is not None
+        assert assistant.context_snapshot_at >= conv.context_kernel_compacted_at
+
+    view = (await client.get(f"/api/conversations/{conversation['id']}/context")).json()
+    # 以内核上报的 5k 为基准（再加本轮正文），而不是把已折叠的 30 条历史重新算一遍。
+    assert view["measured"] is True
+    assert view["used_tokens"] < 6_000, view["used_tokens"]
+
+
 async def test_kernel_compact_event_without_post_tokens_falls_back(
     client: httpx.AsyncClient, monkeypatch
 ):
@@ -670,3 +752,138 @@ def test_claude_code_autocompact_flag_passthrough():
     coerced = definition.coerce_options({"autocompact": 200000})
     argv = argv_with(coerced)
     assert argv[argv.index("--autocompact") + 1] == "200000"
+
+
+# —— 内核真实窗口：平台上限「自动」时跟随它 ——————————————————————
+
+
+async def test_context_window_event_updates_conversation_kernel_window(
+    client: httpx.AsyncClient, monkeypatch
+):
+    """内核上报的真实窗口要落库（对话级），供上限自动对齐使用。"""
+    from app.agents.events import context_window
+
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+
+    async with SessionLocal() as session:
+        conv = await session.get(Conversation, conversation["id"])
+        user = Message(conversation_id=conv.id, role="user", content="你好")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        assistant = Message(conversation_id=conv.id, role="assistant", content="")
+        session.add(assistant)
+        await session.commit()
+        await session.refresh(assistant)
+
+        run = ActiveRun(id="run-win", conversation_id=conv.id, agent_name="假智能体")
+        prepared = runtime_service.PreparedRun(
+            conversation=conv,
+            profile=None,  # type: ignore[arg-type]
+            gateway=None,
+            definition=None,  # type: ignore[arg-type]
+            ctx=None,  # type: ignore[arg-type]
+            run=run,
+            user_message=user,
+            assistant_message=assistant,
+        )
+
+        async def fake_stream(definition, ctx, active_run):
+            yield context_window(200_000)
+            yield text_delta("好")
+
+        monkeypatch.setattr(runtime_service, "stream_run", fake_stream)
+        async for _ in runtime_service.consume_run(session, prepared):
+            pass
+
+        await session.refresh(conv)
+        assert conv.context_kernel_window_tokens == 200_000
+
+
+async def test_limit_auto_mode_follows_kernel_window(client: httpx.AsyncClient):
+    """自动模式：上限 = 内核真实窗口；手动模式：永远以用户设定的为准。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+
+    async with SessionLocal() as session:
+        conv = await session.get(Conversation, conversation["id"])
+        conv.context_kernel_window_tokens = 200_000
+        session.add(conv)
+        await session.commit()
+
+    auto = context_service.ContextSettings(
+        limit_tokens=128_000, threshold_ratio=0.8, limit_mode=context_service.LIMIT_MODE_AUTO
+    )
+    manual = context_service.ContextSettings(
+        limit_tokens=128_000, threshold_ratio=0.8, limit_mode=context_service.LIMIT_MODE_MANUAL
+    )
+
+    async with SessionLocal() as session:
+        conv = await session.get(Conversation, conversation["id"])
+        auto_view = context_service.usage_view(0, auto, conv)
+        assert auto_view["limit_tokens"] == 200_000
+        assert auto_view["threshold_tokens"] == 160_000
+        assert auto_view["limit_source"] == "kernel"
+        assert auto_view["kernel_window_tokens"] == 200_000
+        # 用户配置的值仍原样返回（自动模式下它只是兜底）。
+        assert auto_view["configured_limit_tokens"] == 128_000
+
+        manual_view = context_service.usage_view(0, manual, conv)
+        assert manual_view["limit_tokens"] == 128_000
+        assert manual_view["limit_source"] == "user"
+
+    # 接口层：这些字段要真的出现在响应里（前端面板靠它们渲染）。
+    payload = (await client.get(f"/api/conversations/{conversation['id']}/context")).json()
+    assert payload["kernel_window_tokens"] == 200_000
+    assert payload["limit_source"] == "kernel"  # 默认（没保存过配置）= 自动跟随内核
+    assert payload["limit_tokens"] == 200_000
+    assert payload["configured_limit_tokens"] == context_service.DEFAULT_LIMIT_TOKENS
+
+
+async def test_limit_auto_mode_falls_back_when_kernel_window_unknown(
+    client: httpx.AsyncClient,
+):
+    """内核没报窗口：自动模式退回用户配置值（默认 128k），不凭空放大。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+    async with SessionLocal() as session:
+        conv = await session.get(Conversation, conversation["id"])
+        auto = context_service.ContextSettings(limit_mode=context_service.LIMIT_MODE_AUTO)
+        view = context_service.usage_view(0, auto, conv)
+        assert view["limit_tokens"] == context_service.DEFAULT_LIMIT_TOKENS
+        assert view["limit_source"] == "default"
+        assert view["kernel_window_tokens"] is None
+
+
+async def test_context_settings_limit_mode_roundtrip(client: httpx.AsyncClient):
+    """上限模式要能存能取；老客户端不传模式 = 手动设定（保持原有行为）。"""
+    saved = await client.put(
+        "/api/system/context",
+        json={"limit_tokens": 200000, "threshold_ratio": 0.8, "limit_mode": "auto"},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["limit_mode"] == "auto"
+    again = (await client.get("/api/system/context")).json()
+    assert again["limit_mode"] == "auto"
+
+    # 老客户端只传上限：按手动设定处理，不能把用户的显式上限改成自动跟随。
+    legacy = await client.put(
+        "/api/system/context", json={"limit_tokens": 64000, "threshold_ratio": 0.8}
+    )
+    assert legacy.status_code == 200, legacy.text
+    assert legacy.json()["limit_mode"] == "manual"
+
+    # 非法模式：422 且不落盘。
+    bad = await client.put(
+        "/api/system/context",
+        json={"limit_tokens": 64000, "threshold_ratio": 0.8, "limit_mode": "whatever"},
+    )
+    assert bad.status_code == 422
+    assert (await client.get("/api/system/context")).json()["limit_tokens"] == 64000

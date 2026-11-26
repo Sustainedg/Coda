@@ -47,6 +47,24 @@ export type ContextInputCheck =
   | { ok: false; error: string }
 
 /**
+ * 只校验触发阈值（百分比）。
+ *
+ * 自动模式下上限不由用户填（跟随内核真实窗口），所以单独校验阈值：
+ * 上限那一栏即使显示成「已超限的样子」，也不该把人卡住不让改阈值。
+ */
+export function checkThresholdInput(thresholdPercentText: string): ContextInputCheck {
+  const percentRaw = thresholdPercentText.trim()
+  if (!/^\d+(\.\d+)?$/.test(percentRaw)) {
+    return { ok: false, error: '触发阈值必须是数字（百分比）' }
+  }
+  const percent = Number(percentRaw)
+  if (!(percent > 0 && percent <= 100)) {
+    return { ok: false, error: '触发阈值必须满足 0 < 阈值 ≤ 100%' }
+  }
+  return { ok: true, limit: 0, ratio: percent / 100 }
+}
+
+/**
  * 校验详情面板里的两个输入框。
  *
  * - 上限：必须是正整数，且不低于合理下限、不低于当前已用量；
@@ -75,15 +93,9 @@ export function checkContextInput(
       error: `上限不能低于当前已用（约 ${usedTokens.toLocaleString()} tokens）`,
     }
   }
-  const percentRaw = thresholdPercentText.trim()
-  if (!/^\d+(\.\d+)?$/.test(percentRaw)) {
-    return { ok: false, error: '触发阈值必须是数字（百分比）' }
-  }
-  const percent = Number(percentRaw)
-  if (!(percent > 0 && percent <= 100)) {
-    return { ok: false, error: '触发阈值必须满足 0 < 阈值 ≤ 100%' }
-  }
-  return { ok: true, limit, ratio: percent / 100 }
+  const threshold = checkThresholdInput(thresholdPercentText)
+  if (!threshold.ok) return threshold
+  return { ok: true, limit, ratio: threshold.ratio }
 }
 
 interface MeterState {
@@ -194,13 +206,18 @@ export function useContextMeter(
 
   /** 保存上限 / 阈值：成功立即重新取一次（保存后马上生效）。 */
   const save = useCallback(
-    async (limitTokens: number, thresholdRatio: number): Promise<boolean> => {
+    async (
+      limitTokens: number,
+      thresholdRatio: number,
+      limitMode: 'auto' | 'manual' = 'manual',
+    ): Promise<boolean> => {
       if (!conversationId) return false
       setState((prev) => ({ ...prev, saving: true, saveError: null, notice: null }))
       try {
         await api.setContextSettings({
           limit_tokens: limitTokens,
           threshold_ratio: thresholdRatio,
+          limit_mode: limitMode,
           conversation_id: conversationId,
         })
         const [usage, settings] = await Promise.all([

@@ -457,6 +457,7 @@ export const api = {
   setContextSettings: (body: {
     limit_tokens: number
     threshold_ratio: number
+    limit_mode?: 'auto' | 'manual'
     conversation_id?: string | null
   }) =>
     request<ContextSettings>('/api/system/context', {

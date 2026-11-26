@@ -20,6 +20,8 @@ class EventType(str, Enum):
     USAGE = "usage"
     #: 单次模型请求的输入 token 数（上下文窗口的真实占用，不是整轮累计）。
     CONTEXT_USAGE = "context.usage"
+    #: 内核上报的**真实上下文窗口大小**（tokens）。平台上限设为「自动」时跟随它。
+    CONTEXT_WINDOW = "context.window"
     #: 内核侧原生压缩发生的通知（如 Claude Code 的 auto-compact）。
     CONTEXT_COMPACTED = "context.compacted"
     SESSION = "session"
@@ -86,6 +88,16 @@ def context_usage(tokens: int) -> AgentEvent:
     ``context.usage`` 是最近一次请求的窗口快照（用来判断离上限还有多远）。
     """
     return AgentEvent(EventType.CONTEXT_USAGE, payload={"tokens": int(tokens)})
+
+
+def context_window(tokens: int) -> AgentEvent:
+    """上报内核的**真实上下文窗口大小**（总量，不是占用）。
+
+    内核自己知道模型窗口（Claude Code 的 ``autocompact_state.effective_window``、
+    Codex 的 ``tokenUsage.modelContextWindow``），平台把上限设为「自动」时跟随它，
+    避免用户在一个 200k / 1M 窗口的内核上仍按 128k 的默认值提前压缩。
+    """
+    return AgentEvent(EventType.CONTEXT_WINDOW, payload={"tokens": int(tokens)})
 
 
 def context_compacted(**metadata: Any) -> AgentEvent:

@@ -651,6 +651,14 @@ export interface ContextUsage {
   percent: number
   /** 已用数是否以内核上报的真实请求 token 为准（false = 按内容估算） */
   measured: boolean
+  /** 上限模式：auto = 跟随内核真实窗口；manual = 用户显式设定 */
+  limit_mode: 'auto' | 'manual'
+  /** 上限来源：kernel（内核窗口）/ user（用户设定）/ default（平台默认） */
+  limit_source: 'kernel' | 'user' | 'default'
+  /** 用户配置里的上限（自动模式下只是兜底值，不一定等于 limit_tokens） */
+  configured_limit_tokens: number
+  /** 内核上报的真实上下文窗口；为空 = 该内核没报过 */
+  kernel_window_tokens: number | null
   /** 已折叠进摘要的消息条数（原文仍保留在消息表里） */
   compacted_count: number
   compacted_at: string | null
@@ -666,6 +674,8 @@ export interface ContextSettings {
   limit_tokens: number
   threshold_ratio: number
   threshold_tokens: number
+  /** 上限模式：auto = 跟随内核真实窗口；manual = 用户显式设定 */
+  limit_mode: 'auto' | 'manual'
   defaults: { limit_tokens: number; threshold_ratio: number }
   /** 上限的合理下限；低于它不落盘 */
   min_limit_tokens: number
@@ -812,8 +822,8 @@ export interface Message {
 
 export type AgentEventType =
   | 'turn.started' | 'run.started' | 'message.delta' | 'thinking.delta' | 'tool.call'
-  | 'tool.result' | 'usage' | 'context.usage' | 'context.compacted' | 'session' | 'log'
-  | 'error' | 'run.finished' | 'stream.closed'
+  | 'tool.result' | 'usage' | 'context.usage' | 'context.window' | 'context.compacted'
+  | 'session' | 'log' | 'error' | 'run.finished' | 'stream.closed'
 
 export interface AgentEvent {
   type: AgentEventType

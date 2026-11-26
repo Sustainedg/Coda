@@ -149,6 +149,7 @@ def test_collab_envelope_does_not_extend_the_agent_protocol():
         "tool.result",
         "usage",
         "context.usage",
+        "context.window",
         "context.compacted",
         "session",
         "log",

@@ -1266,3 +1266,208 @@ def test_codebuddy_declares_visual_login_helper():
     assert len(argv) == 2
     assert Path(argv[1]).is_file()
     assert Path(argv[1]).name == "codebuddy_login.py"
+
+
+# —— 各内核的上下文快照 / 原生压缩：逐内核对齐，不靠 claude_code 一个兜底 ——
+
+
+def test_codebuddy_parses_compact_boundary():
+    """CodeBuddy 的 ``-p`` 会话在 /compact 后发 system/compact_boundary，与 Claude Code 同协议。"""
+    definition = get_agent("codebuddy-cli")
+    run = definition.create_run(ctx())
+    line = json.dumps(
+        {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "session_id": "cb-1",
+            "compact_metadata": {
+                "trigger": "manual",
+                "pre_tokens": 180_000,
+                "post_tokens": 12_000,
+                "messages_summarized": 25,
+                "internal_telemetry": "drop-me",
+            },
+        }
+    )
+    events = list(run.feed(line))
+    kinds = [e.type.value for e in events]
+    assert "context.compacted" in kinds
+    compacted = next(e for e in events if e.type.value == "context.compacted")
+    assert compacted.payload["trigger"] == "manual"
+    assert compacted.payload["pre_tokens"] == 180_000
+    assert compacted.payload["post_tokens"] == 12_000
+    assert "internal_telemetry" not in compacted.payload, "白名单以外的字段不得透传"
+
+
+def test_codebuddy_autocompact_flag_passthrough():
+    """配置了 autocompact 才透传 --autocompact；未配置保持命令行不变。"""
+    definition = get_agent("codebuddy-cli")
+    argv = definition.build_invocation(ctx(options={"autocompact": "auto"})).argv
+    assert argv[argv.index("--autocompact") + 1] == "auto"
+
+    argv = definition.build_invocation(ctx(options={"autocompact": "400k"})).argv
+    assert argv[argv.index("--autocompact") + 1] == "400k"
+
+    plain = definition.build_invocation(ctx()).argv
+    assert "--autocompact" not in plain, "未配置时不得注入，否则会覆盖内核默认"
+
+
+def test_codex_thread_compacted_notification():
+    """老版本 app-server 的 thread/compacted（Deprecated）也要接住。"""
+    definition, run = _app_server_run()
+    events = list(
+        run.feed(
+            json.dumps(
+                {"method": "thread/compacted", "params": {"threadId": "t1", "turnId": "turn1"}}
+            )
+        )
+    )
+    assert [e.type.value for e in events] == ["context.compacted"]
+
+
+def test_codex_context_compaction_item_maps_to_compacted_event():
+    """新协议：item/completed 的 contextCompaction 条目 = 内核压缩完成。"""
+    definition, run = _app_server_run()
+    # started 时压缩还没落地：不上报，避免过早失效快照。
+    started = list(
+        run.feed(
+            json.dumps(
+                {
+                    "method": "item/started",
+                    "params": {"item": {"id": "c1", "type": "contextCompaction"}},
+                }
+            )
+        )
+    )
+    assert started == []
+
+    completed = list(
+        run.feed(
+            json.dumps(
+                {
+                    "method": "item/completed",
+                    "params": {"item": {"id": "c1", "type": "contextCompaction"}},
+                }
+            )
+        )
+    )
+    assert [e.type.value for e in completed] == ["context.compacted"]
+
+
+def test_claude_code_reports_kernel_window_from_autocompact_state():
+    """内核自报的上下文窗口（顶层 autocompact_state 帧）要单独上报。"""
+    definition = get_agent("claude-code")
+    run = definition.create_run(ctx())
+    line = json.dumps(
+        {
+            "type": "autocompact_state",
+            "value": {
+                "enabled": True,
+                "effective_window": 200_000,
+                "threshold": 160_000,
+                "enforced": False,
+                "source": "settings",
+            },
+            "uuid": "u1",
+            "session_id": "s1",
+        }
+    )
+    events = list(run.feed(line))
+    # 帧里带 session_id：会话事件先来，再是窗口事件。
+    assert [e.type.value for e in events] == ["session", "context.window"]
+    assert events[1].payload["tokens"] == 200_000
+
+    # 字段缺失或非法时不发事件（不能让坏数据污染上限）。
+    for bad in ({}, {"value": {}}, {"value": {"effective_window": 0}}, {"value": "x"}):
+        run2 = definition.create_run(ctx())
+        assert list(run2.feed(json.dumps({"type": "autocompact_state", **bad}))) == []
+
+
+def test_codex_reports_kernel_window_from_model_context_window():
+    """Codex 的 tokenUsage 带 modelContextWindow = 模型真正的上下文窗口。"""
+    definition, run = _app_server_run()
+    events = list(
+        run.feed(
+            json.dumps(
+                {
+                    "method": "thread/tokenUsage/updated",
+                    "params": {
+                        "tokenUsage": {
+                            "last": {
+                                "inputTokens": 5,
+                                "cachedInputTokens": 0,
+                                "cacheWriteInputTokens": 0,
+                                "outputTokens": 6,
+                                "reasoningOutputTokens": 0,
+                                "totalTokens": 11,
+                            },
+                            "modelContextWindow": 272_000,
+                        }
+                    },
+                }
+            )
+        )
+    )
+    assert [e.type.value for e in events] == ["usage", "context.usage", "context.window"]
+    assert events[2].payload["tokens"] == 272_000
+
+
+def test_claude_code_reports_context_usage_from_message_delta():
+    """窗口占用真正的来源：message_delta.usage（2.1.327 起 message_start 常为全 0）。
+
+    实测（真实内核 + 工具循环，两次请求）：
+      message_start  input=0    cache_read=0
+      message_delta  input=75   cache_read=14848   ← 本次请求的窗口占用
+      message_start  input=0    cache_read=0
+      message_delta  input=232  cache_read=14848   ← 第二次请求（多了工具结果）
+      result         input=307  cache_read=29696   ← 整轮累计，不能当窗口占用
+    """
+    definition = get_agent("claude-code")
+    run = definition.create_run(ctx())
+    lines = [
+        # message_start 的 usage 全 0：取不到快照（不能报错、也不能当成 0 上报）
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    }
+                },
+            },
+        },
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "message_delta",
+                "usage": {
+                    "input_tokens": 232,
+                    "output_tokens": 18,
+                    "cache_read_input_tokens": 14848,
+                    "cache_creation_input_tokens": 0,
+                },
+            },
+        },
+    ]
+    events = [e for line in lines for e in run.feed(json.dumps(line))]
+    assert [e.type.value for e in events] == ["context.usage"]
+    # 输入侧求和：232 + 14848（缓存命中也是窗口的一部分）
+    assert events[0].payload["tokens"] == 232 + 14848
+
+
+def test_claude_code_message_delta_without_input_tokens_is_not_reported():
+    """老内核的 message_delta 只有 output_tokens：不能当成窗口占用上报。"""
+    definition = get_agent("claude-code")
+    run = definition.create_run(ctx())
+    events = list(
+        run.feed(
+            json.dumps(
+                {"type": "stream_event", "event": {"type": "message_delta", "usage": {"output_tokens": 9}}}
+            )
+        )
+    )
+    assert events == []

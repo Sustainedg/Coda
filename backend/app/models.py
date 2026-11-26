@@ -65,6 +65,9 @@ ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         # 「内核侧原生压缩的时间」是后加的（Claude Code auto-compact 等）：
         # 老行留空 = 内核从未压缩过。用于让压缩前的 context_tokens 快照失效。
         "context_kernel_compacted_at": "DATETIME",
+        # 「内核上报的真实上下文窗口」是后加的：平台上限设为「自动」时跟随它。
+        # 老行留空 = 内核没报过，回退到用户配置 / 默认值。
+        "context_kernel_window_tokens": "INTEGER",
     },
     # 会话令牌版本：改口令 / 管理员重置口令时 +1，让旧令牌立即失效（无状态 JWT 的吊销机制）。
     # 头像文件名是后加的：老行留空，界面回退到「显示名首字母」的渐变圆。
@@ -93,9 +96,13 @@ ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
     # 非空 = 用户 @ 召唤的智能体。老行留空即可，不需要回填。
     # 「最近一次请求的上下文 token 数」是后加的：会话型内核自己维护上下文，平台看不到
     # 其内部历史，只能由适配器上报。老行留空 = 没有快照，回退到按内容估算。
+    # context_snapshot_at 是快照的**采集时刻**（不是消息创建时刻）：内核原生压缩可能发生在
+    # 一轮中间，判断「快照是否早于压缩」必须比采集时刻，比 created_at 会把压缩后新上报的
+    # 快照误判成压缩前的旧快照。老行留空 = 回退到 created_at（升级前的旧数据没有更好信息）。
     "messages": {
         "agent_profile_id": "VARCHAR(64)",
         "context_tokens": "INTEGER",
+        "context_snapshot_at": "DATETIME",
     },
 }
 
@@ -463,6 +470,13 @@ class Conversation(SQLModel, table=True):
     context_kernel_compacted_at: datetime | None = Field(
         default=None, sa_column=Column(UTCDateTime)
     )
+    #: 内核上报的**真实上下文窗口**（tokens）：Claude Code 的
+    #: ``autocompact_state.effective_window``、Codex 的 ``tokenUsage.modelContextWindow``。
+    #: 平台上限设为「自动」时跟随它（见 ``runtime.context.ContextSettings.for_window``）；
+    #: 为空 = 该内核没报过，回退到用户配置 / 默认值。
+    context_kernel_window_tokens: int | None = Field(
+        default=None, sa_column=Column(Integer)
+    )
     #: 所属用户 id；老库由 bootstrap 回填给首任管理员。
     owner_id: str | None = Field(default=None, sa_column=Column(String(64), index=True))
 
@@ -485,6 +499,11 @@ class Message(SQLModel, table=True):
     #: 本轮**最后一次模型请求**的输入 token 数（上下文窗口真实占用）。
     #: 由适配器通过 ``context.usage`` 事件上报；为空 = 没有快照，按内容估算。
     context_tokens: int | None = Field(default=None, sa_column=Column(Integer))
+    #: 上面那个快照的**采集时刻**（UTC）。``created_at`` 是消息开始的时间，而快照产生于
+    #: 本轮中间某次 API 调用——内核原生压缩后上报的 ``post_tokens`` 就发生在 ``created_at``
+    #: 之后。失效判定必须比这个时间，否则压缩后的新快照会被自己的失效线误杀。
+    #: 为空 = 升级前的旧行，判定时回退到 ``created_at``。
+    context_snapshot_at: datetime | None = Field(default=None, sa_column=Column(UTCDateTime))
 
 
 class TaskCard(SQLModel, table=True):

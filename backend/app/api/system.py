@@ -139,14 +139,18 @@ async def set_title_settings(
 
 
 class ContextSettingsBody(BaseModel):
-    """上下文窗口配置：上限（tokens）与触发阈值（占上限的比例）。
+    """上下文窗口配置：上限（tokens）、触发阈值（占上限的比例）与上限模式。
 
     ``conversation_id`` 可选：带了就顺手校验「上限不得低于该对话当前已用量」，
     挡住那种一保存就把正在进行的对话压成负数的输入。
+
+    ``limit_mode``：``auto`` = 跟随内核上报的真实窗口（没报过才用 ``limit_tokens``），
+    ``manual`` = 用户显式设定。缺省按 ``manual``（老客户端只传上限，视为显式设定）。
     """
 
     limit_tokens: int
     threshold_ratio: float = context_service.DEFAULT_THRESHOLD_RATIO
+    limit_mode: str = context_service.LIMIT_MODE_MANUAL
     conversation_id: str | None = None
 
 
@@ -155,6 +159,7 @@ def _context_settings_view(settings: context_service.ContextSettings) -> dict:
         "limit_tokens": settings.limit_tokens,
         "threshold_ratio": settings.threshold_ratio,
         "threshold_tokens": settings.threshold_tokens,
+        "limit_mode": settings.limit_mode,
         "defaults": {
             "limit_tokens": context_service.DEFAULT_LIMIT_TOKENS,
             "threshold_ratio": context_service.DEFAULT_THRESHOLD_RATIO,
@@ -185,7 +190,7 @@ async def set_context_settings(
     """保存上下文窗口配置：非法输入返回 422 且**不落盘**。"""
     try:
         settings = context_service.validate_settings(
-            payload.limit_tokens, payload.threshold_ratio
+            payload.limit_tokens, payload.threshold_ratio, payload.limit_mode
         )
     except context_service.ContextSettingsError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
@@ -199,7 +204,9 @@ async def set_context_settings(
             used, _ = await context_service.conversation_usage(
                 session, conversation, profile.system_prompt if profile else None
             )
-            if settings.limit_tokens < used:
+            # 校验用**实际生效**的上限：自动模式跟随内核窗口时，上限可能不是用户填的那个。
+            effective = settings.for_window(conversation.context_kernel_window_tokens)
+            if effective.limit_tokens < used:
                 raise HTTPException(
                     status_code=422,
                     detail=f"上限不能低于当前上下文已用量（约 {used} tokens）",

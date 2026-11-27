@@ -43,6 +43,9 @@ class ActiveRun:
     #: 而全局默认为空 = 不限时）；正数 = 限死；负数 = 本次不限时。
     #: 协作域通过它把团队预算的「单步限时」传进执行层，覆盖全局默认值。
     timeout_seconds: int = 0
+    #: CLI 适配器从内核自带任务工具归一出的一份平台卡片块（见 ``AgentRun.task_card_block``）；
+    #: 收尾时作为围栏 / MCP 之后的兜底应用。只存在于进程内，不写数据库。
+    task_card_block: dict[str, Any] | None = None
 
     def snapshot(self) -> dict[str, Any]:
         return {

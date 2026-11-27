@@ -85,21 +85,25 @@ export function MessageView({ message, avatar, avatarPreset, avatarFile, agentId
       ? { ...part, text: stripTaskCardFence(part.text ?? '') }
       : part,
   )
+  // 任务进度卡是平台内部能力：工具调用会与卡片重复展示，这里只过滤展示层，
+  // 不改事件、不改落库；工具报错也不额外弹泡（模型自己会看到 isError）。
+  const visibleTimeline = filterInternalTaskCardParts(timeline)
 
-  const lastIndex = timeline.length - 1
+  const lastIndex = visibleTimeline.length - 1
   // 还在跑、但最后一段不是正文（正在思考 / 调工具）：气泡里没有可挂光标的文字，
   // 就在末尾补一个等待气泡。最后一段是正文时，光标由 `.bubble-body.streaming::after` 那条竖条负责。
   const showThinking =
-    Boolean(message.streaming) && (timeline.length === 0 || timeline[lastIndex].kind !== 'text')
+    Boolean(message.streaming) &&
+    (visibleTimeline.length === 0 || visibleTimeline[lastIndex].kind !== 'text')
 
   // 连续的「思考 / 工具调用 / 工具结果」收成一个可展开的「过程」块：
   // 默认折叠成一行，点开才按原顺序逐条查看；正文原样内联，整条时间线顺序不变。
   // 历史消息（parts 懒加载）点开时才去拉完整工具流水。
-  const blocks = groupTimeline(timeline, message)
+  const blocks = groupTimeline(visibleTimeline, message)
 
   // 纯净模式下 AI 消息的最终正文：时间线上最后一段 text（多轮思考后的收尾总结）。
   // 旧消息没有内联正文段时上面的兜底已经把 content 合成了一段，行为一致。
-  const finalTextPart = finalOnly && !isUser ? findFinalText(timeline) : null
+  const finalTextPart = finalOnly && !isUser ? findFinalText(visibleTimeline) : null
   // 最终正文里提到的生成图片：只从这一段提取（图片属于回复内容，不算「过程」）。
   const finalImagePaths = finalTextPart ? extractImagePaths(finalTextPart.text ?? '') : []
 
@@ -128,9 +132,9 @@ export function MessageView({ message, avatar, avatarPreset, avatarFile, agentId
               <>
                 {/* 被藏起来的段落统计：让用户知道有东西被藏了（答案偶尔落在中间段），一键可切回。
                     只有最后一段时整条时间线就是「纯正文」，没必要报数。 */}
-                {timeline.length > 1 && (
+                {visibleTimeline.length > 1 && (
                   <div className="final-only-note dim small">
-                    已隐藏 {timeline.length - 1} 段过程与说明
+                    已隐藏 {visibleTimeline.length - 1} 段过程与说明
                   </div>
                 )}
                 <div className="bubble-body">
@@ -206,6 +210,40 @@ function findFinalText(timeline: MessagePart[]): MessagePart | null {
   return null
 }
 
+/** 平台内部任务进度卡 server 的固定标识（见后端 `runtime/mcp.py`）。 */
+const INTERNAL_TASK_CARD_SLUG = 'coda-task-card'
+const INTERNAL_TASK_CARD_TOOL = 'update_task_card'
+
+/**
+ * 是不是平台内部的任务卡工具调用。
+ *
+ * 后端不同内核给 MCP 工具加的前缀不一样（`mcp__coda-task-card__update_task_card`、
+ * `coda-task-card__update_task_card`…），这里只按「含内部 server 标识 + 以工具名结尾」
+ * 判断，不依赖某个内核的命名细节。
+ */
+function isInternalTaskCardTool(name?: string): boolean {
+  const value = (name ?? '').toLowerCase()
+  return value.includes(INTERNAL_TASK_CARD_SLUG) && value.endsWith(INTERNAL_TASK_CARD_TOOL)
+}
+
+/**
+ * 过滤内部任务卡工具的时间线片段：工具调用和它的结果一起藏掉，避免与卡片重复。
+ * 只影响展示，不改事件、不改落库。
+ */
+function filterInternalTaskCardParts(parts: MessagePart[]): MessagePart[] {
+  const internalIds = new Set<string>()
+  for (const part of parts) {
+    if (part.kind === 'tool_call' && isInternalTaskCardTool(part.name) && part.id) {
+      internalIds.add(part.id)
+    }
+  }
+  return parts.filter((part) => {
+    if (isInternalTaskCardTool(part.name)) return false
+    if (part.kind === 'tool_result' && part.id && internalIds.has(part.id)) return false
+    return true
+  })
+}
+
 type TimelineItem = { part: MessagePart; index: number }
 type TimelineBlock =
   | { kind: 'text'; part: MessagePart; index: number }
@@ -264,7 +302,11 @@ function ProcessFold({ items, lazy, loadParts, partsCount }: {
     },
     [loadParts, loaded, loading],
   )
-  const show = lazy ? (loaded ?? []) : items.map((item) => item.part)
+  // 历史消息的过程片段是懒加载的：加载后同样过滤内部任务卡工具，
+  // 否则点开「过程」又会看到一条与卡片重复的工具调用。
+  const show = filterInternalTaskCardParts(
+    lazy ? (loaded ?? []) : items.map((item) => item.part),
+  )
   const thinking = show.filter((part) => part.kind === 'thinking').length
   const tools = show.length - thinking
   const summary = [

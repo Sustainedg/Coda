@@ -141,6 +141,7 @@ HOST_PROJECT_DIR=/path/to/projects \
 | `CODA_ADMIN_USERNAME` | — | 首任管理员用户名（首启有效）|
 | `CODA_ADMIN_PASSWORD` | — | 首任管理员密码（首启有效）|
 | `CODA_RUN_TIMEOUT_SECONDS` | 不限时 | 运行超时护栏（普通对话默认不限时，可随时中断）|
+| `CODA_TASK_CARD_MCP` | `0` | 任务进度卡 MCP 通道灰度开关；`1` 时 MCP 内核用内置工具上报进度，`0` 时走正文围栏 |
 | `CODA_SECRET_KEY` | 自动生成 | 密钥加密密钥；未设置时自动生成 `data/secret.key`（0600）|
 
 完整清单见 [`backend/.env.example`](./backend/.env.example) 与 [`docker/docker-compose.yml`](./docker/docker-compose.yml)。

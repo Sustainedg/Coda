@@ -168,8 +168,12 @@ async def test_builtin_mcp_servers_are_scoped_to_their_owner(client):
     alice_items = await builtin_items(alice["access_token"])
     bob_items = await builtin_items(bob["access_token"])
     for items in (root_items, alice_items, bob_items):
-        assert len(items) == 2
-        assert {item["builtin_key"] for item in items} == {"image-gen", "coda-admin"}
+        assert len(items) == 3
+        assert {item["builtin_key"] for item in items} == {
+            "image-gen",
+            "coda-admin",
+            "task-card",
+        }
 
     root_ids = {item["id"] for item in root_items}
     alice_ids = {item["id"] for item in alice_items}
@@ -178,8 +182,8 @@ async def test_builtin_mcp_servers_are_scoped_to_their_owner(client):
     assert root_ids.isdisjoint(bob_ids)
     assert alice_ids.isdisjoint(bob_ids)
 
-    # 管理员也不能打开或分配别人的内置服务器。
-    bob_builtin = bob_items[0]
+    # 管理员也不能打开或分配别人的内置服务器（用可分配的图片生成，避开内部展示项）。
+    bob_builtin = next(item for item in bob_items if item["builtin_key"] == "image-gen")
     assert (
         await client.get(
             f"/api/mcp-servers/{bob_builtin['id']}", headers=_auth(root["access_token"])
@@ -194,13 +198,16 @@ async def test_builtin_mcp_servers_are_scoped_to_their_owner(client):
     )
     assert denied.status_code == 422, denied.text
 
+    root_assignable = next(
+        item for item in root_items if item["builtin_key"] == "image-gen"
+    )
     allowed = await client.put(
         f"/api/agents/{root_agent['id']}/mcp-servers",
-        json={"mcp_ids": [root_items[0]["id"]]},
+        json={"mcp_ids": [root_assignable["id"]]},
         headers=_auth(root["access_token"]),
     )
     assert allowed.status_code == 200, allowed.text
-    assert allowed.json()["mcp_ids"] == [root_items[0]["id"]]
+    assert allowed.json()["mcp_ids"] == [root_assignable["id"]]
 
 
 async def test_admin_mcp_is_zero_config_and_uses_dedicated_token(client):

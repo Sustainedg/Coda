@@ -214,6 +214,7 @@ IM 通道不同步走前端，需在 `backend/app/im/bridge.py:204-249`（`_coll
 {
   "id": "t1",
   "text": "实现 TaskProgressCard 组件",
+  "status": "pending",
   "done": false,
   "done_at": null,
   "updated_at": "2026-11-24T08:00:00+00:00"
@@ -222,7 +223,9 @@ IM 通道不同步走前端，需在 `backend/app/im/bridge.py:204-249`（`_coll
 
 * `id`：卡片内唯一、稳定的短标识（模型可自带；没给则服务端按 `t1/t2/...` 生成）。
 * `text`：任务文本，去首尾空白，超 120 字符截断。
-* `done`：勾选状态，**只能由服务端按模型输出变更**。
+* `status`：三态 `pending` / `in_progress` / `completed`，**只能由服务端按模型输出变更**；
+  `completed` 是终态，`pending ↔ in_progress` 可切换。
+* `done`：兼容旧前端 / 旧数据的派生布尔（`status == completed`）。
 * `done_at`：首次被标为完成的时间（UTC ISO 8601 字符串）；未完成 / 从未完成为 `null`。
 * `updated_at`：该项最近一次变化时间（UTC ISO 8601 字符串）。
 * 约束：去重后数量 2～20；任一项文本为空则丢弃该项；有效项不足 2 时整块忽略（不建卡）。
@@ -358,9 +361,9 @@ IM 通道不同步走前端，需在 `backend/app/im/bridge.py:204-249`（`_coll
 ```
 【任务进度卡片协议】
 当本轮确实在推进一件需要多步完成的工作时，在正文最后追加一个 task_card 围栏代码块（整轮只能有一个）：
-- 首次给出计划：{"action":"create","title":"一句话任务名","items":[{"id":"t1","text":"步骤一","done":false},{"id":"t2","text":"步骤二","done":false}]}
-- 后续轮次只报告状态变化：{"action":"update","items":[{"id":"t1","done":true}]}
-规则：items 数量 2~20；id 短且稳定；只把确实完成的项标 done=true；闲聊、问答、单步指令不要输出这个块。
+- 首次给出计划：{"action":"create","title":"一句话任务名","items":[{"id":"t1","text":"步骤一","status":"pending"},{"id":"t2","text":"步骤二","status":"pending"}]}
+- 后续轮次只报告状态变化：{"action":"update","items":[{"id":"t1","status":"in_progress"}]}
+规则：items 数量 2~20；id 短且稳定；status 只能是 pending / in_progress / completed；completed 是终态不能回退；旧 done:true/false 仍兼容；闲聊、问答、单步指令不要输出这个块。
 当前卡片：无
 ```
 
@@ -431,7 +434,7 @@ if status == "complete" and prepared.persist_session:
 | 动作 | 时机 | 硬条件 |
 | --- | --- | --- |
 | 建卡（create） | 一轮运行**成功结束**后解析到合法 `create` 块 | 本轮 `status == "complete"`；主场运行；会话当前无卡；有效项 2～20；用户消息通过 §7 判定 |
-| 勾选（done=true） | 同一收尾点解析到 `update` 块（或已有卡上的 `create` 重规划） | 本轮 `status == "complete"`；主场运行；卡片存在；`id` 在卡内；`done` 只允许 `false → true` |
+| 状态变化（update） | 同一收尾点解析到 `update` 块（或已有卡上的 `create` 重规划） | 本轮 `status == "complete"`；主场运行；卡片存在；`id` 在卡内；`completed` 是终态，只能从 `pending/in_progress` 进入；`pending ↔ in_progress` 可互换 |
 | 取消 / 报错 / 中断 | 不写卡片 | `status != "complete"` 直接跳过，避免把失败回合误判为完成 |
 
 勾选**不发生在流式过程中**：只在整轮结束后一次性应用，避免半截 JSON 被当成进度。前端要等详情刷新（发送结束立即刷新，最迟 3 秒轮询）才看到勾选变化。
@@ -441,7 +444,7 @@ if status == "complete" and prepared.persist_session:
 `create`：
 
 * 没有卡 → 新建行，`anchor_message_id` = 本轮助手消息 id。
-* 已有卡 → 同一行的**重规划**：按 `id` 保留旧项的 `done`（`done = old.done or new.done`，已完成的绝不会因重规划被抹掉）；新 `id` 采用模型给的 `done`；旧卡里新块没有的 `id` 删除；**只有 `create` 重规划才把 `anchor_message_id` 更新到本轮消息**。
+* 已有卡 → 同一行的**重规划**：按 `id` 保留旧项的终态（旧项是 `completed` 就保持 completed，绝不会因重规划被抹掉）；旧项未完成时按新块的状态更新（允许 `pending ↔ in_progress`）；新 `id` 采用模型给的状态；旧卡里新块没有的 `id` 删除；**只有 `create` 重规划才把 `anchor_message_id` 更新到本轮消息**。
 * 有效项去重后不足 2 / 超过 20 → 整块忽略，日志告警，不建空卡。
 
 `update`：
@@ -449,7 +452,8 @@ if status == "complete" and prepared.persist_session:
 * 没有卡 → 忽略（`update` 永远不能凭空造卡，从根上杜绝空卡）。
 * 只处理卡内已存在的 `id`；未知 `id` 忽略并记告警。
 * **不移动 `anchor_message_id`**：普通报进度不该改变卡片归属的那一轮（旧实现每轮都改，导致卡片被一路拖到对话末尾）。
-* `done` 单调：`false → true` 允许并写 `done_at`；`true → false` 忽略并记告警（防止模型反复横跳造成「误取消 / 误勾选」）。
+* 状态：`completed` 是终态，进入时写 `done_at`，之后再改回 `pending/in_progress` 一律忽略并记告警（防止「误取消 / 误勾选」）；`pending ↔ in_progress` 允许来回切换。
+* 旧协议 `done:true` 等价于 `status=completed`；`done:false` 保持旧语义（不改状态）。
 * 同一 `id` 在一次块里出现多次：按最后一次为准并记告警。
 * 全部无效 / 没有任何状态变化 → 不写库、不 bump `version`。
 
@@ -459,7 +463,7 @@ if status == "complete" and prepared.persist_session:
 | --- | --- | --- |
 | **AI 未输出块** | 不建卡、不改卡；已有卡保持原状 | 无。卡片停在上一进度，正文正常展示 |
 | **格式非法**（JSON 坏 / 截断 / 缺 items） | 放弃本次写入；**仍然剥离**原始块，避免协议 JSON 出现在正文；`logger.warning` 记录原因；已有卡保持原状 | 无报错气泡。卡片不变，聊天正文干净 |
-| **判断冲突**（update 无卡 / 未知 id / done 回退 / 重复 id / 同一轮多个块） | 只应用合法子集：未知 id 与回退忽略并告警；无卡 update 整体忽略；重复 id 以最后一次为准；多个块取最后一个并告警 | 最坏情况是某项这次没被勾上，下一轮模型可以再报 |
+| **判断冲突**（update 无卡 / 未知 id / completed 回退 / 重复 id / 同一轮多个块） | 只应用合法子集：未知 id 与回退忽略并告警；无卡 update 整体忽略；重复 id 以最后一次为准；多个块取最后一个并告警 | 最坏情况是某项这次没被勾上，下一轮模型可以再报 |
 | 运行失败 / 取消 / 中断 | 整轮不碰卡片 | 卡片不会因失败回合被误勾 |
 | 写入并发冲突 | 乐观锁重试 3 次；仍失败放弃并记录日志 | 最多丢失一次进度更新，消息与回复不受影响 |
 
@@ -469,10 +473,54 @@ if status == "complete" and prepared.persist_session:
 
 1. `create` 必须 ≥2 个有效项；`update` 永不建卡；
 2. 只在 `status == "complete"` 的**主场**运行上应用；
-3. `done` 只能由模型显式声明，且只允许单向 `false → true`；
+3. `status` 只能由模型显式声明；`completed` 单向不可回退，`pending ↔ in_progress` 可切换；旧 `done` 兼容；
 4. 协议块只从模型输出来，客户端没有任何写入口；
 5. 解析失败、冲突、并发冲突一律「保持原状态」，不做猜测式修补；
 6. 一个对话一行，唯一约束 + 重规划合并，杜绝重复卡。
+
+### 6.8 MCP 通道（灰度，双轨不替换）
+
+声明了 `Capabilities.mcp` 的 5 个内核（Claude Code / Codex / CodeBuddy / Hermes /
+DeepSeek Harness）在 `CODA_TASK_CARD_MCP=1` 时改走结构化工具通道：平台每轮生成随机
+`context_id` 并挂一个内部 stdio server（`scripts/mcp/task_card_mcp_server.py`，工具
+`update_task_card`，slug `coda-task-card`；「MCP」页里另有一条 `assignable=False`
+的平台内置展示项，只展示、不参与分配）。模型只传 `context_id` + 卡片内容；
+对话、运行、版本与归属全部由服务端按运行级令牌解析（内部接口
+`POST /api/internal/task-cards/update`）。两条通道最终都调用同一个 `apply_block`，
+只多一个 `source`：围栏按 `last_run_id` 幂等，MCP 允许一轮多次更新。本轮有成功的
+MCP 调用时忽略正文围栏，但围栏剥离永远执行。
+
+完整方案（威胁模型、凭据文件权限、失败回收、验收清单）见
+[`计划任务/MCP任务进度卡方案.md`](计划任务/MCP任务进度卡方案.md)。关闭开关即回到
+本文件描述的纯围栏行为。
+
+### 6.9 三态与内核任务工具桥接
+
+平台卡片现在是**三态**：`pending` / `in_progress` / `completed`。`items` 里同时保留
+派生的 `done`（`completed` 时为 true），旧前端 / 旧协议不受影响；旧卡片行没有 `status`
+时按 `done` 推导，不改库。
+
+为了兼容内核自带的任务工具（CodeBuddy 的 `TaskCreate/TaskUpdate/TaskList`，将来别的内核
+可能有类似工具），适配器可以把它们归一成一份平台卡片块，交给运行层兜底：
+
+* `AgentRun.task_card_block` 是适配器→运行层的通用字段（不是新事件类型）；
+* `stream_cli_run` 在收尾时把它复制到 `ActiveRun.task_card_block`；
+* `consume_run` 的优先级是 **MCP > 围栏 > 内核快照**；内核快照用 `source="kernel"`，
+  按 `last_run_id` 一轮只应用一次；
+* 平台 `task_cards` 仍是**唯一展示源**；内核任务工具只是输入，不做双向同步，也不直接读
+  内核的会话文件。
+
+P1 映射的已知边界（CodeBuddy 实现见 `agents/builtin/codebuddy_cli.py`）：
+
+* `TaskCreate` → 新 item（文本取 subject，状态 pending）；
+* `TaskUpdate` → 按 `taskId` 改状态；`status=deleted` 从快照移除；
+* `TaskList` → 整卡快照（正则解析 `#N [status] 文本`），列表里没有的项会被视为删除；
+* 依赖 / 父子 / 优先级不映射（平台 `items` 还没有这些字段）；`in_progress` 不再退化成
+  “未完成”，但依赖线仍不显示；
+* 适配器状态只在**本轮运行**内累积；如果模型整轮都没调用 `TaskList` 且只更新了上一轮
+  创建的任务，快照可能不完整。这是有损兜底，不是权威同步。
+
+完整设计见 [`计划任务/内核任务卡桥接与三态方案.md`](计划任务/内核任务卡桥接与三态方案.md)。
 
 ---
 
@@ -482,10 +530,11 @@ if status == "complete" and prepared.persist_session:
 
 **第一层（模型侧，写进 §6.2 的协议说明）**：明确要求「闲聊、问答、单步指令不要输出这个块」。
 
-**第二层（服务端硬闸门，`looks_like_task_request`，全部满足才允许 create）**：
+**第二层（服务端硬闸门，`looks_like_task_request`，命中任一下列分支才允许 create）**：
 
 | 条件 | 阈值 |
 | --- | --- |
+| 显式卡片词（不受长度限制） | 命中≥1 个：任务卡 / 进度卡 / 任务列表 / 待办列表 / 待办 / 进度 |
 | 用户正文去空白后的长度 | ≥ 10 个字符 |
 | 命中任务动作词 | ≥ 1 个：实现 / 开发 / 修复 / 重构 / 编写 / 设计 / 调研 / 搭建 / 部署 / 优化 / 迁移 / 测试 / 整理 / 排查 / 检查 / 完成 / 添加 / 支持 / 接入 / 改造 / 升级 / 生成 / 分析 / 梳理 / 写 / 做 / 改 / 查 |
 | 或包含清单结构 | ≥ 2 个列表标记：`1.` `2.` `-` `•` `①` 或 ≥2 个以「；」分隔的祈使短句 |
@@ -494,8 +543,9 @@ if status == "complete" and prepared.persist_session:
 说明：
 
 * 阈值故意保守：短句「好的」「继续」「这是什么」不会命中动作词，也就不建卡；「帮我排查这个 bug」命中「排查」，允许建卡。
+* **显式卡片词是后加的旁路**：用户说「看下任务卡」「任务进度卡」时，即使不足 10 个字也要注入协议。否则模型会改用内核自带的任务工具（如 TaskCreate/TaskList），那些数据只在内核会话里，平台拿不到、界面自然画不出卡片。
 * 已有卡片时不走这条判定：每轮都允许 `update`，否则任务中途用户回一句「继续」就没法勾选了。
-* 判定函数是纯函数，单测直接覆盖边界（9/10 字符、1/2 个列表标记、空项、21 项）。
+* 判定函数是纯函数，单测直接覆盖边界（9/10 字符、1/2 个列表标记、空项、21 项、卡片词短句）。
 
 ---
 
@@ -524,7 +574,7 @@ if status == "complete" and prepared.persist_session:
 | `frontend/src/lib/api.ts` | 不新增任何 task-card 写方法 |
 | `backend/app/api/conversations.py` | 只读：卡片随详情接口返回；不得新增 POST/PATCH/DELETE 卡片路由 |
 | `backend/app/schemas.py` | 只加 `TaskCardRead`（响应模型），不加卡片写请求模型 |
-| `backend/app/runtime/service.py` | 唯一的写入口是 `consume_run` 收尾，输入来自模型输出，不来自 HTTP 请求体 |
+| `backend/app/runtime/service.py` | 围栏通道的写入口是 `consume_run` 收尾；另有内部 MCP 写接口（运行级令牌，见 §6.8），不是浏览器可调的卡片写接口 |
 | 测试 / 评审 | 后端测试断言不存在卡片写路由；前端评审检查组件里没有可编辑控件 |
 
 ---

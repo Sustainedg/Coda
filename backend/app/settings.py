@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     #: 模型目录（单价参考）地址；留空 = 不自动下载，只用磁盘上已有的快照。
     #: 默认 models.dev 的公开 API，私有部署可指到镜像或留空关闭。
     models_dev_url: str | None = "https://models.dev/api.json"
+    #: 任务进度卡 MCP 通道开关（灰度）：默认关闭时完全不生成 context、不挂内部
+    #: server，行为与只有围栏通道时一致。启用后可随时关掉回滚。
+    task_card_mcp: bool = False
     # ---- 多用户系统 -------------------------------------------------------
     #: 是否开启鉴权。默认开启（多用户形态）；空库首启可用 CODA_ADMIN_* 建管理员，
     #: 不配置时第一个注册的账号自动成为管理员。想要单用户开箱即用可显式设为 false。

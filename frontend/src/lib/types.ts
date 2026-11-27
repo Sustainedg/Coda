@@ -479,6 +479,11 @@ export interface McpServer {
   note?: string | null
   /** 平台是否接管它的内容（平台新建的为 true，从内核配置扫来的为 false） */
   editable: boolean
+  /**
+   * 能否分配给智能体。平台内部能力（任务进度卡）为 false：由运行层按轮自动挂载，
+   * 只在目录里展示，不参与分配。
+   */
+  assignable: boolean
   used_by_agents: number
   /** 内置服务器的稳定标识（例如 image-gen / coda-admin）；普通服务器为空 */
   builtin_key?: string | null
@@ -586,10 +591,14 @@ export interface ActiveRunInfo {
 }
 
 /** 任务进度卡片里的一个任务项（后端只读返回）。 */
+export type TaskCardStatus = 'pending' | 'in_progress' | 'completed'
+
 export interface TaskCardItem {
   id: string
   text: string
-  /** 勾选状态只能由服务端按模型声明变更，界面永远只读 */
+  /** 三态主字段；旧卡片行没有时按 done 推导 */
+  status?: TaskCardStatus
+  /** 兼容旧数据 / 旧调用方：completed 时恒为 true */
   done: boolean
   done_at?: string | null
   updated_at?: string | null

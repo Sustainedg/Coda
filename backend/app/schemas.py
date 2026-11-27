@@ -477,6 +477,8 @@ class McpServerRead(BaseModel):
     note: str | None = None
     #: 平台是否接管它的内容（平台新建的为 True；扫描来的为 False）
     editable: bool = False
+    #: 能否分配给智能体。平台内部能力（任务进度卡）为 False：按轮自动挂载，不参与分配。
+    assignable: bool = True
     used_by_agents: int = 0
     #: 内置服务器的稳定标识（例如 image-gen / coda-admin）；普通服务器为空
     builtin_key: str | None = None
@@ -588,13 +590,33 @@ class MessageRead(BaseModel):
 
 
 class TaskCardItemRead(BaseModel):
-    """任务进度卡片里的一个任务项（只读）。"""
+    """任务进度卡片里的一个任务项（只读）。
+
+    ``status`` 是三态主字段；``done`` 保留给旧前端 / 旧数据，始终由 status 派生。
+    旧卡片行只有 ``done``，下面的 before 校验器会在读取时补上 status。
+    """
 
     id: str
     text: str
+    status: str = "pending"
     done: bool = False
     done_at: str | None = None
     updated_at: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_status(cls, value):
+        if isinstance(value, dict):
+            status = str(value.get("status") or "").strip().lower()
+            if status not in ("pending", "in_progress", "completed"):
+                status = "completed" if value.get("done") else "pending"
+            return {**value, "status": status}
+        return value
+
+    @model_validator(mode="after")
+    def _sync_done(self):
+        self.done = self.status == "completed"
+        return self
 
 
 class TaskCardRead(BaseModel):

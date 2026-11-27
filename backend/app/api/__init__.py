@@ -18,6 +18,7 @@ from . import (
     skillhub,
     skills,
     system,
+    task_cards_internal,
     usage,
     usage_gateway,
 )
@@ -39,6 +40,8 @@ api_router.include_router(runs.router)
 api_router.include_router(usage.router)
 # 记录网关：内部转发路由，不出现在公开 OpenAPI（见路由上的 include_in_schema=False）。
 api_router.include_router(usage_gateway.router)
+# 任务进度卡的内部写入口：只认运行级 MCP 令牌，不面向浏览器。
+api_router.include_router(task_cards_internal.router)
 # 外部模型网关：外部客户端带 API Key 调 /api/model-gateway/...（同样不进公开文档）。
 api_router.include_router(model_gateway.router)
 api_router.include_router(update.router)

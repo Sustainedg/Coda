@@ -519,9 +519,9 @@ async def test_run_materializes_assigned_mcp_into_isolated_home(
 async def test_builtin_mcp_servers_are_seeded_editable_and_parameterized(
     client: httpx.AsyncClient,
 ):
-    """内置「图片生成」「系统管理」自动播种：命令由平台维护，参数键即使空着也回给界面。"""
+    """内置「图片生成 / 系统管理 / 任务进度卡」自动播种：命令由平台维护，参数键回给界面。"""
     async with SessionLocal() as session:
-        assert await mcp_service.ensure_builtin_servers(session, None) == 2
+        assert await mcp_service.ensure_builtin_servers(session, None) == 3
         # 幂等：重复调用不会再建。
         assert await mcp_service.ensure_builtin_servers(session, None) == 0
         rows = {
@@ -530,14 +530,19 @@ async def test_builtin_mcp_servers_are_seeded_editable_and_parameterized(
                 await session.execute(select(McpServer).where(McpServer.builtin_key.is_not(None)))
             ).scalars().all()
         }
-        assert set(rows) == {"image-gen", "coda-admin"}
+        assert set(rows) == {"image-gen", "coda-admin", "task-card"}
         for row in rows.values():
             assert row.source_kind == "manual"
             assert row.command and row.args
             assert Path(row.args[0]).is_file()  # 脚本必须随包存在，否则内置服务器起不来
             view = mcp_service.read_view(row)
             assert view["source_label"] == "平台内置"
-            assert view["editable"] is True
+        # 图片生成 / 系统管理可编辑；任务进度卡是平台内部能力，只在目录里展示。
+        assert mcp_service.read_view(rows["image-gen"])["editable"] is True
+        assert mcp_service.read_view(rows["coda-admin"])["editable"] is True
+        task_card = mcp_service.read_view(rows["task-card"])
+        assert task_card["editable"] is False
+        assert task_card["assignable"] is False
 
         image = mcp_service.read_view(rows["image-gen"])
         assert image["env_keys"] == [
@@ -568,10 +573,52 @@ async def test_builtin_mcp_servers_are_seeded_editable_and_parameterized(
     # 列表接口同样带上参数说明；内置服务器开箱即出现在目录里。
     items = (await client.get("/api/mcp-servers")).json()["items"]
     builtins = {item["builtin_key"] for item in items if item["builtin_key"]}
-    assert builtins == {"image-gen", "coda-admin"}
+    assert builtins == {"image-gen", "coda-admin", "task-card"}
     image_item = next(item for item in items if item["builtin_key"] == "image-gen")
     assert image_item["env_preview"]["IMAGE_GEN_GATEWAY"] is None
     assert image_item["builtin_params"][0]["required"] is True
+
+
+async def test_internal_task_card_builtin_is_visible_but_not_assignable(
+    client: httpx.AsyncClient,
+):
+    """任务进度卡在 MCP 页可见，但由运行层按轮自动挂载：不能编辑、不能分配。"""
+    async with SessionLocal() as session:
+        await mcp_service.ensure_builtin_servers(session, None)
+        rows = {
+            row.builtin_key: row
+            for row in (
+                await session.execute(select(McpServer).where(McpServer.builtin_key.is_not(None)))
+            ).scalars().all()
+        }
+        task_row = rows["task-card"]
+
+    items = (await client.get("/api/mcp-servers")).json()["items"]
+    task = next(item for item in items if item["builtin_key"] == "task-card")
+    assert task["assignable"] is False
+    assert task["editable"] is False
+    # 能编辑的只有图片生成 / 系统管理
+    assert (
+        await client.patch(f"/api/mcp-servers/{task['id']}", json={"enabled": False})
+    ).status_code == 403
+
+    gateway = await make_gateway(client)
+    agent = await make_profile(client, gateway_id=gateway["id"])
+    assigned = await client.put(
+        f"/api/agents/{agent['id']}/mcp-servers", json={"mcp_ids": [task["id"]]}
+    )
+    assert assigned.status_code == 422
+    assert "平台内部能力" in assigned.text
+
+    # 历史误分配（直接写库）也不会被运行时加载。
+    async with SessionLocal() as session:
+        profile = await session.get(AgentProfile, agent["id"])
+        session.add(
+            AgentMcpServer(agent_profile_id=profile.id, mcp_server_id=task_row.id)
+        )
+        await session.commit()
+        specs = await mcp_service.mcp_servers_for_agent(session, profile)
+    assert all(item.slug != "coda-task-card" for item in specs)
 
 
 async def test_builtin_mcp_accepts_params_but_platform_owns_connection(
@@ -675,7 +722,7 @@ async def test_retire_orphan_builtins_removes_renamed_legacy_rows(
                 )
             ).scalars().all()
         }
-        assert live == {"image-gen", "coda-admin"}
+        assert live == {"image-gen", "coda-admin", "task-card"}
 
         # 幂等：再跑一次没有可清的了。
         assert await mcp_service.retire_orphan_builtins(session) == 0

@@ -407,6 +407,8 @@ class HermesAgent(AgentDefinition):
             argv += ["--provider", str(options["provider"])]
 
         # 审批模式：非交互子进程里不自动批准，工具调用会卡在授权提示上。
+        # 默认 yolo 已覆盖 MCP 工具（含平台内部的任务进度卡）；这里不额外放开
+        # 白名单，也不在用户显式选了 default / safe 时擅自改成 yolo。
         mode = options.get("approval_mode") or "yolo"
         if mode == "yolo":
             argv.append("--yolo")

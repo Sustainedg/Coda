@@ -24,16 +24,21 @@ export function transportLabel(transport: string): string {
 export function McpPicker({ servers, selected, onChange }: Props) {
   const [query, setQuery] = useState('')
   const keyword = query.trim().toLowerCase()
+  // 平台内部能力（任务进度卡）由运行层自动挂载，不参与普通分配。
+  const assignable = useMemo(
+    () => servers.filter((server) => server.assignable !== false),
+    [servers],
+  )
   const filtered = useMemo(
     () =>
       keyword
-        ? servers.filter((server) =>
+        ? assignable.filter((server) =>
             `${server.name} ${server.slug} ${server.description ?? ''}`
               .toLowerCase()
               .includes(keyword),
           )
-        : servers,
-    [servers, keyword],
+        : assignable,
+    [assignable, keyword],
   )
 
   const toggle = (id: string) =>

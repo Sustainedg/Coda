@@ -32,7 +32,13 @@ from ..events import (
     tool_result,
     usage_raw,
 )
-from ..mcp import McpMount, McpServerSpec, parse_json_servers, to_json_config
+from ..mcp import (
+    TASK_CARD_MCP_TOOL,
+    McpMount,
+    McpServerSpec,
+    parse_json_servers,
+    to_json_config,
+)
 from ..registry import register_agent
 from ..skills import (
     MARKET_SOURCE,
@@ -453,16 +459,26 @@ class ClaudeCodeAgent(AgentDefinition):
             "disableBundledSkills": True,
             "skillOverrides": {slug: "off" for slug in _RESIDUAL_BUNDLED_SKILLS},
         }
+        permissions: dict[str, Any] = {}
+        if ctx.task_card_mcp:
+            # 任务进度卡 MCP 工具在非 bypassPermissions 模式下会被逐次询问权限；
+            # 只预允许**这一个**工具（不放开整个 server，也不动 bypassPermissions）。
+            permissions["allow"] = [TASK_CARD_MCP_TOOL]
         if workspace_only(ctx):
             # 「仅工作目录」：文件工具的读写都锁在对话工作目录内。
             # 这三个设置从 user 级配置读入后，工作目录里的 project settings 无法放宽
             # （内核只认 user/--settings/managed 来源，且任一来源为 true 即生效）。
-            settings_patch["permissions"] = {
-                "blockReadsOutsideWorkingDirectories": True,
-                "blockFileToolReadsOutsideWorkingDirectories": True,
-                "blockWritesOutsideWorkingDirectories": True,
-            }
+            # 必须合并进同一个 permissions 字典：整体赋值会把 allow 挤掉。
+            permissions.update(
+                {
+                    "blockReadsOutsideWorkingDirectories": True,
+                    "blockFileToolReadsOutsideWorkingDirectories": True,
+                    "blockWritesOutsideWorkingDirectories": True,
+                }
+            )
             notes.append("已限制文件访问范围：文件工具只能读写本对话的工作目录")
+        if permissions:
+            settings_patch["permissions"] = permissions
         return SkillMount(
             home_name="claude-home",
             carry=[(str(root / name), name) for name in _SYSTEM_SETTINGS_FILES],

@@ -4,6 +4,7 @@ import json
 
 from app.agents import AgentContext, get_agent, known_ids
 from app.agents.base import AgentRun
+from app.agents.mcp import McpServerSpec
 
 
 def ctx(**overrides) -> AgentContext:
@@ -19,6 +20,186 @@ def ctx(**overrides) -> AgentContext:
     )
     base.update(overrides)
     return AgentContext(**base)
+
+
+INTERNAL_TOOL = "mcp__coda-task-card__update_task_card"
+
+
+def test_claude_task_card_permission_merges_with_workspace_only():
+    """只预允许任务卡工具，且必须与「仅工作目录」三布尔合并进同一个 permissions。"""
+    definition = get_agent("claude-code")
+
+    # 默认（不限制文件访问）：挂了内部 server 才写 allow，不碰目录封锁。
+    patch = definition.skill_mount(ctx(task_card_mcp=True)).patch["settings.json"]
+    permissions = patch["permissions"]
+    assert permissions["allow"] == [INTERNAL_TOOL]
+    assert "blockWritesOutsideWorkingDirectories" not in permissions
+
+    # 仅工作目录：三布尔与 allow 同时存在，谁也不能把谁挤掉。
+    limited = definition.skill_mount(
+        ctx(task_card_mcp=True, options={"file_access_scope": "workspace_only"})
+    )
+    permissions = limited.patch["settings.json"]["permissions"]
+    assert permissions["allow"] == [INTERNAL_TOOL]
+    assert permissions["blockReadsOutsideWorkingDirectories"] is True
+    assert permissions["blockFileToolReadsOutsideWorkingDirectories"] is True
+    assert permissions["blockWritesOutsideWorkingDirectories"] is True
+
+
+def test_codebuddy_preallows_only_internal_task_card_tool():
+    definition = get_agent("codebuddy-cli")
+    internal = McpServerSpec(
+        name="任务进度卡", slug="coda-task-card", transport="stdio", command="python3"
+    )
+    invocation = definition.build_invocation(
+        ctx(mcp_servers=[internal], task_card_mcp=True)
+    )
+    assert "--allowedTools" in invocation.argv
+    index = invocation.argv.index("--allowedTools")
+    assert INTERNAL_TOOL in invocation.argv[index + 1 :]
+    # 不放开整个 server / 不碰 bypassPermissions 之外的东西
+    assert "bypassPermissions" in invocation.argv
+
+    # 没挂内部 server 时不额外塞白名单
+    plain = definition.build_invocation(ctx())
+    assert "--allowedTools" not in plain.argv
+
+
+def _task_event(kind: str, block: dict) -> dict:
+    if kind == "assistant":
+        return {"type": "assistant", "message": {"content": [block]}}
+    return {"type": "user", "message": {"content": [block]}}
+
+
+def test_codebuddy_task_tools_bridge_to_platform_card():
+    """CodeBuddy 自带 Task* 工具归一成平台卡片块（三态），平台仍是唯一展示源。"""
+    definition = get_agent("codebuddy-cli")
+    run = AgentRun(definition, ctx())
+
+    def feed(payload: dict):
+        return list(run.feed(json.dumps(payload)))
+
+    def create(call_id: str, subject: str, task_id: int):
+        feed(_task_event("assistant", {
+            "type": "tool_use",
+            "id": call_id,
+            "name": "TaskCreate",
+            "input": {"subject": subject},
+        }))
+        feed(_task_event("user", {
+            "type": "tool_result",
+            "tool_use_id": call_id,
+            "content": f"Task #{task_id} created successfully: {subject}",
+        }))
+
+    create("c1", "搭建个人博客站点", 1)
+    create("c2", "准备开发环境", 2)
+    feed(_task_event("assistant", {
+        "type": "tool_use",
+        "id": "c3",
+        "name": "TaskUpdate",
+        "input": {"taskId": "1", "status": "in_progress"},
+    }))
+    feed(_task_event("assistant", {
+        "type": "tool_use",
+        "id": "c4",
+        "name": "TaskUpdate",
+        "input": {"taskId": "2", "status": "completed"},
+    }))
+
+    block = run.task_card_block
+    assert block is not None
+    assert block["action"] == "create"
+    assert block["title"] == "搭建个人博客站点"
+    assert [(i["id"], i["text"], i["status"], i["done"]) for i in block["items"]] == [
+        ("t1", "搭建个人博客站点", "in_progress", False),
+        ("t2", "准备开发环境", "completed", True),
+    ]
+
+    # TaskList 是完整快照：以后台任务列表为准，缺失的项会被清掉。
+    feed(_task_event("assistant", {
+        "type": "tool_use",
+        "id": "c5",
+        "name": "TaskList",
+        "input": {},
+    }))
+    feed(_task_event("user", {
+        "type": "tool_result",
+        "tool_use_id": "c5",
+        "content": (
+            "#1 [in_progress] 搭建个人博客站点\n"
+            "#2 [completed] 准备开发环境\n"
+            "#3 [pending] 开发首页与文章页"
+        ),
+    }))
+    block = run.task_card_block
+    assert block is not None
+    assert [i["status"] for i in block["items"]] == [
+        "in_progress",
+        "completed",
+        "pending",
+    ]
+
+    # TaskUpdate status=deleted 会从快照里移除；剩 2 项仍可建卡。
+    feed(_task_event("assistant", {
+        "type": "tool_use",
+        "id": "c6",
+        "name": "TaskUpdate",
+        "input": {"taskId": "3", "status": "deleted"},
+    }))
+    block = run.task_card_block
+    assert block is not None
+    assert [i["id"] for i in block["items"]] == ["t1", "t2"]
+
+
+def test_codebuddy_task_bridge_ignores_failures_and_unknown_ids():
+    """桥接不能产出脏数据：建任务失败 / 结果认不出 id / 本轮没见过的 id 都不补项。"""
+    definition = get_agent("codebuddy-cli")
+    run = AgentRun(definition, ctx())
+
+    def feed(payload: dict):
+        return list(run.feed(json.dumps(payload)))
+
+    def create(call_id: str, subject: str, *, output: str, is_error: bool = False):
+        feed(_task_event("assistant", {
+            "type": "tool_use",
+            "id": call_id,
+            "name": "TaskCreate",
+            "input": {"subject": subject},
+        }))
+        block = {
+            "type": "tool_result",
+            "tool_use_id": call_id,
+            "content": output,
+        }
+        if is_error:
+            block["is_error"] = True
+        feed(_task_event("user", block))
+
+    # 建任务报错：不能凭空补一项
+    create("c1", "失败的任务", output="permission denied", is_error=True)
+    assert run.task_card_block is None
+
+    # 结果认不出 id：也不能编造 id（否则和后续 TaskList 撞号）
+    create("c2", "认不出编号", output="ok")
+    assert run.task_card_block is None
+
+    # 正常建两项
+    create("c3", "甲", output="Task #1 created successfully: 甲")
+    create("c4", "乙", output="Task #2 created successfully: 乙")
+    assert run.task_card_block is not None
+
+    # 本轮没见过的 id：不塞「任务 #N」占位
+    feed(_task_event("assistant", {
+        "type": "tool_use",
+        "id": "c5",
+        "name": "TaskUpdate",
+        "input": {"taskId": "9", "status": "completed"},
+    }))
+    block = run.task_card_block
+    assert block is not None
+    assert [i["id"] for i in block["items"]] == ["t1", "t2"]
+    assert all("任务 #" not in i["text"] for i in block["items"])
 
 
 def test_registry_exposes_first_party_adapters():

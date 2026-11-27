@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -25,6 +26,7 @@ from ..agents import AgentContext, AgentDefinition, all_agents
 from ..agents.mcp import (
     MCP_TRANSPORTS,
     PLATFORM_SOURCE,
+    TASK_CARD_MCP_SLUG,
     McpMount,
     McpServerSpec,
     safe_slug,
@@ -34,6 +36,7 @@ from ..builtin_mcp import (
     BUILTIN_SERVERS,
     MANAGED_PLATFORM_TOKEN,
     MANAGED_PUBLIC_BASE_URL,
+    TASK_CARD_SCRIPT,
     BuiltinServer,
     builtin_by_key,
 )
@@ -43,6 +46,12 @@ from ..settings import get_settings
 from .isolation import ensure_home, home_for, note_fresh_home, safe_relative
 
 logger = logging.getLogger("coda")
+
+#: 任务进度卡的内部 server 标识：固定 slug，前端据此过滤工具轨迹。
+#: 目录里的展示项（``BuiltinServer.assignable=False``）也用这个 slug，但只展示、
+#: 不参与分配；真实运行配置由 ``prepare_mcp_home`` 按轮追加。
+#: 常量来自 ``agents/mcp.py``（适配器预允许权限时也要用），避免三处字面量漂移。
+INTERNAL_TASK_CARD_SLUG = TASK_CARD_MCP_SLUG
 
 #: MCP 来源的中文标签
 SOURCE_LABELS = {
@@ -721,6 +730,12 @@ async def delete_row(session: AsyncSession, row: McpServer) -> None:
 
 
 def _ensure_editable(row: McpServer) -> None:
+    preset = builtin_by_key(row.builtin_key)
+    if preset is not None and not preset.assignable:
+        raise McpError(
+            f"「{row.name}」是平台内部能力，由运行层按轮自动挂载，不能修改",
+            status_code=403,
+        )
     if row.source_kind != PLATFORM_SOURCE or row.type_id is not None:
         raise McpError(
             f"「{row.name}」是从内核配置扫描出来的，平台不接管它的内容；"
@@ -878,6 +893,11 @@ async def set_agent_mcp_servers(
         row = await get_row(session, mcp_id)
         if row is None:
             raise ValueError(f"MCP 服务器不存在：{mcp_id}")
+        preset = builtin_by_key(row.builtin_key)
+        if preset is not None and not preset.assignable:
+            raise ValueError(
+                f"「{row.name}」是平台内部能力，运行时会按轮自动挂载，无需分配"
+            )
         # 平台通用服务器只能分配自己的；扫描来的（type_id 非空）是各内核配置的共享目录。
         if owner_id is not None and row.type_id is None and row.owner_id != owner_id:
             raise ValueError(f"MCP 服务器不存在或无权使用：{mcp_id}")
@@ -933,6 +953,10 @@ async def mcp_servers_for_agent(
         row = by_id.get(mcp_id)
         if row is None or row.deleted_at is not None or not row.available or not row.enabled:
             continue
+        preset = builtin_by_key(row.builtin_key)
+        if preset is not None and not preset.assignable:
+            # 平台内部能力由运行层按 context 注入，不经过普通分配（历史误分配也忽略）。
+            continue
         if row.type_id is not None and row.type_id != profile.type_id:
             continue
         # 归属与「智能体分配」是同一套口径（见 set_agent_mcp_servers）：平台通用服务器
@@ -967,7 +991,11 @@ def spec_from_row(row: McpServer) -> McpServerSpec:
 def read_view(row: McpServer, *, used_by: int = 0, type_name: str | None = None) -> dict[str, Any]:
     """给界面的只读视图：密钥只给键名与掩码，永远没有明文。"""
     builtin = builtin_by_key(row.builtin_key)
+    internal = builtin is not None and not builtin.assignable
     masked = mask_pairs(row.env_encrypted)
+    note = row.note
+    if internal and not note:
+        note = "平台内部能力：运行时按轮自动挂载，无需分配或编辑。"
     # 普通服务器只回真正有值的键（空值键由 _decrypt_pairs 过滤掉，保持原有界面口径）；
     # 内置服务器的参数键即使还没填值也要回给界面：用户得先看到「平台地址 / 令牌」
     # 这些待填项，才知道该配什么。
@@ -995,8 +1023,14 @@ def read_view(row: McpServer, *, used_by: int = 0, type_name: str | None = None)
         "header_preview": mask_pairs(row.headers_encrypted),
         "enabled": bool(row.enabled),
         "available": bool(row.available),
-        "note": row.note,
-        "editable": row.source_kind == PLATFORM_SOURCE and row.type_id is None,
+        "note": note,
+        # 平台内部能力（任务进度卡）只在目录里展示：不能分配、不能编辑。
+        "assignable": True if builtin is None else builtin.assignable,
+        "editable": (
+            row.source_kind == PLATFORM_SOURCE
+            and row.type_id is None
+            and not internal
+        ),
         "used_by_agents": used_by,
         #: 内置服务器的稳定标识与参数说明；普通服务器为 None / 空数组。
         "builtin_key": row.builtin_key,
@@ -1005,6 +1039,30 @@ def read_view(row: McpServer, *, used_by: int = 0, type_name: str | None = None)
 
 
 # --- 物化 -------------------------------------------------------------------
+
+
+def _task_card_endpoint() -> str:
+    """内部写卡接口地址（stdio 子进程与服务同机）。"""
+    base = get_settings().public_base_url_value.rstrip("/")
+    if base.endswith("/api"):
+        return f"{base}/internal/task-cards/update"
+    return f"{base}/api/internal/task-cards/update"
+
+
+def _task_card_spec() -> McpServerSpec:
+    """平台内部的任务进度卡 server；令牌不在这里，靠家目录里的凭据文件。"""
+    return McpServerSpec(
+        name="任务进度卡",
+        slug=INTERNAL_TASK_CARD_SLUG,
+        description="平台内置：更新当前对话的任务进度卡",
+        transport="stdio",
+        command=sys.executable or "python3",
+        args=[str(TASK_CARD_SCRIPT)],
+        env={
+            "CODA_TASK_CARD_API": _task_card_endpoint(),
+            "CODA_TASK_CARD_TIMEOUT": "10",
+        },
+    )
 
 
 async def prepare_mcp_home(
@@ -1016,16 +1074,31 @@ async def prepare_mcp_home(
     *,
     scope_id: str | None = None,
     override_ids: list[str] | None = None,
+    task_card_context_id: str | None = None,
 ) -> list[str]:
     """把分配到的 MCP 服务器写进该内核的隔离目录，并把结果写回 ``ctx``。
 
     ``scope_id`` 是隔离目录的作用域（默认用对话 id；协作运行会传运行 id）。
     ``override_ids`` 是协作域的节点级 MCP 分配（None = 跟随智能体页面）。
+    ``task_card_context_id`` 非空时追加平台内部的任务卡 server（只对声明了
+    ``Capabilities.mcp`` 的内核生效）。运行配置只写进隔离目录；「MCP」页里那条
+    只是不可分配的展示项，不参与这里的物化。
     返回需要提示给用户的说明/告警（由运行层作为 ``log`` 事件暴露）。
     """
     ctx.mcp_servers = await mcp_servers_for_agent(session, profile, override_ids=override_ids)
+    internal_task_card = bool(task_card_context_id) and definition.capabilities.mcp
+    if internal_task_card:
+        # 用户若恰好建了同名服务器，内部能力优先（配置里的键会互相覆盖）。
+        ctx.mcp_servers = [
+            spec for spec in ctx.mcp_servers if spec.slug != INTERNAL_TASK_CARD_SLUG
+        ]
+        ctx.mcp_servers.append(_task_card_spec())
     mount = definition.mcp_mount(ctx)
     if mount is None:
+        if internal_task_card:
+            ctx.mcp_servers = [
+                spec for spec in ctx.mcp_servers if spec.slug != INTERNAL_TASK_CARD_SLUG
+            ]
         return []
     # 内置服务器已分配但参数没填：提前提示，别等模型调用工具时才撞墙。
     # 只有真的分配了服务器才查库（没分配时不必多一次 SELECT，运行链路保持轻）；
@@ -1043,11 +1116,25 @@ async def prepare_mcp_home(
             if ctx.home_dir
             else home_for(scope_id or conversation.id, mount.home_name)
         )
+        if internal_task_card:
+            # 内核启动 MCP 子进程时的 cwd 是对话工作目录，不是内核家目录；
+            # 这里把「家目录」告诉 server，让它按固定相对路径找凭据。
+            # 只暴露目录，不含令牌；令牌仍在 0600 的 auth.json 里。
+            for spec in ctx.mcp_servers:
+                if spec.slug == INTERNAL_TASK_CARD_SLUG:
+                    spec.env["CODA_TASK_CARD_HOME"] = str(home)
+            # 上面改了 env，配置内容需要按新值重新渲染一次。
+            mount = definition.mcp_mount(ctx) or mount
         first_run = not home.exists()
         warnings += ensure_home(home)
         warnings += _write_files(home, mount.files, label="内核配置")
         ctx.home_dir = str(home)
         warnings += note_fresh_home(ctx, first_run=first_run)
+    elif internal_task_card:
+        # 该内核只把 MCP 配置写进工作目录、没有隔离家目录：内部 server 无处安放。
+        ctx.mcp_servers = [
+            spec for spec in ctx.mcp_servers if spec.slug != INTERNAL_TASK_CARD_SLUG
+        ]
     if mount.workspace_files:
         if ctx.workspace_dir:
             warnings += _write_files(

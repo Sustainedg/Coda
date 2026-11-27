@@ -560,10 +560,11 @@ HTTP / SSE 端点。与技能完全对称，平台把它们**统一编目**，�
 ```
 
 - **三类来源**：`type_id is None`（`source_kind=manual`）是平台通用服务器，可以分配给任意内核的
-  智能体。其中 `builtin_key` 非空的是**平台内置**（图片生成 / 系统管理），启动时按
+  智能体。其中 `builtin_key` 非空的是**平台内置**（图片生成 / 系统管理 / 任务进度卡），启动时按
   `app/builtin_mcp.py` 的声明为每个用户幂等播种：连接方式由平台维护，且不能删除
-  （不需要时停用）；内置项**只对所属用户可见与可分配**，管理员也不跨用户查看别人的副本
-  （系统管理 MCP 的 PAT 不能串用）。系统管理的平台地址与专用令牌由平台自动填写
+  （不需要时停用）；内置项**只对所属用户可见**。其中任务进度卡是 `assignable=False`
+  的展示项（按轮自动挂载，不能分配 / 编辑），其余内置项可分配；管理员也不跨用户查看
+  别人的副本（系统管理 MCP 的 PAT 不能串用）。系统管理的平台地址与专用令牌由平台自动填写
   （`CODA_PUBLIC_BASE_URL` 可覆盖地址），用户只需关心权限模式；生图等部署相关参数仍需用户填写。
   `builtin_key` 为空的则是用户在「MCP」页新建的，可编辑 / 停用 / 删除。
   `type_id` 非空（`source_kind=user`）是从某个内核自己的配置里只读扫出来的，**只能分配给同内核**
@@ -599,6 +600,34 @@ HTTP / SSE 端点。与技能完全对称，平台把它们**统一编目**，�
   传输方式 · 标识 + 可用状态）→ 操作 → 「连接方式 / 密钥 / 分配」三张带图标的卡片 → 一句说明。
   值一律**换行**而不是省略号截断（启动命令很长）；样式是两端各一份的 `.mcp-*` 共享段
   （`tests/test_mobile_web.py::test_mcp_detail_styles_are_identical_on_both_ends` 守着逐字一致）。
+
+**任务进度卡 MCP（平台内部能力，展示项不可分配）**：声明 `Capabilities.mcp` 的内核在
+`CODA_TASK_CARD_MCP=1` 时，`runtime/service.prepare_run` 会为每轮生成随机
+`context_id`，并在 `prepare_mcp_home` 里追加一个平台内部 stdio server
+（`scripts/mcp/task_card_mcp_server.py`，slug `coda-task-card`，工具
+`update_task_card`）。它同时以 `assignable=False` 的平台内置项播种进 `mcp_servers`：
+在「MCP」页**可见**，但不能分配、不能编辑（真正的运行配置仍由运行层按每轮
+`context_id` 追加到隔离配置里，不经过 `agent_mcp_servers`）。
+
+- 每轮令牌 `tc_…` 与上下文绑定在 `runtime/task_card_mcp.py`；凭据写进该对话家目录的
+  `task-card/context-<sha256(context_id)[:16]>/auth.json`（目录 0700 / 文件 0600），
+  轮末 `finish` 吊销并删除；日志只记 `context_id[:8]`，绝不记录令牌。
+- 写入口 `POST /api/internal/task-cards/update`（`include_in_schema=False`）只认
+  `Authorization: Bearer tc_…`；请求体字段白名单 `context_id/action/title/items`，
+  出现 `conversation_id` / `run_id` / `version` 一律 422。对话、run、锚点与归属只来自
+  绑定；每 context 最多 120 次调用（429，防模型死循环）。
+- 落库复用 `apply_block(source="mcp")`：一轮可多次更新（不按 `last_run_id` 跳过），
+  合并 / 三态 / 乐观锁语义与围栏完全相同。收尾时本轮 MCP 已写则忽略围栏，
+  未写则围栏兜底；正文与 parts 的协议块**无条件剥离**。
+- **内核任务工具桥接**：CodeBuddy 的 `TaskCreate/TaskUpdate/TaskList` 由适配器归一成
+  `AgentRun.task_card_block`，runner 复制到 `ActiveRun`；`consume_run` 在没有 MCP /
+  合法围栏块时用 `source="kernel"` 应用。平台 `task_cards` 仍是唯一展示源，内核工具只是
+  输入；不做双向同步、不直接读内核会话文件。详见
+  [`计划任务/内核任务卡桥接与三态方案.md`](计划任务/内核任务卡桥接与三态方案.md)。
+- 部署约束：绑定在进程内存，当前按**单进程**运行；启用多 worker 必须把绑定与令牌
+  哈希迁到数据库 / Redis，或做粘性会话。
+- 前端 `MessageView` 按工具名前缀隐藏内部工具轨迹（否则同一轮会同时出现工具卡与
+  任务卡）；只影响展示，不改事件与落库。
 
 **平台内置的通用服务器**：`scripts/mcp/image_mcp_server.py` 是随平台分发的一个「图片生成」MCP
 服务器（stdio、纯标准库）——把 OpenAI 兼容网关的生图接口包成一个 `generate_image` 工具：
@@ -709,8 +738,10 @@ usage_pricing(id, owner_id, model_pattern, input/output/cache_read/cache_creatio
               # 手工价（美元/百万 token）；只对写入之后的新账本行生效，不重算历史
 task_cards(id, conversation_id→conversations UNIQUE, anchor_message_id, title, items JSON,
            version, last_run_id, created_at, updated_at)
-           # 一个对话最多一张；items = [{id,text,done,done_at,updated_at}]
-           # 客户端没有任何写接口：唯一写入方是运行收尾解析模型输出的 task_card 块
+           # 一个对话最多一张；items = [{id,text,status,done,done_at,updated_at}]
+           # status = pending|in_progress|completed；done 是为旧前端派生的布尔值
+           # 客户端没有任何写接口：写入方只有运行收尾的围栏解析、内部 MCP 接口
+           # （source="mcp"）与适配器内核任务快照（source="kernel"）
            # anchor_message_id 决定卡片插在对话流的哪一条助手消息之后
 skills(id="<type_id>:<slug>", type_id, slug, name, description, source_kind, path, fingerprint,
        version, author, when_to_use, allowed_tools JSON, files JSON, total_bytes, meta JSON,
@@ -756,10 +787,15 @@ im_chats(id, connection_id→im_connections, chat_key, kind(direct|group), title
 - **任务进度卡片是对话级对象，不是消息的一部分**：进度会反复变化，写回旧消息会篡改历史、
   也会和消息落库路径抢同一行；因此单独建 `task_cards`（一个对话唯一一张）。模型在正文末尾
   输出一个 `task_card` 围栏 JSON 块声明建卡 / 勾选，运行收尾时服务端解析、从正文与
-  `parts` 里剥离后落库；**没有客户端写接口**，界面只读。`done` 单向（`false → true`），
+  `parts` 里剥离后落库；**没有客户端写接口**，界面只读。`completed` 是终态（不可回退），
+  `pending ↔ in_progress` 可切换；旧协议 `done:true/false` 仍兼容。
   解析失败 / 冲突一律保持原状态并记日志。模型把块写成 ```json 或裸 JSON 时同样认
-  （只认正文收尾处、且结构像任务卡，中段 JSON 示例不动）。卡片**常驻渲染在输入框上方**，
-  默认收起成一行，点开看任务项；折叠状态只存前端 localStorage。
+  （只认正文收尾处、且结构像任务卡，中段 JSON 示例不动）。声明了 `Capabilities.mcp` 的
+  内核在 `CODA_TASK_CARD_MCP=1` 时改走内部工具通道（见 §6「任务进度卡 MCP」），三条输入
+  （MCP / 围栏 / 适配器内核任务快照）共用同一个 `apply_block`；优先级 MCP > 围栏 > 内核快照。
+  卡片支持 `pending / in_progress / completed` 三态，`done` 为旧前端派生保留。卡片
+  **常驻渲染在输入框上方**，默认收起成一行，点开看任务项与状态；折叠状态只存前端
+  localStorage。
 - **`parts` 用 JSON**：工具调用/结果/推理的形态随智能体变化，无需为每种智能体建表；
   它是按真实发生顺序排列的时间线（`thinking` / `text` / `tool_call` / `tool_result`），
   前端据此按**真实顺序**渲染，只把**连续**出现的「思考 / 工具调用 / 工具结果」收进一个默认折叠的

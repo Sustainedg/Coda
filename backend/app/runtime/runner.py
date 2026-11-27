@@ -448,6 +448,11 @@ async def stream_cli_run(
             await kill_tree_async(process)
             await process.wait()
     finally:
+        # 适配器可能从内核任务工具归出了一份平台卡片块：复制到运行对象，收尾时兜底应用。
+        # 放在 finally 里，取消 / 异常也保留已经解析出的快照；适配器没产出时不要覆盖
+        # 运行层已有的值（API 适配器 / 测试可以预置）。
+        if agent_run.task_card_block is not None:
+            run.task_card_block = agent_run.task_card_block
         close_stdin()
         if process.returncode is None:
             await kill_tree_async(process)

@@ -26,6 +26,11 @@ MCP_TRANSPORTS = ("stdio", "http", "sse")
 #: 平台自己新建（而不是从内核配置里扫描出来）的来源标识
 PLATFORM_SOURCE = "manual"
 
+#: 平台内部的任务进度卡 server 标识与工具完整名（适配器预允许权限时用）。
+#: 它不进 ``BUILTIN_SERVERS``，也不允许用户分配 / 编辑。
+TASK_CARD_MCP_SLUG = "coda-task-card"
+TASK_CARD_MCP_TOOL = f"mcp__{TASK_CARD_MCP_SLUG}__update_task_card"
+
 #: 服务器标识（写进内核配置的键名）允许的字符：字母 / 数字 / 下划线 / 点 / 连字符，
 #: 中文名也算合法字符（它只是个配置键，写文件时会带引号）。
 _SLUG_ALLOWED = re.compile(r"[^\w.-]+", re.UNICODE)

@@ -313,6 +313,9 @@ class AgentContext:
     #: 框架物化好的内核隔离配置目录（技能与 MCP 共用同一个「家」）；
     #: 适配器据此设置内核的配置目录环境变量。
     home_dir: str | None = None
+    #: 本轮是否挂了平台内部的任务进度卡 MCP server（由运行层在物化前设置）。
+    #: 适配器据此只预允许这一个工具，避免非任务卡轮次也写权限配置。
+    task_card_mcp: bool = False
     #: 可选的轨迹采集器（``None`` = 本轮没开调试，适配器零开销、零写库）。
     #: 协议见 :class:`TraceSink`，实现见 ``runtime.trace.TraceRecorder``。
     trace: TraceSink | None = None
@@ -676,6 +679,10 @@ class AgentRun:
         self.session_id = ctx.session_id
         self.tool_calls: list[dict[str, Any]] = []
         self.result: dict[str, Any] = {}
+        #: 适配器可从内核自带的任务工具（如 TaskCreate/TaskUpdate/TaskList）归一出
+        #: 一份平台卡片块（形状与 task_card 围栏一致）；运行层在收尾时作为围栏 /
+        #: MCP 之后的兜底应用。适配器只产出数据，不自己持久化。
+        self.task_card_block: dict[str, Any] | None = None
         #: 适配器声明「本次运行的事件流已经结束」，运行层据此收工（适用于常驻的 JSON-RPC 内核）。
         self.done = False
         self._outbound: list[str] = []

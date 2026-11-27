@@ -79,9 +79,11 @@ export function McpDetailBody({
       </div>
 
       <div className="mcp-actions">
-        <button className="btn sm primary" onClick={onAssign}>
-          分配给智能体
-        </button>
+        {server.assignable !== false && (
+          <button className="btn sm primary" onClick={onAssign}>
+            分配给智能体
+          </button>
+        )}
         {server.editable ? (
           <>
             <button className="btn sm" onClick={onEdit}>
@@ -98,6 +100,10 @@ export function McpDetailBody({
               </button>
             )}
           </>
+        ) : server.assignable === false ? (
+          <span className="mcp-hint">
+            平台内部能力：运行层会按轮自动挂载，无需分配，也不能编辑。
+          </span>
         ) : (
           <span className="mcp-hint">内容由该内核自己的配置决定，平台只读收录。</span>
         )}
@@ -192,7 +198,11 @@ export function McpDetailBody({
           <AgentIcon size={14} />
           <span className="mcp-section-title">分配给哪些智能体</span>
         </div>
-        {server.agents.length === 0 ? (
+        {server.assignable === false ? (
+          <p className="mcp-hint">
+            平台内部能力：MCP 内核处理多步任务时由运行层自动挂载，不属于普通智能体分配。
+          </p>
+        ) : server.agents.length === 0 ? (
           <p className="mcp-hint">
             还没有智能体挂着这个服务器 —— 未分配的服务器不会被任何智能体加载。
           </p>

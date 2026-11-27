@@ -11,6 +11,10 @@
 
 解析在运行收尾时进行（见 ``service.consume_run``），失败一律「保持原状态」并记日志，
 不猜测式修补；客户端没有任何写入口。
+
+另有 MCP 通道（见 ``runtime/task_card_mcp.py``）与内核任务工具桥接（适配器把
+``TaskCreate/TaskUpdate/TaskList`` 归一成同一形状的块）。三条输入最终都调用同一个
+:func:`apply_block`，合并 / 三态 / 乐观锁语义完全共用，只有幂等策略不同（``source`` 参数）。
 """
 from __future__ import annotations
 
@@ -36,6 +40,27 @@ MIN_ITEMS, MAX_ITEMS = 2, 20
 MAX_ITEM_CHARS, MAX_TITLE_CHARS = 120, 200
 MAX_ID_CHARS = 32
 MAX_RETRIES = 3
+
+#: 任务项状态。``completed`` 是终态（不允许回退）；``pending`` / ``in_progress``
+#: 之间允许来回切换。旧协议只有 ``done``：读旧数据时按 ``done`` 推导状态。
+STATUS_PENDING = "pending"
+STATUS_IN_PROGRESS = "in_progress"
+STATUS_COMPLETED = "completed"
+_STATUS_ALIASES = {
+    "completed": STATUS_COMPLETED,
+    "complete": STATUS_COMPLETED,
+    "done": STATUS_COMPLETED,
+    "已完成": STATUS_COMPLETED,
+    "完成": STATUS_COMPLETED,
+    "in_progress": STATUS_IN_PROGRESS,
+    "in-progress": STATUS_IN_PROGRESS,
+    "doing": STATUS_IN_PROGRESS,
+    "进行中": STATUS_IN_PROGRESS,
+    "pending": STATUS_PENDING,
+    "todo": STATUS_PENDING,
+    "待办": STATUS_PENDING,
+    "未开始": STATUS_PENDING,
+}
 
 #: 匹配一个 task_card 围栏：``(?!\w)`` 防止把 ``task_cardx`` 之类误当成协议块；
 #: 未闭合时一直吃到文本末尾（模型输出被截断也要能剥干净）。
@@ -84,14 +109,22 @@ _TASK_WORDS = (
 #: 列表标记：行首的 ``1.`` / ``-`` / ``•`` / ``①`` 等
 _LIST_MARKER = re.compile(r"(?m)^[ \t]*(?:\d+[.、)]|[-*•]|[①-⑳])\s*")
 
+#: 用户明确在说「任务卡 / 进度卡 / 任务列表」时，**不受 10 字阈值限制**：
+#: 这类短句通常就是「建一张卡」「看下进度」，不注入协议的话，模型会改用内核自带的
+#: 任务工具（例如 TaskCreate/TaskList），那些数据平台看不到，界面自然画不出卡片。
+_CARD_WORDS = ("任务卡", "进度卡", "任务列表", "待办列表", "待办", "进度")
+
 
 def looks_like_task_request(text: str) -> bool:
     """用户正文像不像一件需要多步完成的任务（§7 的服务端硬闸门）。
 
-    全部满足才返回 True：去空白后至少 10 个字符，且（命中任务动作词 或 含清单结构）。
-    短句「好的」「继续」「这是什么」不会命中，因此不建卡。
+    先看显式的卡片/进度词（短句也认，例如「看下任务卡」）；否则要求去空白后至少
+    10 个字符，且（命中任务动作词 或 含清单结构）。短句「好的」「继续」「这是什么」
+    不会命中，因此不建卡。
     """
     body = (text or "").strip()
+    if any(word in body for word in _CARD_WORDS):
+        return True
     if len(body) < 10:
         return False
     if any(word in body for word in _TASK_WORDS):
@@ -408,6 +441,36 @@ def _as_bool(value: Any) -> bool:
     return False
 
 
+def _as_status(value: Any) -> str | None:
+    """把 ``status`` 规整成三种标准值；认不出来返回 ``None``。"""
+    if value is None:
+        return None
+    return _STATUS_ALIASES.get(_as_text(value).lower())
+
+
+def _item_status(item: dict[str, Any]) -> str:
+    """读任务项状态：优先 ``status``，没有就按旧 ``done`` 推导。"""
+    status = _as_status(item.get("status"))
+    if status is not None:
+        return status
+    return STATUS_COMPLETED if _as_bool(item.get("done")) else STATUS_PENDING
+
+
+def public_items(items: Any) -> list[dict[str, Any]]:
+    """给接口 / 提示词的规整视图：每项都带 ``status`` 与派生 ``done``。
+
+    旧卡片行里只有 ``done``；这里不为它们写库，只在读取时补齐，保证前端和
+    模型看到的是同一套三态字段。
+    """
+    out: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        status = _item_status(item)
+        out.append({**item, "status": status, "done": status == STATUS_COMPLETED})
+    return out
+
+
 def _clean_title(value: Any) -> str:
     return _as_text(value)[:MAX_TITLE_CHARS]
 
@@ -422,7 +485,7 @@ def _clean_item_id(value: Any, index: int) -> str:
 
 
 def _create_items(raw_items: Any) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """把 create 的 items 规整成 ``{id,text,done}``：去空、去重、截断、2～20 项。"""
+    """把 create 的 items 规整成 ``{id,text,status,done}``：去空、去重、截断、2～20 项。"""
     if not isinstance(raw_items, list):
         return None, "create 的 items 必须是数组"
     seen: dict[str, dict[str, Any]] = {}
@@ -434,12 +497,23 @@ def _create_items(raw_items: Any) -> tuple[list[dict[str, Any]] | None, str | No
         if not text:
             continue
         item_id = _clean_item_id(item.get("id"), index)
+        raw_status = item.get("status")
+        if raw_status is None:
+            status = STATUS_COMPLETED if _as_bool(item.get("done")) else STATUS_PENDING
+        else:
+            status = _as_status(raw_status)
+            if status is None:
+                return None, (
+                    f"create 的任务项 status 不合法：{raw_status}"
+                    "（只能是 pending / in_progress / completed）"
+                )
         if item_id not in seen:
             order.append(item_id)
         seen[item_id] = {
             "id": item_id,
             "text": text,
-            "done": _as_bool(item.get("done")),
+            "status": status,
+            "done": status == STATUS_COMPLETED,
         }
     items = [seen[item_id] for item_id in order]
     if len(items) < MIN_ITEMS:
@@ -450,7 +524,12 @@ def _create_items(raw_items: Any) -> tuple[list[dict[str, Any]] | None, str | No
 
 
 def _update_items(raw_items: Any) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """把 update 的 items 规整成 ``{id,done}``：同一 id 出现多次时按最后一次为准。"""
+    """把 update 的 items 规整成 ``{id,status,done}``：同一 id 出现多次时按最后一次为准。
+
+    * 带 ``status``：按三态更新；
+    * 只有 ``done:true``：兼容旧协议，等价于 ``status=completed``；
+    * 只有 ``done:false``：保持旧协议语义——不改状态（不能把已完成项改回去）。
+    """
     if not isinstance(raw_items, list) or not raw_items:
         return None, "update 的 items 必须是非空数组"
     seen: dict[str, dict[str, Any]] = {}
@@ -460,7 +539,26 @@ def _update_items(raw_items: Any) -> tuple[list[dict[str, Any]] | None, str | No
         item_id = _as_text(item.get("id"))[:MAX_ID_CHARS]
         if not item_id:
             continue
-        seen[item_id] = {"id": item_id, "done": _as_bool(item.get("done"))}
+        raw_status = item.get("status")
+        if raw_status is not None:
+            status = _as_status(raw_status)
+            if status is None:
+                return None, (
+                    f"update 的任务项 status 不合法：{raw_status}"
+                    "（只能是 pending / in_progress / completed）"
+                )
+            seen[item_id] = {
+                "id": item_id,
+                "status": status,
+                "done": status == STATUS_COMPLETED,
+            }
+            continue
+        done = _as_bool(item.get("done"))
+        if done:
+            seen[item_id] = {"id": item_id, "status": STATUS_COMPLETED, "done": True}
+        else:
+            # 旧协议 done:false 是 no-op；显式回到 pending 必须用 status。
+            seen[item_id] = {"id": item_id, "done": False}
     if not seen:
         return None, "update 没有任何有效任务项"
     return list(seen.values()), None
@@ -538,7 +636,11 @@ def _resolve_action(block: dict[str, Any], has_card: bool) -> dict[str, Any] | N
     items = block.get("items") or []
     if has_card:
         update_items = [
-            {"id": item["id"], "done": bool(item.get("done"))}
+            {
+                "id": item["id"],
+                "done": bool(item.get("done")),
+                **({"status": item["status"]} if item.get("status") else {}),
+            }
             for item in items
             if isinstance(item, dict) and item.get("id")
         ]
@@ -546,7 +648,12 @@ def _resolve_action(block: dict[str, Any], has_card: bool) -> dict[str, Any] | N
             return None
         return {"action": "update", "title": "", "items": update_items}
     create_items = [
-        {"id": item["id"], "text": item.get("text") or "", "done": bool(item.get("done"))}
+        {
+            "id": item["id"],
+            "text": item.get("text") or "",
+            "done": bool(item.get("done")),
+            **({"status": item["status"]} if item.get("status") else {}),
+        }
         for item in items
         if isinstance(item, dict) and item.get("id")
     ]
@@ -591,23 +698,29 @@ def _merge_create(
     for incoming in block["items"]:
         item_id = incoming["id"]
         text = incoming.get("text") or ""
-        done = bool(incoming.get("done"))
+        incoming_status = _item_status(incoming)
         old = old_map.get(item_id)
         if old is None:
             new_items.append(
                 {
                     "id": item_id,
                     "text": text,
-                    "done": done,
-                    "done_at": now if done else None,
+                    "status": incoming_status,
+                    "done": incoming_status == STATUS_COMPLETED,
+                    "done_at": now if incoming_status == STATUS_COMPLETED else None,
                     "updated_at": now,
                 }
             )
             continue
-        old_done = bool(old.get("done"))
-        merged_done = old_done or done
-        item_changed = merged_done != old_done or text != (old.get("text") or "")
-        if merged_done and not old_done:
+        old_status = _item_status(old)
+        # 已完成的项永远不因重规划回退；其余状态按新计划来（允许 in_progress ↔ pending）。
+        merged_status = (
+            STATUS_COMPLETED
+            if old_status == STATUS_COMPLETED or incoming_status == STATUS_COMPLETED
+            else incoming_status
+        )
+        item_changed = merged_status != old_status or text != (old.get("text") or "")
+        if merged_status == STATUS_COMPLETED and old_status != STATUS_COMPLETED:
             done_at = now
         else:
             done_at = old.get("done_at")
@@ -615,7 +728,8 @@ def _merge_create(
             {
                 "id": item_id,
                 "text": text,
-                "done": merged_done,
+                "status": merged_status,
+                "done": merged_status == STATUS_COMPLETED,
                 "done_at": done_at,
                 "updated_at": now if item_changed else (old.get("updated_at") or now),
             }
@@ -638,6 +752,10 @@ def _merge_update(
         logger.warning("任务进度卡片：收到 update 但会话没有卡片，已忽略")
         return None
     items = [dict(item) for item in existing_items if isinstance(item, dict)]
+    # 旧行只有 done：这里统一补一次 status，写回后就是完整三态。
+    for item in items:
+        item["status"] = _item_status(item)
+        item["done"] = item["status"] == STATUS_COMPLETED
     by_id = {str(item.get("id")): item for item in items if item.get("id")}
     changed = False
     for incoming in block["items"]:
@@ -646,14 +764,24 @@ def _merge_update(
         if target is None:
             logger.warning("任务进度卡片：忽略未知任务项 id=%s", item_id)
             continue
-        if not incoming.get("done"):
-            if target.get("done"):
+        old_status = _item_status(target)
+        if old_status == STATUS_COMPLETED:
+            # completed 是终态：显式想改回去、或旧协议 done:false，都忽略。
+            if incoming.get("status") is not None or incoming.get("done") is False:
                 logger.warning("任务进度卡片：忽略把已完成项改回未完成 id=%s", item_id)
             continue
-        if target.get("done"):
+        incoming_status = _as_status(incoming.get("status"))
+        if incoming_status is None:
+            # 旧协议：done:true 等价 completed；done:false 是 no-op（上面已排除已完成项）。
+            if not _as_bool(incoming.get("done")):
+                continue
+            incoming_status = STATUS_COMPLETED
+        if incoming_status == old_status:
             continue
-        target["done"] = True
-        target["done_at"] = now
+        target["status"] = incoming_status
+        target["done"] = incoming_status == STATUS_COMPLETED
+        if incoming_status == STATUS_COMPLETED:
+            target["done_at"] = now
         target["updated_at"] = now
         changed = True
     return {"title": existing_title, "items": items, "changed": changed}
@@ -670,19 +798,30 @@ def render_notice(card: TaskCard | None, allow_create: bool) -> str:
         "【任务进度卡片协议】",
         "当本轮确实在推进一件需要多步完成的工作时，在正文最后追加一个 task_card 围栏代码块"
         "（围栏的语言标签必须原样写 task_card，不要写成 json 或别的；整轮只能有一个）：",
-        '- 首次给出计划：{"action":"create","title":"一句话任务名","items":[{"id":"t1","text":"步骤一","done":false},{"id":"t2","text":"步骤二","done":false}]}',
-        '- 后续轮次只报告状态变化：{"action":"update","items":[{"id":"t1","done":true}]}',
-        "规则：items 数量 2~20；id 短且稳定；只把确实完成的项标 done=true；闲聊、问答、单步指令不要输出这个块。",
+        '- 首次给出计划：{"action":"create","title":"一句话任务名","items":[{"id":"t1","text":"步骤一","status":"pending"},{"id":"t2","text":"步骤二","status":"pending"}]}',
+        '- 后续轮次只报告状态变化：{"action":"update","items":[{"id":"t1","status":"in_progress"}]}',
+        "规则：items 数量 2~20；id 短且稳定；status 只能是 pending / in_progress / completed；"
+        "completed 是终态，不能回退；仍兼容 done:true（=completed）与 done:false（=不改状态）；"
+        "闲聊、问答、单步指令不要输出这个块。",
+        "平台进度卡只认这个 task_card 围栏块；内核自带的任务 / 待办工具不会显示在界面上，不要用它们代替。",
     ]
     if card is None:
         lines.append("当前卡片：无")
     else:
-        items = [item for item in (card.items or []) if isinstance(item, dict)]
-        done = sum(1 for item in items if item.get("done"))
-        lines.append(f"当前卡片：{card.title or '任务进度'}（{done}/{len(items)} 已完成）")
+        items = public_items(card.items or [])
+        done = sum(1 for item in items if item["status"] == STATUS_COMPLETED)
+        doing = sum(1 for item in items if item["status"] == STATUS_IN_PROGRESS)
+        lines.append(
+            f"当前卡片：{card.title or '任务进度'}"
+            f"（{done}/{len(items)} 已完成，{doing} 进行中）"
+        )
+        labels = {
+            STATUS_COMPLETED: "已完成",
+            STATUS_IN_PROGRESS: "进行中",
+            STATUS_PENDING: "待办",
+        }
         for item in items:
-            mark = "已完成" if item.get("done") else "未完成"
-            lines.append(f"- {item.get('id')} [{mark}] {item.get('text')}")
+            lines.append(f"- {item.get('id')} [{labels[item['status']]}] {item.get('text')}")
     return "\n".join(lines)
 
 
@@ -712,13 +851,25 @@ async def apply_block(
     anchor_message_id: str | None,
     block: dict[str, Any],
     run_id: str,
+    *,
+    source: str = "fence",
 ) -> TaskCard | None:
     """把一轮解析出的块落到 ``task_cards``。
+
+    两条输入通道共用这一个函数，只有幂等策略不同：
+
+    * ``source="fence"``（正文围栏）：``last_run_id`` 保证同一轮重复应用幂等；
+    * ``source="kernel"``（适配器桥接的内核任务快照）：同样一轮只应用一次；
+    * ``source="mcp"``（工具通道）：一轮允许多次更新（建计划、完成第一步、完成第二步），
+      **不能**按 ``run_id`` 跳过，否则第二次以后的更新会被整块吞掉；
+      重复提交同一内容时由 ``merge_block`` 的 ``changed=False`` 兜底。
+
+    其余行为完全一致：
 
     * 使用独立 ``SessionLocal``：卡片写入失败绝不影响消息落库；
     * 唯一约束防并发建卡（撞约束后重读转更新）；
     * 乐观锁（``WHERE version = :v``）防并发覆盖，冲突最多重试 3 次；
-    * ``last_run_id`` 保证同一轮重复应用幂等；
+    * 成功写入时更新 ``last_run_id``（它是「最后一次成功写卡的 run」，与幂等判定解耦）；
     * 任何异常只记日志并返回 None（后台增强失败不打扰用户）。
     """
     try:
@@ -752,8 +903,9 @@ async def apply_block(
                         continue
                     return row
 
-                if card.last_run_id == run_id:
-                    # 同一轮重复应用（重试 / 重放）：幂等跳过
+                if source in ("fence", "kernel") and card.last_run_id == run_id:
+                    # 围栏 / 内核快照通道：同一轮重复应用（重试 / 重放）幂等跳过。
+                    # MCP 通道一轮内允许多次更新，不能按 run 跳过（设计 §6.3）。
                     return card
 
                 merged = merge_block(card.items or [], card.title, resolved, now=_now_iso())

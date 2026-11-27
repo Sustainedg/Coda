@@ -330,6 +330,8 @@ class CodexAgent(AgentDefinition):
 
         argv.append("--json")
         argv.append("--skip-git-repo-check")
+        # codex exec 是非交互运行，本身不会弹审批；MCP 工具（含任务进度卡）
+        # 直接执行，不需要额外的工具白名单。
 
         if ctx.model:
             argv += ["-m", ctx.model]
@@ -674,6 +676,8 @@ class CodexAgent(AgentDefinition):
 
     @staticmethod
     def _thread_params(ctx: AgentContext) -> dict[str, Any]:
+        # approvalPolicy=never：MCP 工具（含平台内部的任务进度卡）不会被逐次拦截。
+        # 不为此单独放宽沙箱；能写到哪里仍由 sandbox_mode / 「仅工作目录」决定。
         params: dict[str, Any] = {"approvalPolicy": "never"}
         if ctx.workspace_dir:
             params["cwd"] = ctx.workspace_dir

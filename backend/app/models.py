@@ -705,8 +705,9 @@ class TaskCard(SQLModel, table=True):
     写回旧消息既语义错误、也会和消息落库路径抢同一行。任务项存 JSON 列，
     ``conversation_id`` 唯一约束从根上杜绝同一对话出现多张卡。
 
-    卡片没有任何客户端写入口：唯一写入方是运行收尾时对模型输出的解析（见
-    ``runtime/task_cards.py``）。界面只读，勾选状态只能由服务端按模型声明变更。
+    卡片没有任何**面向浏览器**的写入口：写入方只有运行收尾时对模型输出的围栏解析
+    （见 ``runtime/task_cards.py``）与内部 MCP 接口（运行级令牌，见
+    ``runtime/task_card_mcp.py``）。界面只读，勾选状态只能由服务端按模型声明变更。
     """
 
     __tablename__ = "task_cards"

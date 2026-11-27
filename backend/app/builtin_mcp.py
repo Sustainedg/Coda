@@ -28,6 +28,8 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 #: 内置服务器脚本；release.sh / Dockerfile 负责把它们一起打包。
 IMAGE_GEN_SCRIPT = _ROOT / "scripts" / "mcp" / "image_mcp_server.py"
 ADMIN_SCRIPT = _ROOT / "scripts" / "mcp" / "coda_admin_mcp_server.py"
+#: 任务进度卡的内部 stdio server（框架能力；在目录里只展示，不参与分配）。
+TASK_CARD_SCRIPT = _ROOT / "scripts" / "mcp" / "task_card_mcp_server.py"
 
 
 #: 平台托管参数的取值来源。runtime 只按这两个声明值执行，不认识具体服务器，
@@ -77,6 +79,9 @@ class BuiltinServer:
     description: str
     script: Path
     params: tuple[BuiltinParam, ...] = field(default_factory=tuple)
+    #: 是否可以分配给智能体。``False`` = 平台内部能力（例如任务进度卡）：
+    #: 由运行层按轮自动挂载，只在内置目录里展示，不参与分配 / 编辑。
+    assignable: bool = True
 
     @property
     def command(self) -> str:
@@ -206,8 +211,23 @@ ADMIN = BuiltinServer(
 )
 
 
+TASK_CARD = BuiltinServer(
+    key="task-card",
+    name="任务进度卡",
+    slug="coda-task-card",
+    description=(
+        "平台内部的任务进度卡工具：MCP 内核在多步骤任务中通过它更新输入框上方的进度卡片。"
+        "由平台按每轮自动挂载，不需要分配，也没有需要填写的参数；"
+        "灰度开关 CODA_TASK_CARD_MCP 关闭时不会实际生效。"
+    ),
+    script=TASK_CARD_SCRIPT,
+    # 平台内部能力：只在目录里展示，不参与分配 / 编辑（运行层每轮按 context 注入）。
+    assignable=False,
+)
+
+
 #: 当前内置的全部服务器；新增内置服务器只需要在这里加一条。
-BUILTIN_SERVERS: tuple[BuiltinServer, ...] = (IMAGE_GEN, ADMIN)
+BUILTIN_SERVERS: tuple[BuiltinServer, ...] = (IMAGE_GEN, ADMIN, TASK_CARD)
 
 _BY_KEY = {server.key: server for server in BUILTIN_SERVERS}
 
@@ -228,5 +248,7 @@ __all__ = [
     "MANAGED_PLATFORM_TOKEN",
     "MANAGED_PUBLIC_BASE_URL",
     "MANAGED_SOURCES",
+    "TASK_CARD",
+    "TASK_CARD_SCRIPT",
     "builtin_by_key",
 ]

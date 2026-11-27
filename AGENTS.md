@@ -25,7 +25,7 @@
 | 真实数据 | `backend/data/`（SQLite + 工作目录 + 内核隔离配置目录）**含用户真实对话**，受 `.gitignore` 忽略 |
 | 多用户 | `users` 表 + 资产表 `owner_id`；`CODA_AUTH_ENABLED` 默认开启，按 `owner_id` 隔离，口令只存 PBKDF2 哈希；长效程序化凭据是 PAT（`pat_` 前缀，库里只存 sha256） |
 | 技能 | 各内核自带技能（`SKILL.md` 目录）由适配器只读扫描，统一编目进 `skills` 表，**只能通过智能体分配生效**（`agent_skills`） |
-| MCP | MCP 服务器（stdio/http/sse）统一编目进 `mcp_servers` 表：平台可新建「通用」服务器，各内核配置里的只读收录；**只能通过智能体分配生效**（`agent_mcp_servers`）。平台内置服务器（`builtin_key` 非空，声明在 `app/builtin_mcp.py`：图片生成 / 系统管理）启动时逐用户播种，连接方式由平台维护 |
+| MCP | MCP 服务器（stdio/http/sse）统一编目进 `mcp_servers` 表：平台可新建「通用」服务器，各内核配置里的只读收录；**只能通过智能体分配生效**（`agent_mcp_servers`）。平台内置服务器（`builtin_key` 非空，声明在 `app/builtin_mcp.py`：图片生成 / 系统管理 / 任务进度卡）启动时逐用户播种，连接方式由平台维护；任务进度卡是 `assignable=False` 的展示项（按轮自动挂载，不参与分配） |
 | 协作域 | `backend/app/collab/` —— 多智能体「工单」协作（可视化编排 + 波次并行引擎，默认串行），独立于对话域，见 `docs/collaboration-design.md` |
 | IM 域 | `backend/app/im/` —— 把智能体连到聊天软件（Telegram / 飞书 / 钉钉 / 企业微信 / QQ / Discord / Slack）；入口在每个智能体设定页的「IM」标签，见 `docs/im.md` |
 
@@ -187,12 +187,16 @@ from ..models import AgentProfile   # in agents/builtin/foo.py
 ### 3.5 `AgentContext` / `AgentRun`
 `AgentContext` 是框架→适配器的唯一输入（`agent_id/name`、`options`、`gateway_url`、`api_key`、
 `credentials`、`auth_style`、`model`、`system_prompt`、`workspace_dir`、`session_id`、`history`、
-`prompt`、`skills`、`mcp_servers`、`home_dir`），用 `ctx.option(key, default)` 取值。
+`prompt`、`skills`、`mcp_servers`、`home_dir`、`task_card_mcp`），用 `ctx.option(key, default)` 取值。
+`task_card_mcp` 是框架给适配器的只读标记：本轮是否挂了平台内部任务进度卡 server，适配器据此
+只预允许 `mcp__coda-task-card__update_task_card` 这一个工具（不要放开整个 server）。
 `gateway_url` / `api_key` / `auth_style` 由框架从智能体引用的**网关**解密后注入（`runtime/gateway.py:bind_gateway`）；
 `credentials` 是智能体自己的凭据（解密后的「环境变量名 → 明文」），由框架合并进子进程环境变量，
 适配器不需要自己处理，也**不得**把它写进提示词、日志或事件。
 `AgentRun` 是"无状态定义 + 一次具体运行"的绑定，持有 `state`（解析状态）、`emitted_text`、`thinking`、
-`session_id`、`tool_calls`。
+`session_id`、`tool_calls`。适配器可把内核自带任务工具（如 CodeBuddy 的 `TaskCreate/TaskUpdate/TaskList`）
+归一成平台卡片块写进 `AgentRun.task_card_block`；运行层在收尾时作为围栏 / MCP 之后的兜底——
+平台 `task_cards` 仍是唯一展示源，适配器只产出数据、不持久化。
 - **双向 stdin（常驻型 JSON-RPC 内核，如 Codex app-server）**：适配器在 `build_invocation()` 里置
   `Invocation.stdin_hold=True`（`stdin` 只写第一帧且不关闭），解析到应答后用 `AgentRun.send(line)`
   排队下一帧、用 `AgentRun.mark_done()` 声明收工。**写 stdin / 关 stdin 由执行层统一做**

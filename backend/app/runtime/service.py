@@ -25,6 +25,7 @@ from ..models import AgentProfile, Conversation, Gateway, Message
 from ..settings import get_settings
 from . import context as context_service
 from . import recording_gateway
+from . import task_card_mcp
 from . import task_cards as task_card_service
 from . import usage_ledger
 from .credentials import decrypt_for_profile
@@ -117,6 +118,9 @@ class PreparedRun:
     persist_session: bool = True
     #: 本轮的轨迹采集器；为 None 表示调试开关关闭（零写库）。
     trace: TraceRecorder | None = None
+    #: 本轮任务卡的 MCP 绑定 id；为 None 表示走围栏通道或本轮不建卡。
+    #: 收尾时据此判断「是否已通过 MCP 写过卡」并吊销令牌。
+    mcp_task_context_id: str | None = None
 
 
 class ConfigurationError(Exception):
@@ -553,145 +557,192 @@ async def prepare_run(
         persist_session = True
         home_scope = None
 
-    account_warnings = await activate_selected_account(profile, gateway, definition)
+    #: 只有「主场运行 + 持久会话 + MCP 内核 + 灰度开关打开」才挂任务卡 MCP。
+    mcp_task_card_enabled = bool(
+        persist_session
+        and not summon_profile_id
+        and definition.capabilities.mcp
+        and get_settings().task_card_mcp
+    )
+    mcp_task_context_id: str | None = None
 
-    workspace = payload.workspace_dir or resolve_workspace(conversation)
-    if payload.reset_session:
-        conversation.session_id = None
+    try:
+        account_warnings = await activate_selected_account(profile, gateway, definition)
 
-    existing = (
-        await session.execute(
-            select(Message)
-            .where(Message.conversation_id == conversation.id)
-            .order_by(Message.created_at)
+        workspace = payload.workspace_dir or resolve_workspace(conversation)
+        if payload.reset_session:
+            conversation.session_id = None
+
+        existing = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conversation.id)
+                .order_by(Message.created_at)
+            )
+        ).scalars().all()
+        #: 本轮是该对话第几条用户消息（0 起）；只写进轨迹，不改 Message 表结构。
+        turn_index = sum(1 for row in existing if row.role == "user")
+
+        content = compose_user_content(
+            payload.content, getattr(payload, "attachments", None), workspace
         )
-    ).scalars().all()
-    #: 本轮是该对话第几条用户消息（0 起）；只写进轨迹，不改 Message 表结构。
-    turn_index = sum(1 for row in existing if row.role == "user")
+        # 任务卡协议与凭据说明块都要在估算之前并进提示词：它们同样占窗口。
+        notice = ""
+        if mcp_task_card_enabled:
+            mcp_task_context_id, notice = await _begin_task_card_context(
+                session, conversation, payload.content
+            )
+        if not notice and persist_session:
+            notice = await _task_card_notice(session, conversation.id, payload.content)
+        prompt_text = f"{content}\n\n{notice}" if notice else content
+        credentials = await decrypt_for_profile(session, profile.id)
+        effective_system_prompt = with_notice(profile.system_prompt or None, credentials)
 
-    content = compose_user_content(
-        payload.content, getattr(payload, "attachments", None), workspace
-    )
-    # 任务卡协议与凭据说明块都要在估算之前并进提示词：它们同样占窗口。
-    notice = (
-        await _task_card_notice(session, conversation.id, payload.content)
-        if persist_session
-        else ""
-    )
-    prompt_text = f"{content}\n\n{notice}" if notice else content
-    credentials = await decrypt_for_profile(session, profile.id)
-    effective_system_prompt = with_notice(profile.system_prompt or None, credentials)
+        # 落库的仍是用户原文 + 附件说明；任务卡协议只进本轮请求，不污染对话记录。
+        user_message = Message(conversation_id=conversation.id, role="user", content=content)
+        session.add(user_message)
 
-    # 落库的仍是用户原文 + 附件说明；任务卡协议只进本轮请求，不污染对话记录。
-    user_message = Message(conversation_id=conversation.id, role="user", content=content)
-    session.add(user_message)
-
-    # —— 上下文自动压缩：先量一量这一轮会不会顶到阈值，再决定历史怎么裁 ————————
-    existing_rows = list(existing)
-    context_settings = await context_service.read_settings(session, conversation.owner_id)
-    context_notices = await _auto_compact_context(
-        conversation,
-        existing_rows,
-        system_prompt=effective_system_prompt,
-        prompt=prompt_text,
-        settings=context_settings,
-    )
-    history = context_service.build_history(existing_rows, conversation)
-    if summon_profile_id:
-        # 召唤轮：无可续接会话是常态，共享对话历史（只含最终回复）作为前置上下文。
-        ctx = await build_context(
-            session, definition, profile, gateway, conversation, prompt_text, history, workspace,
-            model_override=SUMMON_IGNORE_MODEL, session_id=None, credentials=credentials,
+        # —— 上下文自动压缩：先量一量这一轮会不会顶到阈值，再决定历史怎么裁 ————————
+        existing_rows = list(existing)
+        context_settings = await context_service.read_settings(session, conversation.owner_id)
+        context_notices = await _auto_compact_context(
+            conversation,
+            existing_rows,
+            system_prompt=effective_system_prompt,
+            prompt=prompt_text,
+            settings=context_settings,
         )
-        ctx.prompt = prior_context_prompt(history, ctx.prompt)
-    else:
-        ctx = await build_context(
-            session, definition, profile, gateway, conversation, prompt_text, history, workspace,
-            credentials=credentials,
+        history = context_service.build_history(existing_rows, conversation)
+        if summon_profile_id:
+            # 召唤轮：无可续接会话是常态，共享对话历史（只含最终回复）作为前置上下文。
+            ctx = await build_context(
+                session, definition, profile, gateway, conversation, prompt_text, history, workspace,
+                model_override=SUMMON_IGNORE_MODEL, session_id=None, credentials=credentials,
+            )
+            ctx.prompt = prior_context_prompt(history, ctx.prompt)
+        else:
+            ctx = await build_context(
+                session, definition, profile, gateway, conversation, prompt_text, history, workspace,
+                credentials=credentials,
+            )
+        # 原生压缩口径：上限 / 阈值在估算与压缩都算完之后再下发，保证与平台压缩同一份。
+        apply_context_policy(ctx, context_settings, conversation)
+        # 适配器据此只预允许任务卡工具（见 Claude Code / CodeBuddy 的权限配置）。
+        ctx.task_card_mcp = bool(mcp_task_context_id)
+        skill_warnings = await prepare_skill_home(
+            session, definition, profile, conversation, ctx, scope_id=home_scope
         )
-    # 原生压缩口径：上限 / 阈值在估算与压缩都算完之后再下发，保证与平台压缩同一份。
-    apply_context_policy(ctx, context_settings, conversation)
-    skill_warnings = await prepare_skill_home(
-        session, definition, profile, conversation, ctx, scope_id=home_scope
-    )
-    mcp_warnings = await prepare_mcp_home(
-        session, definition, profile, conversation, ctx, scope_id=home_scope
-    )
-    if not summon_profile_id and not supports_sessions(definition, ctx):
-        ctx.session_id = None
-        if not definition.capabilities.native_system_prompt:
-            ctx.prompt = transcript_prompt(ctx.system_prompt, history, prompt_text)
-            ctx.system_prompt = None
-    elif not summon_profile_id and ctx.session_id is None:
-        # session 型内核但没有可续接的会话（刚换智能体 / 换目录 / 重置记忆 / 隔离目录重建）：
-        # 把库里的最近几轮最终回复作为前置上下文兜底，杜绝换智能体后彻底失忆。
-        # 一旦本轮建立新的内核会话，下一轮自动恢复原生续接。
-        ctx.prompt = prior_context_prompt(history, ctx.prompt)
+        mcp_warnings = await prepare_mcp_home(
+            session,
+            definition,
+            profile,
+            conversation,
+            ctx,
+            scope_id=home_scope,
+            task_card_context_id=mcp_task_context_id,
+        )
+        if mcp_task_context_id:
+            # 家目录已物化：把令牌落进 task-card/，MCP 子进程才读得到。
+            root = (
+                task_card_mcp.write_credentials(mcp_task_context_id, ctx.home_dir)
+                if ctx.home_dir
+                else None
+            )
+            if root is None:
+                logger.warning("任务卡 MCP 凭据无法落盘，本轮工具调用会失败")
+                task_card_mcp.finish(mcp_task_context_id, "failed")
+                mcp_task_context_id = None
+        if not summon_profile_id and not supports_sessions(definition, ctx):
+            ctx.session_id = None
+            if not definition.capabilities.native_system_prompt:
+                ctx.prompt = transcript_prompt(ctx.system_prompt, history, prompt_text)
+                ctx.system_prompt = None
+        elif not summon_profile_id and ctx.session_id is None:
+            # session 型内核但没有可续接的会话（刚换智能体 / 换目录 / 重置记忆 / 隔离目录重建）：
+            # 把库里的最近几轮最终回复作为前置上下文兜底，杜绝换智能体后彻底失忆。
+            # 一旦本轮建立新的内核会话，下一轮自动恢复原生续接。
+            ctx.prompt = prior_context_prompt(history, ctx.prompt)
 
-    assistant_message = Message(
-        conversation_id=conversation.id,
-        role="assistant",
-        content="",
-        status="streaming",
-        agent_profile_id=summon_profile_id,
-    )
-    session.add(assistant_message)
+        assistant_message = Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content="",
+            status="streaming",
+            agent_profile_id=summon_profile_id,
+        )
+        session.add(assistant_message)
 
-    # 标题还是兜底值＝这条对话刚开头：先用首行当临时标题（侧边栏立刻有名字），
-    # 之后由调用方安排一次「自动起标题」把它换成概括得更准的名字（见 runtime/titles.py）。
-    title_pending = conversation.title in (DEFAULT_TITLE, "")
-    if title_pending and payload.content.strip():
-        conversation.title = payload.content.strip().splitlines()[0][:80]
-    conversation.updated_at = datetime.now(timezone.utc)
+        # 标题还是兜底值＝这条对话刚开头：先用首行当临时标题（侧边栏立刻有名字），
+        # 之后由调用方安排一次「自动起标题」把它换成概括得更准的名字（见 runtime/titles.py）。
+        title_pending = conversation.title in (DEFAULT_TITLE, "")
+        if title_pending and payload.content.strip():
+            conversation.title = payload.content.strip().splitlines()[0][:80]
+        conversation.updated_at = datetime.now(timezone.utc)
 
-    await session.commit()
-    await session.refresh(user_message)
-    await session.refresh(assistant_message)
+        await session.commit()
+        await session.refresh(user_message)
+        await session.refresh(assistant_message)
 
-    run = registry.register(
-        conversation.id,
-        profile.name,
-        conversation.owner_id,
-        agent_profile_id=profile.id,
-        agent_avatar=profile.avatar,
-        agent_avatar_preset=profile.avatar_preset,
-    )
-    run.user_message_id = user_message.id
-    run.assistant_message_id = assistant_message.id
-    # 记录网关（P1，默认 off）：满足条件时把 base_url 指向本机代理、密钥换成一次性 token。
-    _apply_recording_gateway(
-        ctx,
-        _recording_gateway_binding(
-            definition, gateway, profile, conversation, run, ctx.model,
-            run_started_at=assistant_message.created_at,
-        ),
-    )
-    trace = await _start_trace(
-        session,
-        conversation=conversation,
-        run=run,
-        ctx=ctx,
-        turn_index=turn_index,
-        user_message_id=user_message.id,
-        trace_enabled=trace_enabled,
-    )
-    return PreparedRun(
-        conversation=conversation,
-        profile=profile,
-        gateway=gateway,
-        definition=definition,
-        ctx=ctx,
-        run=run,
-        user_message=user_message,
-        assistant_message=assistant_message,
-        skill_warnings=skill_warnings,
-        mcp_warnings=mcp_warnings,
-        account_warnings=account_warnings,
-        context_notices=context_notices,
-        title_pending=title_pending,
-        persist_session=persist_session,
-        trace=trace,
-    )
+        run = registry.register(
+            conversation.id,
+            profile.name,
+            conversation.owner_id,
+            agent_profile_id=profile.id,
+            agent_avatar=profile.avatar,
+            agent_avatar_preset=profile.avatar_preset,
+        )
+        run.user_message_id = user_message.id
+        run.assistant_message_id = assistant_message.id
+        if mcp_task_context_id:
+            # run_id / 锚点消息只有注册之后才有；此前没有 agent 在跑，不可能收到工具调用。
+            task_card_mcp.bind(
+                mcp_task_context_id,
+                conversation.id,
+                conversation.owner_id,
+                run.id,
+                assistant_message.id,
+            )
+        # 记录网关（P1，默认 off）：满足条件时把 base_url 指向本机代理、密钥换成一次性 token。
+        _apply_recording_gateway(
+            ctx,
+            _recording_gateway_binding(
+                definition, gateway, profile, conversation, run, ctx.model,
+                run_started_at=assistant_message.created_at,
+            ),
+        )
+        trace = await _start_trace(
+            session,
+            conversation=conversation,
+            run=run,
+            ctx=ctx,
+            turn_index=turn_index,
+            user_message_id=user_message.id,
+            trace_enabled=trace_enabled,
+        )
+        return PreparedRun(
+            conversation=conversation,
+            profile=profile,
+            gateway=gateway,
+            definition=definition,
+            ctx=ctx,
+            run=run,
+            user_message=user_message,
+            assistant_message=assistant_message,
+            skill_warnings=skill_warnings,
+            mcp_warnings=mcp_warnings,
+            account_warnings=account_warnings,
+            context_notices=context_notices,
+            title_pending=title_pending,
+            persist_session=persist_session,
+            trace=trace,
+            mcp_task_context_id=mcp_task_context_id,
+        )
+    except BaseException:
+        # begin() 之后到返回之间的任何异常都不会走到 consume_run 的 finally：
+        # 在这里补一次收口，避免失败轮泄漏 active binding 与凭据目录（finish 幂等）。
+        if mcp_task_context_id:
+            task_card_mcp.finish(mcp_task_context_id, "failed")
+        raise
 
 
 async def _start_trace(
@@ -759,6 +810,25 @@ async def _task_card_notice(
         return ""
     notice = task_card_service.render_notice(card, allow_create=card is None)
     return notice or ""
+
+
+async def _begin_task_card_context(
+    session: AsyncSession, conversation: Conversation, user_text: str
+) -> tuple[str | None, str]:
+    """为 MCP 内核开启本轮任务卡能力，返回 ``(context_id, 提示词段)``。
+
+    只在「有卡 / 用户正文像多步任务」时开启：闲聊轮不挂工具、不产生额外 token。
+    读卡失败按「没有卡」处理并记日志，不影响本轮正常运行。
+    """
+    try:
+        card = await task_card_service.load_card(session, conversation.id)
+    except Exception:  # noqa: BLE001 - 读卡失败不影响本轮正常作答
+        logger.warning("读取任务进度卡片失败，本轮不注入 MCP 协议", exc_info=True)
+        card = None
+    if card is None and not task_card_service.looks_like_task_request(user_text or ""):
+        return None, ""
+    context_id, _home = task_card_mcp.begin(conversation.id, conversation.owner_id)
+    return context_id, task_card_mcp.render_notice(context_id, card)
 
 
 async def _execute_prepared(prepared: PreparedRun) -> None:
@@ -1100,14 +1170,55 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
             await session.rollback()
         # 任务进度卡片只在「消息已提交 + 本轮成功结束 + 主场运行」时应用。
         # 卡片写入内部吞异常（独立会话），绝不影响上面的消息落库。
-        if committed and status == "complete" and prepared.persist_session:
+        #
+        # 双写优先级：本轮已经通过 MCP 成功写过卡 → 忽略正文围栏；否则围栏兜底。
+        # 无论哪条通道，上面的 strip_task_card* 都**无条件执行**，防止模型两边都写时
+        # 协议 JSON 泄漏到消息里。
+        used_mcp = bool(
+            prepared.mcp_task_context_id
+            and task_card_mcp.was_used(prepared.mcp_task_context_id)
+        )
+        if committed and status == "complete" and prepared.persist_session and not used_mcp:
             block, parse_error = task_card_service.parse_task_card(raw_text)
             if block is not None:
                 await task_card_service.apply_block(
-                    prepared.conversation.id, message.id, block, prepared.run.id
+                    prepared.conversation.id,
+                    message.id,
+                    block,
+                    prepared.run.id,
+                    source="fence",
                 )
+            elif prepared.run.task_card_block:
+                # 围栏没写 / 写坏：用适配器从内核任务工具归一的快照兜底。
+                if parse_error:
+                    logger.warning(
+                        "任务卡片块解析失败，改用内核任务快照：%s", parse_error
+                    )
+                kernel_block, kernel_error = task_card_service.normalize_block(
+                    prepared.run.task_card_block
+                )
+                if kernel_block is not None:
+                    await task_card_service.apply_block(
+                        prepared.conversation.id,
+                        message.id,
+                        kernel_block,
+                        prepared.run.id,
+                        source="kernel",
+                    )
+                else:
+                    logger.warning("内核任务卡快照不合法，已忽略：%s", kernel_error)
             elif parse_error:
                 logger.warning("任务卡片块解析失败，已忽略：%s", parse_error)
+        elif used_mcp:
+            logger.info("本轮已通过 MCP 更新任务卡，忽略正文围栏块")
+        # 轮末吊销令牌、删除凭据目录：成功 / 失败 / 取消都要走（finish 幂等）。
+        if prepared.mcp_task_context_id:
+            finish_status = (
+                "complete"
+                if status == "complete"
+                else ("interrupted" if status == "cancelled" else "failed")
+            )
+            task_card_mcp.finish(prepared.mcp_task_context_id, finish_status)
         # 先落库再登记结束：重连方看到 active_run 消失时，数据库里一定已经是最终消息，
         # 不会出现「运行没了、消息还停在 streaming」的空窗。
         registry.finish(prepared.run, status)
@@ -1142,98 +1253,142 @@ async def regenerate_last(
     await session.commit()
 
     profile, gateway, definition = await load_profile(session, conversation.agent_profile_id)
-    account_warnings = await activate_selected_account(profile, gateway, definition)
-    workspace = resolve_workspace(conversation)
-    history_rows = (
-        await session.execute(
-            select(Message)
-            .where(Message.conversation_id == conversation.id, Message.created_at < last_user.created_at)
-            .order_by(Message.created_at)
+    #: 重生成恒为主场运行（persist_session=True），只需再看 MCP 内核与灰度开关。
+    mcp_task_card_enabled = bool(
+        definition.capabilities.mcp and get_settings().task_card_mcp
+    )
+    mcp_task_context_id: str | None = None
+
+    try:
+        account_warnings = await activate_selected_account(profile, gateway, definition)
+        workspace = resolve_workspace(conversation)
+        history_rows = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conversation.id, Message.created_at < last_user.created_at)
+                .order_by(Message.created_at)
+            )
+        ).scalars().all()
+        history_rows = list(history_rows)
+        # 重生成同样把任务卡协议并入本轮提示词，再参与估算（与正常发送一致）。
+        notice = ""
+        if mcp_task_card_enabled:
+            mcp_task_context_id, notice = await _begin_task_card_context(
+                session, conversation, last_user.content
+            )
+        if not notice:
+            notice = await _task_card_notice(session, conversation.id, last_user.content)
+        prompt_text = f"{last_user.content}\n\n{notice}" if notice else last_user.content
+        credentials = await decrypt_for_profile(session, profile.id)
+        effective_system_prompt = with_notice(profile.system_prompt or None, credentials)
+        #: 与正常发送同一套上下文压缩判定（重跑一轮也要守住上限）。
+        context_settings = await context_service.read_settings(session, conversation.owner_id)
+        context_notices = await _auto_compact_context(
+            conversation,
+            history_rows,
+            system_prompt=effective_system_prompt,
+            prompt=prompt_text,
+            settings=context_settings,
         )
-    ).scalars().all()
-    history_rows = list(history_rows)
-    # 重生成同样把任务卡协议并入本轮提示词，再参与估算（与正常发送一致）。
-    notice = await _task_card_notice(session, conversation.id, last_user.content)
-    prompt_text = f"{last_user.content}\n\n{notice}" if notice else last_user.content
-    credentials = await decrypt_for_profile(session, profile.id)
-    effective_system_prompt = with_notice(profile.system_prompt or None, credentials)
-    #: 与正常发送同一套上下文压缩判定（重跑一轮也要守住上限）。
-    context_settings = await context_service.read_settings(session, conversation.owner_id)
-    context_notices = await _auto_compact_context(
-        conversation,
-        history_rows,
-        system_prompt=effective_system_prompt,
-        prompt=prompt_text,
-        settings=context_settings,
-    )
-    history = context_service.build_history(history_rows, conversation)
-    #: 重生成复用「被重跑那条用户消息」的序号（0 起），与下一次正常发送的 turn_index 对齐。
-    turn_index = sum(1 for row in history_rows if row.role == "user")
-    ctx = await build_context(
-        session, definition, profile, gateway, conversation, prompt_text, history, workspace,
-        credentials=credentials,
-    )
-    apply_context_policy(ctx, context_settings, conversation)
-    skill_warnings = await prepare_skill_home(session, definition, profile, conversation, ctx)
-    mcp_warnings = await prepare_mcp_home(session, definition, profile, conversation, ctx)
-    if not supports_sessions(definition, ctx):
-        ctx.session_id = None
-        if not definition.capabilities.native_system_prompt:
-            ctx.prompt = transcript_prompt(ctx.system_prompt, history, prompt_text)
-            ctx.system_prompt = None
-    elif ctx.session_id is None:
-        # 与 prepare_run 同一条兜底：无可续接会话时用最终回复做前置上下文，防止重生成失忆。
-        ctx.prompt = prior_context_prompt(history, ctx.prompt)
+        history = context_service.build_history(history_rows, conversation)
+        #: 重生成复用「被重跑那条用户消息」的序号（0 起），与下一次正常发送的 turn_index 对齐。
+        turn_index = sum(1 for row in history_rows if row.role == "user")
+        ctx = await build_context(
+            session, definition, profile, gateway, conversation, prompt_text, history, workspace,
+            credentials=credentials,
+        )
+        apply_context_policy(ctx, context_settings, conversation)
+        ctx.task_card_mcp = bool(mcp_task_context_id)
+        skill_warnings = await prepare_skill_home(session, definition, profile, conversation, ctx)
+        mcp_warnings = await prepare_mcp_home(
+            session,
+            definition,
+            profile,
+            conversation,
+            ctx,
+            task_card_context_id=mcp_task_context_id,
+        )
+        if mcp_task_context_id:
+            root = (
+                task_card_mcp.write_credentials(mcp_task_context_id, ctx.home_dir)
+                if ctx.home_dir
+                else None
+            )
+            if root is None:
+                logger.warning("任务卡 MCP 凭据无法落盘，本轮工具调用会失败")
+                task_card_mcp.finish(mcp_task_context_id, "failed")
+                mcp_task_context_id = None
+        if not supports_sessions(definition, ctx):
+            ctx.session_id = None
+            if not definition.capabilities.native_system_prompt:
+                ctx.prompt = transcript_prompt(ctx.system_prompt, history, prompt_text)
+                ctx.system_prompt = None
+        elif ctx.session_id is None:
+            # 与 prepare_run 同一条兜底：无可续接会话时用最终回复做前置上下文，防止重生成失忆。
+            ctx.prompt = prior_context_prompt(history, ctx.prompt)
 
-    assistant_message = Message(
-        conversation_id=conversation.id, role="assistant", content="", status="streaming"
-    )
-    session.add(assistant_message)
-    await session.commit()
-    await session.refresh(assistant_message)
+        assistant_message = Message(
+            conversation_id=conversation.id, role="assistant", content="", status="streaming"
+        )
+        session.add(assistant_message)
+        await session.commit()
+        await session.refresh(assistant_message)
 
-    run = registry.register(
-        conversation.id,
-        profile.name,
-        conversation.owner_id,
-        agent_profile_id=profile.id,
-        agent_avatar=profile.avatar,
-        agent_avatar_preset=profile.avatar_preset,
-    )
-    run.user_message_id = last_user.id
-    run.assistant_message_id = assistant_message.id
-    # 重生成同样走记录网关（与正常发送一致）。
-    _apply_recording_gateway(
-        ctx,
-        _recording_gateway_binding(
-            definition, gateway, profile, conversation, run, ctx.model,
-            run_started_at=assistant_message.created_at,
-        ),
-    )
-    trace = await _start_trace(
-        session,
-        conversation=conversation,
-        run=run,
-        ctx=ctx,
-        turn_index=turn_index,
-        user_message_id=last_user.id,
-        trace_enabled=trace_enabled,
-    )
-    return PreparedRun(
-        conversation=conversation,
-        profile=profile,
-        gateway=gateway,
-        definition=definition,
-        ctx=ctx,
-        run=run,
-        user_message=last_user,
-        assistant_message=assistant_message,
-        skill_warnings=skill_warnings,
-        mcp_warnings=mcp_warnings,
-        account_warnings=account_warnings,
-        context_notices=context_notices,
-        trace=trace,
-    )
+        run = registry.register(
+            conversation.id,
+            profile.name,
+            conversation.owner_id,
+            agent_profile_id=profile.id,
+            agent_avatar=profile.avatar,
+            agent_avatar_preset=profile.avatar_preset,
+        )
+        run.user_message_id = last_user.id
+        run.assistant_message_id = assistant_message.id
+        if mcp_task_context_id:
+            task_card_mcp.bind(
+                mcp_task_context_id,
+                conversation.id,
+                conversation.owner_id,
+                run.id,
+                assistant_message.id,
+            )
+        # 重生成同样走记录网关（与正常发送一致）。
+        _apply_recording_gateway(
+            ctx,
+            _recording_gateway_binding(
+                definition, gateway, profile, conversation, run, ctx.model,
+                run_started_at=assistant_message.created_at,
+            ),
+        )
+        trace = await _start_trace(
+            session,
+            conversation=conversation,
+            run=run,
+            ctx=ctx,
+            turn_index=turn_index,
+            user_message_id=last_user.id,
+            trace_enabled=trace_enabled,
+        )
+        return PreparedRun(
+            conversation=conversation,
+            profile=profile,
+            gateway=gateway,
+            definition=definition,
+            ctx=ctx,
+            run=run,
+            user_message=last_user,
+            assistant_message=assistant_message,
+            skill_warnings=skill_warnings,
+            mcp_warnings=mcp_warnings,
+            account_warnings=account_warnings,
+            context_notices=context_notices,
+            trace=trace,
+            mcp_task_context_id=mcp_task_context_id,
+        )
+    except BaseException:
+        if mcp_task_context_id:
+            task_card_mcp.finish(mcp_task_context_id, "failed")
+        raise
 
 
 def new_conversation(profile: AgentProfile, title: str | None, workspace_dir: str | None) -> Conversation:

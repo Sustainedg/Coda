@@ -419,6 +419,8 @@ class DeepSeekHarnessAgent(AgentDefinition):
             argv += ["--session-id", str(ctx.session_id)]
         argv += ["--permission-mode", str(ctx.option("permission_mode") or "workspace-write")]
         # headless 没有实时审批通道：统一「从不询问」，否则工具调用会卡在授权上。
+        # 非交互运行没有审批通道：MCP 工具（含平台内部的任务进度卡）统一按
+        # 「从不询问」执行，无需额外的工具白名单。
         argv += ["--approval-policy", "never"]
         argv += [str(item) for item in as_list(ctx.option("extra_args") or [])]
         argv.append("-")

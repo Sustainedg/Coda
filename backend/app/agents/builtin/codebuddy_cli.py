@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -53,7 +54,13 @@ from ..events import (
     tool_result,
     usage_raw,
 )
-from ..mcp import McpMount, McpServerSpec, parse_json_servers, to_json_config
+from ..mcp import (
+    TASK_CARD_MCP_TOOL,
+    McpMount,
+    McpServerSpec,
+    parse_json_servers,
+    to_json_config,
+)
 from ..registry import register_agent
 from ..skills import (
     MARKET_SOURCE,
@@ -276,6 +283,25 @@ def _root_bypass_escape(ctx: AgentContext) -> str | None:
     if not _is_root():
         return None
     return str((ctx.option("env") or {}).get("CODEBUDDY_IS_SANDBOX", "1"))
+
+
+#: 内核自带的任务工具：只把它们当作平台卡片的**输入快照**，平台仍是唯一展示源。
+#: 将来别的内核有自己的任务工具时，只需要在自己的适配器里实现同样的归一。
+_TASK_TOOLS = {"TaskCreate", "TaskUpdate", "TaskList"}
+_TASKLIST_LINE_RE = re.compile(
+    r"^\s*#(\d+)\s+\[(pending|in_progress|completed)\]\s+(.+?)\s*$",
+    re.IGNORECASE,
+)
+_TASK_STATUS = {
+    "pending": "pending",
+    "todo": "pending",
+    "in_progress": "in_progress",
+    "in-progress": "in_progress",
+    "doing": "in_progress",
+    "completed": "completed",
+    "complete": "completed",
+    "done": "completed",
+}
 
 
 @register_agent
@@ -656,8 +682,13 @@ class CodeBuddyCliAgent(AgentDefinition):
         if autocompact not in (None, ""):
             argv += ["--autocompact", str(autocompact)]
 
-        if options.get("allowed_tools"):
-            argv += ["--allowedTools", *as_list(options["allowed_tools"])]
+        allowed_tools = [str(item) for item in as_list(options.get("allowed_tools") or [])]
+        # 任务进度卡是平台内部工具：只给它一个预允许项，不放开整个 MCP server，
+        # 也不靠 bypassPermissions 图省事（用户把权限模式调严时它仍能写卡）。
+        if ctx.task_card_mcp and TASK_CARD_MCP_TOOL not in allowed_tools:
+            allowed_tools.append(TASK_CARD_MCP_TOOL)
+        if allowed_tools:
+            argv += ["--allowedTools", *allowed_tools]
         if options.get("disallowed_tools"):
             argv += ["--disallowedTools", *as_list(options["disallowed_tools"])]
         argv += [str(a) for a in as_list(options.get("extra_args") or [])]
@@ -761,7 +792,7 @@ class CodeBuddyCliAgent(AgentDefinition):
         elif kind == "assistant":
             yield from self._from_assistant(payload.get("message") or {}, run)
         elif kind == "user":
-            yield from self._from_tool_results(payload.get("message") or {})
+            yield from self._from_tool_results(payload.get("message") or {}, run)
         elif kind == "result":
             yield from self._from_result(payload, run)
         elif kind == "system":
@@ -787,6 +818,148 @@ class CodeBuddyCliAgent(AgentDefinition):
                         f"会话已就绪 · 模型 {payload.get('model')} · {len(tools)} 个工具"
                         f" · MCP {len(servers)} 个"
                     )
+
+    # -- 内核任务工具 → 平台卡片快照 ---------------------------------------
+    #
+    # CodeBuddy 自带 TaskCreate / TaskUpdate / TaskList。它们的数据只在内核会话里，
+    # 平台前端看不到；这里把它们归一成平台卡片块（``AgentRun.task_card_block``），
+    # 由运行层在收尾时兜底落库。平台 ``task_cards`` 仍是唯一展示源，内核工具只是输入。
+
+    @staticmethod
+    def _task_state(run: AgentRun) -> dict[str, Any]:
+        state = run.state.get("task_card_bridge")
+        if not isinstance(state, dict):
+            state = {
+                "order": [],
+                "tasks": {},
+                "title": "",
+                "list_call": None,
+                "create_calls": {},
+            }
+            run.state["task_card_bridge"] = state
+        return state
+
+    @staticmethod
+    def _task_status(value: Any) -> str | None:
+        return _TASK_STATUS.get(str(value or "").strip().lower())
+
+    @classmethod
+    def _task_add(
+        cls, state: dict[str, Any], task_id: str, text: Any, status: str
+    ) -> None:
+        task_id = str(task_id).strip()
+        text = str(text or "").strip()[:120]
+        if not task_id or not text:
+            return
+        if task_id not in state["tasks"]:
+            state["order"].append(task_id)
+        state["tasks"][task_id] = {"id": task_id, "text": text, "status": status}
+
+    @classmethod
+    def _task_sync(cls, run: AgentRun) -> None:
+        """把当前任务表归一成 ``create`` 快照；不足 2 项时平台不允许建卡。"""
+        state = run.state.get("task_card_bridge")
+        if not isinstance(state, dict):
+            return
+        tasks = [state["tasks"][tid] for tid in state["order"] if tid in state["tasks"]]
+        if len(tasks) < 2:
+            run.task_card_block = None
+            return
+        if not state.get("title"):
+            state["title"] = tasks[0]["text"][:200]
+        run.task_card_block = {
+            "action": "create",
+            "title": state.get("title") or "任务进度",
+            "items": [
+                {
+                    "id": task["id"],
+                    "text": task["text"],
+                    "status": task["status"],
+                    "done": task["status"] == "completed",
+                }
+                for task in tasks
+            ],
+        }
+
+    @classmethod
+    def _observe_task_call(
+        cls, name: str, call_id: Any, arguments: Any, run: AgentRun
+    ) -> None:
+        if name not in _TASK_TOOLS:
+            return
+        state = cls._task_state(run)
+        args = arguments if isinstance(arguments, dict) else {}
+        if name == "TaskCreate":
+            subject = str(args.get("subject") or args.get("description") or "任务").strip()
+            if call_id:
+                state["create_calls"][call_id] = subject
+            return
+        if name == "TaskUpdate":
+            raw_id = str(
+                args.get("taskId") or args.get("task_id") or args.get("id") or ""
+            ).strip().lstrip("#")
+            raw_status = str(args.get("status") or "").strip().lower()
+            if not raw_id:
+                return
+            task_id = f"t{raw_id}"
+            if raw_status == "deleted":
+                state["tasks"].pop(task_id, None)
+                state["order"] = [tid for tid in state["order"] if tid != task_id]
+            else:
+                status = cls._task_status(raw_status)
+                if status is None:
+                    return
+                existing = state["tasks"].get(task_id)
+                if existing is None:
+                    # 本轮没见过这个 id（多半是上一轮建的）：不编造占位文本，
+                    # 等 TaskList 的完整快照来补；否则会产出「任务 #N」这种脏卡片。
+                    return
+                subject = str(args.get("subject") or "").strip()
+                existing["status"] = status
+                if subject:
+                    existing["text"] = subject[:120]
+            cls._task_sync(run)
+            return
+        # TaskList：结果里是完整快照，先记下 call id。
+        if call_id:
+            state["list_call"] = call_id
+
+    @classmethod
+    def _observe_task_result(
+        cls, call_id: Any, output: Any, run: AgentRun, *, is_error: bool = False
+    ) -> None:
+        state = run.state.get("task_card_bridge")
+        if not isinstance(state, dict):
+            return
+        text = str(output or "")
+        subject = state["create_calls"].pop(call_id, None) if call_id else None
+        if subject is not None:
+            if is_error:
+                # 建任务失败：不能凭空补一项，否则会产出内核里并不存在的任务。
+                return
+            match = re.search(r"Task #(\d+)\s+created", text, re.IGNORECASE)
+            if not match:
+                # 结果文本认不出 id 就放弃这一项：编造 id 会和后续 TaskList 撞号。
+                return
+            cls._task_add(state, f"t{match.group(1)}", subject, "pending")
+            cls._task_sync(run)
+            return
+        # TaskList 的完整快照：只认本适配器记录过的 call id，避免误吃别的工具输出。
+        if call_id and call_id == state.get("list_call"):
+            parsed: list[tuple[str, str, str]] = []
+            for line in text.splitlines():
+                match = _TASKLIST_LINE_RE.match(line)
+                if not match:
+                    continue
+                raw_id, status, title = match.groups()
+                parsed.append((f"t{raw_id}", title.strip(), status.lower()))
+            if parsed:
+                state["tasks"] = {}
+                state["order"] = []
+                for task_id, title, status in parsed:
+                    cls._task_add(state, task_id, title, status)
+                state["list_call"] = None
+                cls._task_sync(run)
 
     def _from_stream_event(self, event: dict[str, Any], run: AgentRun) -> Iterable[AgentEvent]:
         kind = event.get("type")
@@ -835,20 +1008,30 @@ class CodeBuddyCliAgent(AgentDefinition):
                 if not run.state.get("partial"):
                     yield text_delta(_translate_auth_error(block["text"]))
             elif block.get("type") == "tool_use":
-                yield tool_call(
-                    block.get("name") or "tool", block.get("id"), **(block.get("input") or {})
-                )
+                name = block.get("name") or "tool"
+                call_id = block.get("id")
+                arguments = block.get("input") or {}
+                self._observe_task_call(name, call_id, arguments, run)
+                yield tool_call(name, call_id, **arguments)
 
-    def _from_tool_results(self, message: dict[str, Any]) -> Iterable[AgentEvent]:
+    def _from_tool_results(
+        self, message: dict[str, Any], run: AgentRun
+    ) -> Iterable[AgentEvent]:
         for block in message.get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_result":
+                call_id = block.get("tool_use_id")
+                output = flatten_content(block.get("content"))
+                is_error = bool(block.get("is_error"))
+                self._observe_task_result(call_id, output, run, is_error=is_error)
                 yield tool_result(
-                    block.get("tool_use_id"),
-                    flatten_content(block.get("content")),
-                    bool(block.get("is_error")),
+                    call_id,
+                    output,
+                    is_error,
                 )
 
     def _from_result(self, payload: dict[str, Any], run: AgentRun) -> Iterable[AgentEvent]:
+        # 收尾前再同步一次：本轮的 Task* 调用可能已经构成完整快照。
+        self._task_sync(run)
         raw_usage = payload.get("usage")
         if isinstance(raw_usage, dict) and raw_usage:
             # 与 Claude Code 同构：原样上报，嵌套字段由运行层统一归一化。

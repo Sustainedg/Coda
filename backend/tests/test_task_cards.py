@@ -83,6 +83,11 @@ def test_looks_like_task_request_thresholds():
     assert tc.looks_like_task_request("实现" + "a" * 8)
     assert not tc.looks_like_task_request("你好")
     assert not tc.looks_like_task_request("")
+    # 明确提到任务卡 / 进度时，短句也要注入协议：否则模型会改用内核自带的任务工具。
+    assert tc.looks_like_task_request("看下任务卡")
+    assert tc.looks_like_task_request("任务进度卡")
+    assert tc.looks_like_task_request("进度")
+    assert tc.looks_like_task_request("待办")
 
 
 def test_strip_task_card_removes_closed_and_unclosed_blocks():
@@ -200,7 +205,11 @@ def test_parse_task_card_valid_create_and_update():
         fenced({"action": "update", "items": [{"id": "t1", "done": True}]})
     )
     assert error is None
-    assert block == {"action": "update", "title": "", "items": [{"id": "t1", "done": True}]}
+    assert block == {
+        "action": "update",
+        "title": "",
+        "items": [{"id": "t1", "done": True, "status": "completed"}],
+    }
 
 
 def test_parse_task_card_accepts_json_fence_and_bare_json_at_tail():
@@ -223,6 +232,152 @@ def test_parse_task_card_accepts_json_fence_and_bare_json_at_tail():
     # 中段示例不算协议块
     mid = f"示例：\n\n```json\n{body}\n```\n\n以上只是示例。"
     assert tc.parse_task_card(mid) == (None, None)
+
+
+def test_three_state_parse_and_public_view():
+    block, error = tc.parse_task_card(
+        fenced(
+            {
+                "action": "create",
+                "title": "三态",
+                "items": [
+                    {"id": "t1", "text": "待办", "status": "pending"},
+                    {"id": "t2", "text": "进行中", "status": "in_progress"},
+                    {"id": "t3", "text": "已完成", "status": "completed"},
+                ],
+            }
+        )
+    )
+    assert error is None and block is not None
+    assert [(i["status"], i["done"]) for i in block["items"]] == [
+        ("pending", False),
+        ("in_progress", False),
+        ("completed", True),
+    ]
+
+    block, error = tc.parse_task_card(
+        fenced(
+            {
+                "action": "update",
+                "items": [{"id": "t1", "status": "in_progress"}],
+            }
+        )
+    )
+    assert error is None
+    assert block["items"] == [{"id": "t1", "status": "in_progress", "done": False}]
+
+    # 旧协议：done:true 等价 completed；done:false 是 no-op（不带 status）。
+    block, _ = tc.parse_task_card(
+        fenced({"action": "update", "items": [{"id": "t1", "done": True}]})
+    )
+    assert block["items"][0]["status"] == "completed"
+    block, _ = tc.parse_task_card(
+        fenced({"action": "update", "items": [{"id": "t1", "done": False}]})
+    )
+    assert block["items"][0] == {"id": "t1", "done": False}
+
+    bad, error = tc.parse_task_card(
+        fenced(
+            {
+                "action": "update",
+                "items": [{"id": "t1", "status": "blocked"}],
+            }
+        )
+    )
+    assert bad is None and "status" in (error or "")
+
+    # 旧卡片行只有 done：读取时补 status，不改库。
+    assert tc.public_items(
+        [{"id": "t1", "text": "甲", "done": True}, {"id": "t2", "text": "乙"}]
+    ) == [
+        {"id": "t1", "text": "甲", "done": True, "status": "completed"},
+        {"id": "t2", "text": "乙", "done": False, "status": "pending"},
+    ]
+
+
+def test_three_state_merge_allows_non_terminal_changes():
+    existing = [
+        {"id": "t1", "text": "甲", "done": False},
+        {"id": "t2", "text": "乙", "done": True, "done_at": "old"},
+        {"id": "t3", "text": "丙", "done": False},
+    ]
+    merged = tc.merge_block(
+        existing,
+        "旧计划",
+        {
+            "action": "update",
+            "items": [
+                {"id": "t1", "status": "in_progress"},
+                # completed 是终态：显式想改回 in_progress 必须被忽略
+                {"id": "t2", "status": "in_progress"},
+                {"id": "t3", "status": "completed"},
+            ],
+        },
+        now="now",
+    )
+    assert merged is not None and merged["changed"] is True
+    by_id = {item["id"]: item for item in merged["items"]}
+    assert by_id["t1"]["status"] == "in_progress" and by_id["t1"]["done"] is False
+    assert by_id["t2"]["status"] == "completed" and by_id["t2"]["done_at"] == "old"
+    assert by_id["t3"]["status"] == "completed" and by_id["t3"]["done_at"] == "now"
+
+    # pending/in_progress 之间允许来回切换
+    back = tc.merge_block(
+        merged["items"],
+        "旧计划",
+        {"action": "update", "items": [{"id": "t1", "status": "pending"}]},
+        now="later",
+    )
+    assert back is not None
+    assert {item["id"]: item["status"] for item in back["items"]}["t1"] == "pending"
+
+
+def test_three_state_create_replan_keeps_completed():
+    existing = [
+        {"id": "t1", "text": "甲", "status": "completed", "done": True, "done_at": "old"},
+        {"id": "t3", "text": "丙", "status": "pending", "done": False},
+    ]
+    merged = tc.merge_block(
+        existing,
+        "旧计划",
+        {
+            "action": "create",
+            "title": "新计划",
+            "items": [
+                {"id": "t1", "text": "甲（改）", "status": "pending"},
+                {"id": "t2", "text": "乙", "status": "in_progress"},
+            ],
+        },
+        now="now",
+    )
+    assert merged is not None
+    assert [item["id"] for item in merged["items"]] == ["t1", "t2"]
+    assert merged["items"][0]["status"] == "completed"  # 已完成不因重规划回退
+    assert merged["items"][1]["status"] == "in_progress"
+    assert merged["title"] == "新计划"
+
+
+def test_item_status_derivation_is_identical_in_schema_and_runtime():
+    """三态推导有两份实现：`schemas.TaskCardItemRead`（叶子层，不能反向依赖 runtime）
+    与 `runtime.task_cards.public_items`（给提示词 / 内部接口）。两份必须同语义。"""
+    from app.schemas import TaskCardItemRead
+
+    cases = [
+        {"id": "t1", "text": "a", "done": True},
+        {"id": "t1", "text": "a", "done": False},
+        {"id": "t1", "text": "a", "status": "pending"},
+        {"id": "t1", "text": "a", "status": "in_progress"},
+        {"id": "t1", "text": "a", "status": "completed"},
+        # 非法 status 一律按 done 兜底，不能让脏数据把整张卡打挂
+        {"id": "t1", "text": "a", "status": "bogus", "done": True},
+        {"id": "t1", "text": "a", "status": "bogus"},
+        # status 与 done 冲突时以 status 为准
+        {"id": "t1", "text": "a", "status": "in_progress", "done": True},
+    ]
+    for case in cases:
+        schema = TaskCardItemRead.model_validate(case)
+        runtime = tc.public_items([case])[0]
+        assert (schema.status, schema.done) == (runtime["status"], runtime["done"]), case
 
 
 def test_parse_task_card_without_block_is_not_an_error():
@@ -293,6 +448,14 @@ def test_parse_task_card_item_count_boundaries():
     }
     block, error = tc.parse_task_card(fenced(twentyone))
     assert block is None and error
+
+
+def test_render_notice_mentions_platform_card_only():
+    """围栏协议要明确告诉模型：内核自带的任务工具不会显示在界面上。"""
+    notice = tc.render_notice(None, allow_create=True)
+    assert "task_card" in notice
+    assert "内核自带" in notice
+    assert "不要用它们代替" in notice
 
 
 def test_merge_create_replan_keeps_done_and_update_is_monotonic():

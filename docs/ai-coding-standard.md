@@ -199,13 +199,17 @@ POST /api/conversations/{id}/messages
 **适配器不得写进提示词 / 日志 / 事件**）、`agent_name`/`system_prompt`（人格）、
 `workspace_dir`(cwd)、`session_id`（续接或 `None`）、`history`（回放用的历史轮次）、`prompt`（本轮输入）。
 另有 `skills` / `mcp_servers`（框架按分配注入的技能与 MCP 服务器）与 `home_dir`（框架物化好的
-内核隔离配置目录，技能与 MCP 共用同一个「家」）；MCP 的 `env` / `headers` 值可能含密钥，
-**适配器不得写进提示词 / 日志 / 事件**。另有 `context_limit_tokens` / `context_trigger_tokens`
+内核隔离配置目录，技能与 MCP 共用同一个「家」）；`task_card_mcp` 是只读标记，表示本轮是否挂了
+平台内部任务进度卡 server，适配器据此只预允许对应工具、不要放开整个 server。
+MCP 的 `env` / `headers` 值可能含密钥，**适配器不得写进提示词 / 日志 / 事件**。另有 `context_limit_tokens` / `context_trigger_tokens`
 （平台解析出的原生压缩上限 / 阈值）：适配器据此生成内核自己的压缩配置（Claude Code 环境变量、
 Codex `-c` 覆盖），为空 = 不干预。
 
 `AgentRun` 提供：`state`（本次运行私有字典）、`emitted_text`/`thinking`/`tool_calls`（框架自动累积）、
 `build_invocation()`、`feed(line)`，以及**结束时补发事件的钩子 `finish()`**。
+适配器可以把内核自带任务工具归一成平台卡片块写进 `AgentRun.task_card_block`（形状同 `task_card`
+围栏），运行层在收尾时兜底应用；平台 `task_cards` 仍是唯一展示源，适配器不得自己持久化。
+三态字段 `status ∈ pending|in_progress|completed`，`done` 仅为旧前端派生保留。
 
 **双向 stdin（常驻型 JSON-RPC 内核，例如 Codex app-server）**：适配器在 `build_invocation()` 里置
 `Invocation.stdin_hold=True`（`stdin` 只写第一帧、写完不关），解析到应答后用 `AgentRun.send(line)`
@@ -287,6 +291,11 @@ Codex `-c` 覆盖），为空 = 不干预。
 └─ 其它（智能体、网关、对话、页面、样式）
       → 按 §2.1 分层表定位到唯一一层，不要在多层同时改
 ```
+
+> **例外：平台内部、按轮注入的 MCP server**（如任务进度卡）。它不是可分配内置项：
+> 在 `builtin_mcp.py` 里声明为 `assignable=False` 的展示项，运行层通过通用参数
+> `task_card_context_id` 追加 spec（见 `runtime/mcp.py`）。框架只读声明，不按具体
+> `builtin_key` 写 `if` 分支。
 
 ### 6.1 新增 CLI 适配器骨架
 

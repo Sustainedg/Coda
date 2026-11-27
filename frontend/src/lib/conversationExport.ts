@@ -33,7 +33,8 @@ export interface ExportMessage {
   agentLabel?: string | null
   status?: string
   error?: string | null
-  usage?: Record<string, number>
+  usage?: Record<string, unknown>
+  usage_protocol?: string | null
 }
 
 export interface ExportMeta {
@@ -57,7 +58,8 @@ export interface ExportSourceMessage {
   created_at?: string | null
   status?: string
   error?: string | null
-  usage?: Record<string, number>
+  usage?: Record<string, unknown>
+  usage_protocol?: string | null
   /** 这条回复由哪个智能体产出；为空 = 对话归属的智能体，非空 = @ 召唤的 */
   agent_profile_id?: string | null
 }
@@ -110,6 +112,7 @@ export function buildExportMessages({
       status: message.status,
       error: message.error,
       usage: message.usage,
+      usage_protocol: message.usage_protocol,
     })),
     ...(live && (live.userText || live.userAttachments.length > 0)
       ? [{
@@ -132,6 +135,7 @@ export function buildExportMessages({
           status: 'streaming',
           error: liveMessage.error,
           usage: liveMessage.usage,
+          usage_protocol: liveMessage.usage_protocol,
         }]
       : []),
   ]
@@ -294,8 +298,8 @@ function messageHeading(message: ExportMessage): string {
 
 function usageLine(message: ExportMessage): string {
   if (!message.usage || Object.keys(message.usage).length === 0) return ''
-  const usage = summarizeUsage([message.usage])
-  return `> 用量：读取 ${usage.input.toLocaleString()} tok · 输出 ${usage.output.toLocaleString()} tok`
+  const usage = summarizeUsage([message.usage], [message.usage_protocol])
+  return `> 用量：输入 ${usage.input.toLocaleString()} tok · 输出 ${usage.output.toLocaleString()} tok`
 }
 
 /**

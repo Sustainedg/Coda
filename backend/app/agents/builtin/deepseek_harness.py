@@ -42,11 +42,12 @@ from ..events import (
     thinking_delta,
     tool_call,
     tool_result,
-    usage,
+    usage_raw,
 )
 from ..mcp import McpMount, McpServerSpec
 from ..registry import register_agent
 from ..skills import SkillMount, SkillRoot, SkillSpec, scan_skill_roots
+from ..metering import PROTOCOL_DEEPSEEK
 from .util import (
     as_list,
     context_tokens,
@@ -134,6 +135,8 @@ class DeepSeekHarnessAgent(AgentDefinition):
     default_gateway = "https://api.deepseek.com/anthropic"
     default_model = "deepseek-flash"
     protocol = "anthropic"
+    #: dsh 的 usage 是驼峰字段；暂按“输入与缓存分离”处理，待真实样本确认。
+    usage_protocol = PROTOCOL_DEEPSEEK
     default_auth_style = "x-api-key"
     default_models = ["deepseek-flash", "deepseek-v4-pro"]
     docs_url = "https://deepseek-harness.github.io/deepseek-harness/"
@@ -463,10 +466,13 @@ class DeepSeekHarnessAgent(AgentDefinition):
 
         if kind == "status":
             if payload.get("phase") == "step_end":
-                tokens = self._normalize_usage(payload.get("usage"))
-                if tokens:
-                    yield usage(**tokens)
-                    window = context_tokens(tokens)
+                raw_usage = payload.get("usage")
+                if isinstance(raw_usage, dict) and raw_usage:
+                    # 原样上报（驼峰字段由 metering 层按 deepseek 协议翻译）。
+                    yield usage_raw(raw_usage)
+                    window = context_tokens(
+                        raw_usage, protocol=PROTOCOL_DEEPSEEK
+                    )
                     if window:
                         yield context_usage(window)
             return
@@ -521,22 +527,3 @@ class DeepSeekHarnessAgent(AgentDefinition):
 
         # 未知事件不吵用户：dsh 的词汇表会演进，多出来的一律按调试日志记录。
         yield log(json.dumps(payload, ensure_ascii=False), "debug")
-
-    @staticmethod
-    def _normalize_usage(raw: Any) -> dict[str, int]:
-        """把 dsh 的 ``inputTokens / outputTokens / …`` 翻译成平台口径。"""
-        if not isinstance(raw, dict):
-            return {}
-        mapping = {
-            "inputTokens": "input_tokens",
-            "outputTokens": "output_tokens",
-            "totalTokens": "total_tokens",
-            "cacheReadTokens": "cache_read_input_tokens",
-            "cacheWriteTokens": "cache_creation_input_tokens",
-            "reasoningTokens": "reasoning_output_tokens",
-        }
-        return {
-            target: int(raw[source])
-            for source, target in mapping.items()
-            if isinstance(raw.get(source), (int, float))
-        }

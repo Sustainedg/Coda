@@ -11,6 +11,14 @@ const RANGE_HINT: Record<UsageRangeKind, string> = {
   all: '全部记录',
 }
 
+/** 权威源的中文标签（与后端 usage_records.source 对应）。 */
+const SOURCE_LABELS: Record<string, string> = {
+  gateway: '一手网关',
+  native: '原生上报',
+  harness: '平台内核',
+  legacy: '历史消息',
+}
+
 /** 一份 token 构成的展示数据：用于环形图的扇区与右侧图例。 */
 interface CompositionRow {
   key: string
@@ -55,6 +63,30 @@ export function UsageReport({
     ],
     [tokens],
   )
+
+  // 按权威源拆分（一手网关 / 原生 / 平台内核 / 历史）；旧后端不返回时为空，不显示。
+  const sourceNote = useMemo(() => {
+    const entries = Object.entries(data.by_source ?? {})
+      .filter(([, row]) => row.total > 0)
+      .sort((a, b) => b[1].total - a[1].total)
+    if (entries.length === 0) return ''
+    return entries
+      .slice(0, 4)
+      .map(([source, row]) => `${SOURCE_LABELS[source] ?? source} ${compact(row.total)}`)
+      .join(' · ')
+  }, [data.by_source])
+
+  // 成本：只有真正记到价的行才累加；未知要明确说“未记录”，不能显示成 $0。
+  const costLabel = useMemo(() => {
+    const coverage = data.cost_coverage
+    const unknown = coverage?.unknown ?? 0
+    if (data.cost_usd == null) {
+      return unknown > 0 ? '成本未记录' : ''
+    }
+    const priced = (coverage?.reported ?? 0) + (coverage?.estimated ?? 0)
+    const suffix = unknown > 0 ? ` · ${priced} 已定价 / ${unknown} 未知` : ''
+    return `成本 $${data.cost_usd.toFixed(4)}${suffix}`
+  }, [data.cost_usd, data.cost_coverage])
 
   const ringBackground = useMemo(() => {
     const total = composition.reduce((sum, row) => sum + row.value, 0)
@@ -113,9 +145,10 @@ export function UsageReport({
               {platform ? `${fmt(data.by_agent.length)} 个智能体` : `${fmt(data.conversations)} 个对话`}
             </span>
             <span className="usage-chip">{fmt(skills.calls)} 次技能调用</span>
+            {costLabel && <span className="usage-chip">{costLabel}</span>}
           </div>
           <p className="usage-hero-note">
-            {`${RANGE_HINT[range]} · 数据来自助手回复上报的用量${platform ? '' : ' · 平台总览在「用量」页'}`}
+            {`${RANGE_HINT[range]} · 数据来自助手回复上报的用量${platform ? '' : ' · 平台总览在「用量」页'}${sourceNote ? ` · 来源：${sourceNote}` : ''}`}
           </p>
         </div>
 

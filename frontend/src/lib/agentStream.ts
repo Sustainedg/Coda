@@ -14,7 +14,7 @@ export interface AgentStreamState {
   /** 按真实发生顺序排列的时间线片段 */
   parts: MessagePart[]
   logs: string[]
-  usage: Record<string, number>
+  usage: Record<string, unknown>
   status: StreamStatus
   error?: string | null
   runId?: string
@@ -73,7 +73,9 @@ export function applyAgentEvent(state: AgentStreamState, event: AgentEvent): Age
         ],
       }
     case 'usage':
-      return { ...state, usage: { ...state.usage, ...(event.payload as Record<string, number>) } }
+    case 'usage.raw':
+      // 数值计数与原始小票都并进展示快照；落库后以 Message.usage_protocol 为准。
+      return { ...state, usage: { ...state.usage, ...(event.payload as Record<string, unknown>) } }
     case 'context.usage':
       // 单次请求的上下文快照，只用于服务端计量；流式界面不展示，等轮询刷新即可。
       return state

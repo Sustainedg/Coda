@@ -52,7 +52,7 @@
  │                    └─ 流式 chat/completions + 工具循环（工具在工作目录内执行）
  │
  └─ 每个事件：既 publish 给当前订阅者，也在 consume_run 里被累积
-      （文本、推理、工具调用/结果、usage、session_id）
+      （文本、推理、工具调用/结果、usage / usage.raw、session_id）
     finally 块无论成功/失败/取消都会写回 assistant message 并 commit
 ```
 
@@ -100,6 +100,7 @@ collab.engine.consume_turn()  ── 取就绪工单跑一步（max_parallel>1 �
 | `tool.call` | `name`, `call_id`, `payload.input` | 工具调用 |
 | `tool.result` | `call_id`, `payload.output`, `payload.is_error` | 工具结果 |
 | `usage` | 任意数值 | 整轮累计的 token / 费用 / 耗时（计费口径） |
+| `usage.raw` | 原始 usage 对象（可含嵌套 / 字符串） | 内核的原始小票；运行层按协议归一化后入账，并与 `usage` 分开（不污染数值契约） |
 | `context.usage` | `payload.tokens` | **单次请求**的输入 token（上下文窗口占用，落 `messages.context_tokens`） |
 | `context.window` | `payload.tokens` | 内核上报的**真实上下文窗口大小**（落 `conversations.context_kernel_window_tokens`；平台上限设为「自动」时跟随它） |
 | `context.compacted` | `payload.trigger/pre_tokens/post_tokens/messages_summarized…` | 内核侧**原生压缩**通知（如 Claude Code auto-compact）；运行层发日志提醒并使压缩前的快照失效 |
@@ -362,6 +363,78 @@ MCP 服务器里，AI 只能调用暴露的工具（如 `create_pr`），永远�
   或走「手动旁路」录入（界面在探测失败时自动展开）。
 - 被**未删除**的智能体引用的网关不能删（409）；官方链路一律 409。
 
+### 4.4 记录网关与一手账本（P1，默认关闭）
+
+现状的计量是「内核上报的二手数据」：CLI 拿 `base_url + api_key` **直连上游**，平台只能等
+`stream-json` / `result` 事件上报 token。记录网关把自定义网关的流量改走**本机反向代理**，
+由平台自己读上游 `usage` 记账：
+
+```
+CLI → http://127.0.0.1:<port>/api/internal/usage-gateway/<token>/... → 上游
+                     │ tee 响应流，解析 usage
+                     ▼
+              usage_records（一手账本，UNIQUE(run_id, source, request_id) 去重）
+```
+
+- **开关**：`CODA_RECORDING_GATEWAY=off | auto | on`，默认 `off`；关闭即全部回退直连。
+- **启用条件**（`runtime/service._recording_gateway_binding`）：自定义网关（平台持有密钥，
+  `inject` 模式）+ 适配器声明 `Capabilities.recording_gateway` + 有 `base_url_env` 注入缝。
+  官方登录 / 无注入缝的内核保持直连，由原生解析兜底。
+- **互斥不双记**：一次 run 收尾按 `gateway > native > none` 判权（`runtime/usage_ledger.py`）。
+  已有 gateway 行时原生 `usage` 只做展示；没有才把本轮原生累计作为一行 `source=native` 入账；
+  两边都没有就记 `unknown`，**不伪造 0**。
+- **安全**：代理只监听回环、路由再校验来源；每 run 一个 256-bit 一次性 token（TTL 2h，run
+  结束吊销）；`inject` 模式下上游密钥留在服务端内存，子进程 env 里只有代理 token；
+  不落请求 / 响应正文。
+- **回退**：代理注册失败 / 不可达不自动改走直连（避免半轮混源）；本轮失败但已测用量保留。
+
+> P1 只做**同协议转发**（Anthropic Messages / OpenAI Chat / Responses），不做跨协议翻译、
+> 不做公网模型网关。**P2 已把用量页与上下文面板切到账本**：用量页按
+> `usage_ledger_started_at` 分段（启用前读 `messages`、之后读 `usage_records`，两段相加），
+> 并返回可选的 `by_source`；上下文面板在**运行中**优先读当前 run 最新一条账本的
+> `context_tokens`（记录网关在请求终态落账；原生 / harness 的 `context.usage` 也**实时
+> 入账**——每个 run 一行、运行中更新，收尾再把整轮计费补进同一行），运行结束后仍以
+> `messages.context_tokens` 快照为主（账本行用于校准）。可选回填脚本见
+> `scripts/backfill_usage_records.py`（默认 dry-run）。
+
+### 4.5 外部模型 API（P3，可选产品化）
+
+平台也可以对外提供模型入口，让脚本 / 第三方客户端用平台签发的密钥调用：
+
+```
+外部客户端 → /api/model-gateway/v1/...（Bearer cosk_…）→ key 绑定的上游网关
+                        │ 注入上游密钥（inject）、同协议直通
+                        ▼
+              usage_records（origin=external, api_key_id=…）
+```
+
+- **API Key**（`api_keys`）：`POST/GET/PATCH/DELETE /api/api-keys`；**只存 sha256**，明文
+  `cosk_…` 只在签发时返回一次，列表只给掩码；吊销保留审计行。key 必须绑定**自定义网关**。
+- **外部网关**：`/api/model-gateway/{path}`（`include_in_schema=False`）。同协议直通，复用
+  记录网关的转发 / tee 逻辑（`api/_forward.py`）；`origin=external`、`api_key_id` 落账。
+  `?api_key=` 只用于鉴权，转发前会从查询串里剔除，不泄露给上游。`/models` 这类非推理请求
+  只转发、不记账、不占配额。
+- **配额**：按 key 的日 / 月请求数与 token 数，**转发前按已用量判**，超限 429。当前请求
+  的 token 要等响应终态才知道，所以是「不预扣」的保守策略。
+- **成本**（`usage_pricing` + models.dev 目录）：**手工价 > 目录价 > unknown**。手工价按
+  owner（个人 + 平台级）与最长前缀匹配；目录价按 provider/model（含 provider 别名、
+  `provider/model` 前缀写法）匹配，不认识的中转**不继承**官方价。只对**写入之后**的新账本行
+  计价（`cost_source=estimated` + `cost_pricing` 记录依据），**不重算历史**。目录在启动时读
+  磁盘快照、后台从 `models.dev` 刷新（失败保留旧快照，不阻塞启动）。
+  `GET/POST/DELETE /api/usage/pricing`；用量页额外返回 `cost_usd` / `cost_coverage`
+  （reported / estimated / unknown 行数）。
+- **审计**：`GET /api/usage/records`（分页明细）+ `GET /api/usage/records/export.csv`
+  （CSV 导出，最多 5 万行）。管理员看全部，普通用户只看自己。
+- **前端**：设置 → **外部 API** 面板（`components/ExternalApiPanel.tsx`）提供 Key 签发 /
+  吊销（明文只显示一次 + 复制）、单价维护、最近账本审计与 CSV 导出；用量页已能显示账本
+  口径与 `by_source`。该面板只在桌面端设置页出现（低频管理动作，移动端不重复实现）。
+
+> **网络暴露提醒**：P3 不主动做公网网关，但默认部署脚本 / Docker **监听 `0.0.0.0`**
+> （`scripts/serve.sh` 与 `docker-compose.yml`），因此 `/api/model-gateway/...` 在服务可达的
+> 网络里就能被访问——**唯一的门是 `cosk_…` 密钥**。只给本机用请设 `CODA_HOST=127.0.0.1`
+> （Docker 则把端口映射写成 `127.0.0.1:8010:8010`）；真要对局域网 / 公网开放，请加反向代理
+> + TLS + 来源限制，并确保 `CODA_AUTH_ENABLED=true`（否则能访问服务的人都能签 Key）。
+
 ## 5. 技能（Skill）
 
 技能是各智能体内核的能力包（一个目录 + ``SKILL.md``）。平台把它们**统一编目**，
@@ -619,6 +692,21 @@ messages(id, conversation_id→conversations, role, content, parts JSON, usage J
                                # context_tokens = 本轮最后一次模型请求的输入 token（上下文窗口快照）
                                # context_snapshot_at = 该快照的**采集时刻**（≠ 消息创建时刻；
                                #   快照失效判定比它，比 created_at 会误杀压缩后新上报的快照）
+usage_records(id, owner_id, conversation_id, run_id, request_id, source(gateway|native|harness|legacy),
+              origin(internal|external), api_key_id, agent_type_id, agent_profile_id, model, provider,
+              base_url, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+              reasoning_tokens, context_tokens, api_calls, api_duration_ms, cost_usd, cost_source,
+              is_estimated, request_started_at, created_at)
+              # 一手账本：UNIQUE(run_id, source, request_id) 去重，INSERT OR IGNORE 写入
+              # Message.usage 只是展示快照；用量页 / 审计 / 成本的权威源是本表
+              # 缺数据记 NULL + cost_source=unknown，不伪造 0
+              # api_key_id：外部流量归属（internal 为空）；老库由 ADDITIVE_COLUMNS 补列
+api_keys(id, owner_id, name, gateway_id→gateways, key_mask, key_hash UNIQUE, enabled, revoked_at,
+         last_used_at, daily/monthly request/token limits, created_at, updated_at)
+         # 只存 sha256；明文 cosk_… 只在签发时返回一次；配额为空/0 = 不限制
+usage_pricing(id, owner_id, model_pattern, input/output/cache_read/cache_creation_per_million,
+              enabled, created_at, updated_at)
+              # 手工价（美元/百万 token）；只对写入之后的新账本行生效，不重算历史
 task_cards(id, conversation_id→conversations UNIQUE, anchor_message_id, title, items JSON,
            version, last_run_id, created_at, updated_at)
            # 一个对话最多一张；items = [{id,text,done,done_at,updated_at}]

@@ -1,0 +1,9 @@
+{
+  "tokens": {
+    "input": 1000,
+    "output": 50,
+    "total": 1050,
+    "cache_read": 400,
+    "cache_write": 100
+  }
+}

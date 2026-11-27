@@ -944,10 +944,14 @@ export function MobileChatPage() {
       }
     : null
 
-  const usage = useMemo(
-    () => summarizeUsage([...messages.filter((m) => m.role === 'assistant').map((m) => m.usage), live?.usage]),
-    [messages, live?.usage],
-  )
+  const usage = useMemo(() => {
+    const assistants = messages.filter((m) => m.role === 'assistant')
+    return summarizeUsage(
+      [...assistants.map((m) => m.usage), live?.usage],
+      // 流式那一轮还没落库：走字段兜底；落库后以消息上的 usage_protocol 为准。
+      [...assistants.map((m) => m.usage_protocol), undefined],
+    )
+  }, [messages, live?.usage])
 
   // 气泡与输入区里的图片都从这条出口取：rel_path → 对话工作目录的只读文件 URL。
   const resolveMediaUrl = useCallback(
@@ -1250,9 +1254,9 @@ export function MobileChatPage() {
         // 用量统计挪到输入框「下面」：贴底的是输入框。固定 2×2 网格（四项两行，不再随手换行）。
         footer={
           usage.messages > 0 ? (
-            <div className="m-usage">
-              <span>
-                读取 <b>{usage.input.toLocaleString()}</b> tokens
+            <div className="m-usage" title="整段对话累计消耗（≠ 当前上下文窗口）">
+              <span title="普通输入，不含缓存">
+                输入 <b>{usage.input.toLocaleString()}</b> tokens
               </span>
               <span>
                 输出 <b>{usage.output.toLocaleString()}</b> tokens

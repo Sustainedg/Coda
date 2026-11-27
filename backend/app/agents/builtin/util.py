@@ -5,6 +5,8 @@ import json
 import sys
 from typing import Any
 
+from ..metering import normalize_usage
+
 
 def truthy(value: Any) -> bool:
     if isinstance(value, str):
@@ -49,51 +51,15 @@ def dig(payload: Any, *path: str, default: Any = None) -> Any:
     return cursor
 
 
-#: 「缓存 token 与 input_tokens 分离」的字段（Anthropic / Claude Code 记法）。
-_EXCLUSIVE_CACHE_KEYS = (
-    "cache_read_input_tokens",
-    "cache_creation_input_tokens",
-    "cache_read_tokens",
-    "cache_creation_tokens",
-)
-_INPUT_KEYS = ("input_tokens", "inputTokens", "prompt_tokens")
-_CACHE_READ_KEYS = (
-    "cache_read_input_tokens",
-    "cached_input_tokens",
-    "cachedInputTokens",
-    "cached_tokens",
-    "prompt_cache_hit_tokens",
-    "cache_read_tokens",
-)
-_CACHE_CREATE_KEYS = (
-    "cache_creation_input_tokens",
-    "cache_creation_tokens",
-    "cache_write_input_tokens",
-    "cacheWriteInputTokens",
-)
+def context_tokens(usage: Any, *, protocol: str | None = None) -> int:
+    """一次请求的**输入侧 token 总数**（上下文窗口占用）。
 
-
-def _number(usage: dict[str, Any], keys: tuple[str, ...]) -> int:
-    for key in keys:
-        value = usage.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return int(value)
-    return 0
-
-
-def context_tokens(usage: Any) -> int:
-    """从一次模型请求的 usage 里取出**输入侧 token 总数**（上下文占用）。
-
-    不同内核的记法不一样：
-    * Anthropic 风格（``input_tokens`` + ``cache_read_input_tokens``）两者分离，需要相加；
-    * OpenAI 风格（``prompt_tokens`` 含 ``cached_tokens``）缓存是子集，不能重复相加。
+    这是适配器侧的薄包装；真正的字段表与“包含/分离”判定只有一份，
+    在 :mod:`app.agents.metering`。``protocol`` 为空时按字段形状兜底。
     """
-    if not isinstance(usage, dict) or not usage:
-        return 0
-    total = _number(usage, _INPUT_KEYS)
-    if any(key in usage for key in _EXCLUSIVE_CACHE_KEYS):
-        total += _number(usage, _CACHE_READ_KEYS) + _number(usage, _CACHE_CREATE_KEYS)
-    return total if total > 0 else 0
+    counts = normalize_usage(usage, protocol=protocol)
+    value = counts.get("context_tokens")
+    return int(value) if value else 0
 
 
 #: npm 全局安装 / 更新的包装脚本（Node 实现，三平台同一套逻辑）。
@@ -248,3 +214,55 @@ def workspace_only(ctx: Any) -> bool:
     落到自己的机制），读取方式只有这一份，避免各适配器自己写默认值时对不齐。
     """
     return (ctx.option("file_access_scope") or "unrestricted") == "workspace_only"
+
+
+#: Claude Code 的原生压缩窗口范围（官方实测：小于 100K / 大于 1M 会被内核夹取）。
+_CLAUDE_NATIVE_MIN_WINDOW = 100_000
+_CLAUDE_NATIVE_MAX_WINDOW = 1_000_000
+
+
+def compaction_percent(trigger_tokens: int, window_tokens: int) -> int:
+    """触发阈值占窗口的整数百分比（Claude 的环境变量只收 1–100 的整数）。"""
+    if window_tokens <= 0 or trigger_tokens <= 0:
+        return 80
+    return max(1, min(100, int(trigger_tokens / window_tokens * 100 + 1e-8)))
+
+
+def claude_compaction_env(
+    window_tokens: int | None, trigger_tokens: int | None
+) -> dict[str, str]:
+    """把平台上限 / 阈值翻成 Claude Code 的原生压缩环境变量。
+
+    * ``CLAUDE_CODE_AUTO_COMPACT_WINDOW``：内核判断「上下文窗口多大」；
+    * ``CLAUDE_AUTOCOMPACT_PCT_OVERRIDE``：按窗口的百分比触发自动压缩。
+
+    Claude 的滚动窗口被限制在 100K–1M，百分比要按**夹取后的窗口**算，否则在 200k
+    窗口上用户设 80% 会被内核理解成别的比例。没有有效值时返回空字典（不干预）。
+    """
+    if not isinstance(window_tokens, int) or window_tokens <= 0:
+        return {}
+    native_window = max(
+        _CLAUDE_NATIVE_MIN_WINDOW, min(_CLAUDE_NATIVE_MAX_WINDOW, window_tokens)
+    )
+    env = {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(window_tokens)}
+    if isinstance(trigger_tokens, int) and trigger_tokens > 0:
+        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = str(
+            compaction_percent(trigger_tokens, native_window)
+        )
+    return env
+
+
+def codex_compaction_overrides(
+    window_tokens: int | None, trigger_tokens: int | None
+) -> dict[str, str]:
+    """把平台上限 / 阈值翻成 Codex 的 ``-c`` 配置覆盖。
+
+    Codex 自己会在 90% 上限内夹取触发点；这里原样下发用户 / 平台口径，让内核按自己的
+    安全边界再收敛（比平台硬编码 90% 更贴近内核版本）。
+    """
+    overrides: dict[str, str] = {}
+    if isinstance(window_tokens, int) and window_tokens > 0:
+        overrides["model_context_window"] = str(window_tokens)
+    if isinstance(trigger_tokens, int) and trigger_tokens > 0:
+        overrides["model_auto_compact_token_limit"] = str(trigger_tokens)
+    return overrides

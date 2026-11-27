@@ -37,7 +37,7 @@
    禁止在 `runtime/`、`api/`、前端里为某个具体 `type_id` 写分支。
 2. **适配器是叶子节点。** 适配器**禁止** `import` 任何 `app.api.*`、`app.runtime.*`、`app.db.*`、`app.models`。
    它只能依赖 `agents/base.py`、`agents/events.py`、`agents/skills.py`、`agents/mcp.py`、
-   `agents/builtin/util.py`、标准库与 `httpx`。
+   `agents/metering.py`、`agents/builtin/util.py`、标准库与 `httpx`。
 3. **适配器无状态、不碰数据库。** 一次运行所需的一切都从 `AgentContext` 取；解析过程的状态放进 `AgentRun.state`。
 4. **所有可配置项必须声明为 `ConfigField`。** 禁止在 React 里为某个智能体硬编码表单字段。
 5. **事件协议是框架与适配器之间唯一的方言。** 新增事件类型必须**同时**改：
@@ -87,7 +87,8 @@
  │                 provisioning=运行时(CLI 内核)的安装/更新/卸载执行   │
  ├───────────────────────────────────────────────────────────────────┤
  │ agents/         ★ 适配器插件层：base(契约) · events(事件) ·         │
- │                 registry(注册) · skills(技能契约) · mcp(MCP 契约) · builtin/*(实现) │
+ │                 registry(注册) · skills(技能契约) · mcp(MCP 契约)  │
+ │                 metering(用量归一化) · builtin/*(实现)             │
  ├───────────────────────────────────────────────────────────────────┤
  │ models/db · schemas · settings · security · auth/auth_deps · attachments · builtin_mcp · bootstrap│
  └───────────────────────────────────────────────────────────────────────────────────┘
@@ -121,7 +122,7 @@ IM 域 `im/` 同样是**旁路功能**，不在主干上：`api/__init__.py` 只
 | 层 | 负责 | 不负责 |
 | --- | --- | --- |
 | `agents/builtin/*` | 怎么调用某个智能体、怎么把它的输出翻译成事件 | 存储、HTTP、UI、取消（框架统一做） |
-| `agents/base.py` `events.py` `registry.py` `skills.py` `mcp.py` | 契约与协议（改动影响面最大，慎改） | 具体产品逻辑 |
+| `agents/base.py` `events.py` `registry.py` `skills.py` `mcp.py` `metering.py` | 契约 / 协议 / 用量归一化（改动影响面最大，慎改） | 具体产品逻辑 |
 | `runtime/runner.py` | 起子进程/发 HTTP、读流、超时、取消、脱敏 | 业务规则 |
 | `runtime/service.py` | 载入 对话→智能体→适配器（网关提供密钥与地址）、能力决策、历史回放、落库 | 具体命令拼装 |
 | `runtime/skills.py` | 技能统一编目、智能体分配、物化进内核隔离目录 | 哪个内核把技能放哪（那是适配器的事） |
@@ -663,11 +664,13 @@ curl -s http://127.0.0.1:8010/api/health
 | `agents/events.py` | `runtime/service.consume_run`、前端 `applyEvent` + `types.ts`、`docs/architecture.md` **与 `docs/ai-coding-standard.md` §4.1 两张事件表**（两处各有一份，容易只改一处） |
 | `runtime/context.py`（上下文口径：计量 / 快照失效 / 压缩 / 上限） | `runtime/service.py`（落库与压缩触发点）、`api/conversations.py` + `api/system.py`、前端 `ContextMeter` + `lib/contextUsage` + `lib/types.ts`、`models.ADDITIVE_COLUMNS`（新列必须登记）、`docs/architecture.md` 事件表、`docs/功能文档/上下文窗口与自动压缩.md`、`tests/test_context.py`；**新增 / 修改内核适配器**还要同步 `tests/test_adapters.py` 与该功能文档 §6.1 的「各内核对接现状」矩阵（逐内核实测，别照抄） |
 | `agents/skills.py` / 技能契约 | 全部声明 `skills=True` 的适配器 + `runtime/skills.py` + `tests/test_skills.py` |
+| `agents/metering.py` / 用量归一化 | 全部适配器 + `runtime/usage_ledger.py` / `recording_gateway.py` + `tests/test_usage_*.py` |
 | `runtime/skills.py` | 智能体分配接口、`service.prepare_run` 的物化步骤、前端技能页与智能体设定页 |
 | `agents/mcp.py` / MCP 契约 | 全部声明 `mcp=True` 的适配器 + `runtime/mcp.py` + `api/mcp.py` + `tests/test_mcp.py` |
 | `runtime/mcp.py` · `api/mcp.py` | 智能体分配接口、`service.prepare_run` 的物化步骤、前端 MCP 页（两端）与智能体设定页 |
 | `app/builtin_mcp.py`（内置 MCP 声明） | 启动播种与 `ensure_builtin_servers`、`docs/architecture.md` §6、`docs/admin-mcp.md`、`tests/test_mcp.py` 的内置用例；脚本要随 `scripts/release.sh` 与 `docker/Dockerfile` 打包 |
 | `runtime/gateway_probe.py` · `api/gateways.py` | 网关 CRUD、官方案例播种（`bootstrap.py`）、前端 `GatewayManager` / `MobileGatewaysPage`、适配器的 `protocol`/`default_auth_style`/`default_models` |
+| 新增记录网关 / 一手账本（`runtime/usage_ledger.py` · `runtime/recording_gateway.py` · `api/usage_gateway.py`） | `runtime/gateway.bind_recording` 与 `service.prepare_run` / `consume_run` 的接线、`Capabilities.recording_gateway`（适配器声明）、`models.UsageRecord`（新表由 `create_all` 自动建，不进 `ADDITIVE_COLUMNS`）、`CODA_RECORDING_GATEWAY` 开关；**P2 展示侧**：`api/usage.py` 的 `usage_ledger_started_at` 分段 + `by_source` + `/usage/records`、`runtime/context.py` 运行中账本分支与 `api/conversations.py` 传 `active_run`、前端 `UsageReport` / `types.ts` 的可选 `by_source`、`scripts/backfill_usage_records.py`（默认 dry-run）；**P3 外部 API**：`app/api_keys.py`（哈希/掩码/配额）、`api/api_keys.py`（签发/吊销）、`api/model_gateway.py`（外部路由）、`models.ApiKey` / `UsagePricing`、`UsageRecord.api_key_id`（**登记 `ADDITIVE_COLUMNS`**）、`runtime/usage_ledger.apply_cost`（只对新行；**手工价 > `app/model_catalog.py` 的 models.dev 目录价 > unknown**，`UsageRecord.cost_pricing` 记依据，用量页返回 `cost_usd`/`cost_coverage`；目录启动读磁盘快照 + 后台刷新）、**原生 `context.usage` 实时入账**（`record_native_snapshot_isolated`：每 run 一行、运行中更新、收尾补计费；record 模式下不写，gateway 仍是权威源）、**原生压缩配置**（`AgentContext.context_limit_tokens/trigger_tokens` + `apply_context_policy`；Claude 下发环境变量、Codex 下发 `-c model_context_window`/`model_auto_compact_token_limit`；`tests/test_native_compaction.py`）、`api/usage.py` 的 `/usage/pricing` 与 `/usage/records/export.csv`；**前端**：`SettingsPage` 的「外部 API」标签 + `components/ExternalApiPanel.tsx` + `lib/api.ts` / `lib/types.ts` 的 Key/单价/审计类型与方法；测试 `tests/test_usage_ledger.py` / `test_recording_gateway.py` / `test_gateway_binding.py` / `test_api_keys.py` / `test_model_gateway.py` / `test_usage.py` / `test_context.py`、`docs/architecture.md` §4.4 / §4.5 与 §7；**不新增事件类型**（网关在运行层直接写账本，复用现有 `usage` / `context.usage` 展示通道） |
 | `models.py` / `schemas.py` | `api/*` 的读写、前端 `types.ts`、旧数据兼容性 |
 | `auth.py` / `auth_deps.py` / `api/auth.py` | 登录 / 注册 / 用户管理、`current_user` 依赖、`owner_id` 过滤、管理员入口、前端 `AuthGate` / `AccountPanel` / `UserAdminPanel` 与 `lib/auth.ts` |
 | `app/avatars.py` / `api/auth.py` 的头像接口 | `models.ADDITIVE_COLUMNS` 的 `users.avatar_file`、`schemas` / `types.ts` 的 `AuthUser.avatar`、前端 `lib/avatar.ts` + `UserAvatar` / `AvatarUploader`（两端共用）、`tests/test_auth.py` 的头像用例 |

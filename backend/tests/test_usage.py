@@ -7,6 +7,7 @@ import httpx
 
 from app.db import SessionLocal
 from app.models import Conversation, Message, Skill
+from app.runtime import usage_ledger
 from helpers import make_gateway, make_profile
 
 
@@ -69,7 +70,9 @@ async def test_usage_overview_normalises_tokens_across_field_names(client: httpx
     tokens = data["tokens"]
 
     assert tokens["messages"] == 2
-    assert tokens["input"] == 300
+    # 统一口径后「输入」是普通输入（不含缓存）：
+    #   Claude 分离式 = 100；OpenAI 包含式 = 200 - 100(缓存) = 100。
+    assert tokens["input"] == 200
     assert tokens["output"] == 90
     assert tokens["cache_read"] == 1000
     assert tokens["cache_creation"] == 100
@@ -207,3 +210,200 @@ async def test_usage_overview_agent_filter_rejects_unknown_agent(client: httpx.A
     response = await client.get("/api/usage/overview?agent_id=不存在的智能体")
     assert response.status_code == 422
     assert "不存在" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# P2：账本优先 + 旧消息分段
+# ---------------------------------------------------------------------------
+
+
+async def test_overview_segments_ledger_and_legacy_without_double_count(client: httpx.AsyncClient):
+    """账本启用前读旧消息、之后读账本；启用后的消息即使带 usage 也不重复计。"""
+    profile = await make_profile(client)
+    conversation_id = await _seed_conversation(
+        profile["id"],
+        [
+            {
+                "usage": {"input_tokens": 100, "output_tokens": 10},
+                "created_at": datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc),
+            },
+            # 账本启用后的消息：token 应由账本段负责，不能在这里再算一次。
+            {
+                "usage": {"input_tokens": 999, "output_tokens": 999},
+                "created_at": datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc),
+            },
+        ],
+    )
+    async with SessionLocal() as session:
+        await usage_ledger.mark_ledger_started(
+            session, when=datetime(2026, 11, 20, tzinfo=timezone.utc)
+        )
+        await usage_ledger.record(
+            session,
+            usage_ledger.build_record(
+                run_id="ledger-run", request_id="req-1",
+                source=usage_ledger.SOURCE_GATEWAY,
+                counts=usage_ledger.normalize_usage({"input_tokens": 40, "output_tokens": 5}),
+                conversation_id=conversation_id,
+                agent_profile_id=profile["id"],
+                created_at=datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc),
+            ),
+        )
+        await session.commit()
+
+    data = (await client.get("/api/usage/overview")).json()
+    # 旧消息 100+10 + 账本 40+5；999 那条被跳过。
+    assert data["tokens"]["messages"] == 2
+    assert data["tokens"]["input"] == 140
+    assert data["tokens"]["output"] == 15
+    assert data["tokens"]["total"] == 155
+    assert data["by_source"]["legacy"]["input"] == 100
+    assert data["by_source"]["gateway"]["input"] == 40
+
+
+async def test_usage_records_endpoint_filters_and_validates(client: httpx.AsyncClient):
+    profile = await make_profile(client)
+    conversation_id = await _seed_conversation(profile["id"], [])
+    async with SessionLocal() as session:
+        await usage_ledger.mark_ledger_started(
+            session, when=datetime(2026, 11, 1, tzinfo=timezone.utc)
+        )
+        for index, source in enumerate(("gateway", "native", "legacy")):
+            await usage_ledger.record(
+                session,
+                usage_ledger.build_record(
+                    run_id=f"run-{index}", request_id=f"req-{index}", source=source,
+                    counts=usage_ledger.normalize_usage({"input_tokens": 10 * (index + 1)}),
+                    conversation_id=conversation_id,
+                    created_at=datetime(2026, 11, 10 + index, tzinfo=timezone.utc),
+                ),
+            )
+        await session.commit()
+
+    everything = (await client.get("/api/usage/records")).json()
+    assert len(everything["records"]) == 3
+    assert everything["has_more"] is False
+
+    gateway = (await client.get("/api/usage/records", params={"source": "gateway"})).json()
+    assert len(gateway["records"]) == 1
+    assert gateway["records"][0]["source"] == "gateway"
+    assert gateway["records"][0]["input_tokens"] == 10
+
+    bad = await client.get("/api/usage/records", params={"source": "nope"})
+    assert bad.status_code == 422
+
+
+async def test_ledger_survives_conversation_deletion(client: httpx.AsyncClient):
+    """账本是权威源：删对话 / 删消息后，已记的用量仍要能看到。"""
+    profile = await make_profile(client)
+    conversation_id = await _seed_conversation(profile["id"], [])
+    async with SessionLocal() as session:
+        await usage_ledger.mark_ledger_started(
+            session, when=datetime(2026, 11, 1, tzinfo=timezone.utc)
+        )
+        await usage_ledger.record(
+            session,
+            usage_ledger.build_record(
+                run_id="del-run", request_id="req-del",
+                source=usage_ledger.SOURCE_GATEWAY,
+                counts=usage_ledger.normalize_usage({"input_tokens": 77}),
+                conversation_id=conversation_id,
+                created_at=datetime(2026, 11, 10, tzinfo=timezone.utc),
+            ),
+        )
+        await session.commit()
+
+    async with SessionLocal() as session:
+        await session.delete(await session.get(Conversation, conversation_id))
+        await session.commit()
+
+    data = (await client.get("/api/usage/overview")).json()
+    assert data["tokens"]["input"] == 77
+    # 对话已删除：标题不可见，但账本行仍按归属进入榜单。
+    assert data["by_conversation"][0]["title"] == "（已删除的对话）"
+
+
+async def test_pricing_crud_and_csv_export(client: httpx.AsyncClient):
+    profile = await make_profile(client)
+    conversation_id = await _seed_conversation(profile["id"], [])
+    created = await client.post(
+        "/api/usage/pricing",
+        json={"model_pattern": "claude-x", "input_per_million": 3, "output_per_million": 15},
+    )
+    assert created.status_code == 200, created.text
+    listed = (await client.get("/api/usage/pricing")).json()["pricing"]
+    assert len(listed) == 1 and listed[0]["model_pattern"] == "claude-x"
+
+    async with SessionLocal() as session:
+        await usage_ledger.mark_ledger_started(
+            session, when=datetime(2026, 11, 1, tzinfo=timezone.utc)
+        )
+        await usage_ledger.record(
+            session,
+            usage_ledger.build_record(
+                run_id="csv-run", request_id="r1",
+                source=usage_ledger.SOURCE_GATEWAY,
+                counts=usage_ledger.normalize_usage({"input_tokens": 12, "output_tokens": 3}),
+                conversation_id=conversation_id,
+                model="claude-x",
+                created_at=datetime(2026, 11, 10, tzinfo=timezone.utc),
+            ),
+        )
+        await session.commit()
+
+    export = await client.get("/api/usage/records/export.csv")
+    assert export.status_code == 200
+    assert "text/csv" in export.headers["content-type"]
+    body = export.text.lstrip("\ufeff")
+    assert body.startswith("created_at,source,origin")
+    assert "csv-run" in body
+
+    deleted = await client.delete(f"/api/usage/pricing/{created.json()['id']}")
+    assert deleted.status_code == 200
+    assert (await client.get("/api/usage/pricing")).json()["pricing"] == []
+
+
+async def test_overview_reports_cost_and_coverage(client: httpx.AsyncClient):
+    """成本只累加已定价行；覆盖率区分 estimated / unknown（历史消息算 unknown）。"""
+    profile = await make_profile(client)
+    conversation_id = await _seed_conversation(
+        profile["id"],
+        [
+            {
+                "usage": {"input_tokens": 100},
+                "created_at": datetime(2026, 10, 1, tzinfo=timezone.utc),
+            }
+        ],
+    )
+    async with SessionLocal() as session:
+        await usage_ledger.mark_ledger_started(
+            session, when=datetime(2026, 11, 1, tzinfo=timezone.utc)
+        )
+        await usage_ledger.record(
+            session,
+            usage_ledger.build_record(
+                run_id="cost-a", request_id="a",
+                source=usage_ledger.SOURCE_GATEWAY,
+                counts=usage_ledger.normalize_usage({"input_tokens": 10}),
+                conversation_id=conversation_id,
+                cost_usd=0.25,
+                cost_source=usage_ledger.COST_ESTIMATED,
+                created_at=datetime(2026, 11, 10, tzinfo=timezone.utc),
+            ),
+        )
+        await usage_ledger.record(
+            session,
+            usage_ledger.build_record(
+                run_id="cost-b", request_id="b",
+                source=usage_ledger.SOURCE_NATIVE,
+                counts=usage_ledger.normalize_usage({"input_tokens": 20}),
+                conversation_id=conversation_id,
+                created_at=datetime(2026, 11, 11, tzinfo=timezone.utc),
+            ),
+        )
+        await session.commit()
+
+    data = (await client.get("/api/usage/overview")).json()
+    assert data["cost_usd"] == 0.25
+    assert data["cost_coverage"]["estimated"] == 1
+    assert data["cost_coverage"]["unknown"] == 2  # 历史消息 1 + 未定价账本行 1

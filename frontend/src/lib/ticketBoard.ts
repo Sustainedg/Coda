@@ -293,7 +293,7 @@ function toolNamesOf(step: CollabStep): string[] {
  * 一步的 token 用量：交给 `lib/usage.ts` 归一化（各内核字段名不同，直接加起来会重复计数）。
  * 口径与顶栏、进度卡一致，看板不另立一套。
  */
-export function usageTotal(usage: Record<string, number> | null | undefined): number {
+export function usageTotal(usage: Record<string, unknown> | null | undefined): number {
   return summarizeUsage([usage]).total
 }
 

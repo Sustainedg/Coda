@@ -16,7 +16,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from .auth import hash_password
-from .models import AgentProfile, Conversation, Credential, Gateway, McpServer, User
+from .models import (
+    AgentProfile,
+    ApiKey,
+    Conversation,
+    Credential,
+    Gateway,
+    McpServer,
+    UsageRecord,
+    User,
+)
 from .security import encrypt
 from .settings import get_settings
 
@@ -250,7 +259,11 @@ async def backfill_ownership(session: AsyncSession, admin: User) -> None:
         return
     owner_id = admin.id
     # 逐表回填无归属（NULL）与虚拟管理员名下（__system__）的行。用原生 UPDATE 避免整行加载进 ORM。
-    for model in (Gateway, AgentProfile, Conversation, Credential, McpServer):
+    # usage_records 是后加的一手账本：鉴权关闭期间写的行 owner_id 为空，要一起回填，
+    # 否则开启鉴权后非管理员看不到自己的历史用量。
+    # 注意 ``usage_pricing``：它的 ``owner_id IS NULL`` 是「平台级」语义，不是老库无主，
+# **不能**回填给管理员，否则全局价会变成管理员私有。
+    for model in (Gateway, AgentProfile, Conversation, Credential, McpServer, UsageRecord, ApiKey):
         table_name = model.__tablename__  # type: ignore[attr-defined]
         await session.execute(
             # SQLModel 的表名稳定，这里用 text 走原生 SQL 最直接。

@@ -101,8 +101,35 @@ def test_claude_code_stream_parsing_dedupes_partial_text():
     kinds = [e.type.value for e in events]
     assert kinds.count("session") == 1
     assert run.emitted_text == "Hello"  # 不应重复输出整段文本
-    assert "tool.call" in kinds and "tool.result" in kinds and "usage" in kinds
+    assert "tool.call" in kinds and "tool.result" in kinds and "usage.raw" in kinds
     assert run.session_id == "s1"
+
+
+def test_anthropic_family_keeps_raw_nested_usage():
+    """P4：Claude / CodeBuddy 的 result usage 原样上报，嵌套字段不能被适配器丢掉。"""
+    usage = {
+        "input_tokens": 10,
+        "cache_read_input_tokens": 20,
+        "cache_creation": {
+            "ephemeral_1h_input_tokens": 4,
+            "ephemeral_5m_input_tokens": 6,
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {"thinking_tokens": 3},
+    }
+    for agent_id in ("claude-code", "codebuddy-cli"):
+        run = get_agent(agent_id).create_run(ctx())
+        events = list(
+            run.feed(
+                json.dumps(
+                    {"type": "result", "session_id": "s", "usage": usage}
+                )
+                + "\n"
+            )
+        )
+        usage_events = [event for event in events if event.type.value == "usage.raw"]
+        assert len(usage_events) == 1, agent_id
+        assert usage_events[0].payload == usage, agent_id
 
 
 def test_claude_code_reports_context_usage_from_message_start():
@@ -844,11 +871,15 @@ def test_hermes_agent_stream_parsing():
     calls = [e for e in events if e.type.value == "tool.call"]
     results = [e for e in events if e.type.value == "tool.result"]
     assert calls[0].call_id == results[0].call_id == "call_00_x"
-    usage_events = [e for e in events if e.type.value == "usage"]
-    # 用量要归一成平台口径，否则界面上的 token 统计恒为 0
-    assert usage_events[0].payload["input_tokens"] == 25091
-    assert usage_events[0].payload["output_tokens"] == 2
-    assert usage_events[0].payload["cache_read_input_tokens"] == 2048
+    usage_events = [e for e in events if e.type.value == "usage.raw"]
+    # P4：适配器原样上报 Hermes 的短字段；协议仍待真实样本确认（账本 unknown）。
+    assert usage_events[0].payload == {
+        "input": 25091,
+        "output": 2,
+        "total": 25093,
+        "cache_read": 2048,
+        "cache_write": 0,
+    }
 
 
 def test_hermes_agent_result_text_is_a_fallback():
@@ -1095,7 +1126,7 @@ def test_codebuddy_stream_parsing_matches_claude_shape():
     assert kinds.count("session") == 1
     assert run.emitted_text == "Hello"  # 已有逐字增量时不重复输出整段
     assert run.thinking == "想一下"
-    assert "tool.call" in kinds and "tool.result" in kinds and "usage" in kinds
+    assert "tool.call" in kinds and "tool.result" in kinds and "usage.raw" in kinds
     assert run.session_id == "cb1"
     # 内核特有的 usage_update 不产生错误事件
     assert "error" not in kinds

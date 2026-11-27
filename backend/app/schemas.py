@@ -578,6 +578,8 @@ class MessageRead(BaseModel):
     content: str
     parts: list[dict[str, Any]] = Field(default_factory=list)
     usage: dict[str, Any] = Field(default_factory=dict)
+    #: usage 快照的协议；前端按同一口径归一化（老行为空 = 字段兜底）。
+    usage_protocol: str | None = None
     status: str
     error: str | None = None
     created_at: datetime

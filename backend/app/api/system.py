@@ -201,8 +201,12 @@ async def set_context_settings(
                 raise HTTPException(status_code=404, detail="对话不存在")
             require_owned_strict(conversation, user)
             profile = await session.get(AgentProfile, conversation.agent_profile_id)
+            active_run = registry.active_for(conversation.id)
             used, _ = await context_service.conversation_usage(
-                session, conversation, profile.system_prompt if profile else None
+                session,
+                conversation,
+                profile.system_prompt if profile else None,
+                active_run_id=active_run.id if active_run else None,
             )
             # 校验用**实际生效**的上限：自动模式跟随内核窗口时，上限可能不是用户填的那个。
             effective = settings.for_window(conversation.context_kernel_window_tokens)

@@ -47,6 +47,22 @@
 > 新上报的快照误判成压缩前的旧数据作废，估算回落到「按内容估算」把内核已折叠的历史
 > 又算一遍，用量虚高数倍——反过来触发一次多余的平台压缩。
 
+> **记录网关（P1，默认关闭）开启时，窗口快照优先读一手账本**：`usage_records` 里该 run
+> 最新一行的 `context_tokens`（代理从上游 `usage` 归一化：Anthropic = 输入 + 缓存读 + 缓存写；
+> OpenAI Chat = `prompt_tokens`；OpenAI Responses = `input_tokens`）比内核二次上报更可信。
+> 运行收尾用它校准 `messages.context_tokens`；没有账本行才回退上面的原生快照 / 内容估算。
+> **运行中面板也直接读该 run 最新账本行**（记录网关请求终态即落账，消息还没落库也能看到
+> 最新数字）；原生 / harness 的 `context.usage` 现在也**实时入账**——每个 run 一行、运行中
+> 更新，收尾再补计费，所以官方直连内核在运行中同样能看到真实窗口。
+> 运行结束后仍以消息快照为主，避免「最新请求 + 其后消息」重复计算。
+> 详细口径与互斥规则见 `docs/usage-gateway.md`。
+
+> **平台还会把上限 / 阈值翻译成内核自己的压缩配置**：Claude Code 下发
+> `CLAUDE_CODE_AUTO_COMPACT_WINDOW` / `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`，Codex 下发
+> `model_context_window` / `model_auto_compact_token_limit`。用户显式设了 `--autocompact`
+> 时不覆盖（尊重显式配置）。这样「平台压缩」和「内核原生压缩」共用同一个阈值，不会出现
+> 「面板说没超、内核却提前压」。上限在自动模式下跟随内核真实窗口（`context.window`）。
+
 ### 2. 按内容估算（没有快照时的兜底）
 
 | 内容 | 估算规则 |

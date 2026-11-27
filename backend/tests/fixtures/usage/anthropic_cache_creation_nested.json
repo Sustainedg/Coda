@@ -1,0 +1,10 @@
+{
+  "input_tokens": 1000,
+  "cache_creation_input_tokens": null,
+  "cache_read_input_tokens": 0,
+  "cache_creation": {
+    "ephemeral_1h_input_tokens": 200,
+    "ephemeral_5m_input_tokens": 300
+  },
+  "output_tokens": 10
+}

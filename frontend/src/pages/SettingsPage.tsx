@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { AccountPanel } from '../components/AccountPanel'
 import { UserAdminPanel } from '../components/UserAdminPanel'
 import { CredentialVault } from '../components/CredentialVault'
+import { ExternalApiPanel } from '../components/ExternalApiPanel'
 import { GatewayManager } from '../components/GatewayManager'
 import { KernelManager } from '../components/KernelManager'
 import { ProxySettings } from '../components/ProxySettings'
@@ -30,6 +31,7 @@ const ALL_TABS = [
   { id: 'users', label: '用户' },
   { id: 'chat', label: '对话' },
   { id: 'gateways', label: '网关' },
+  { id: 'external', label: '外部 API' },
   { id: 'credentials', label: '凭据' },
   { id: 'network', label: '网络' },
   { id: 'kernels', label: '内核管理' },
@@ -95,7 +97,7 @@ export function SettingsPage() {
         <div>
           <h1 className="page-title">设置</h1>
           <p className="page-desc">
-            按类型分页：外观 · 账号{isAdmin ? ' · 用户' : ''} · 对话 · 网关 · 凭据 · 网络 · 内核管理 · 关于；
+            按类型分页：外观 · 账号{isAdmin ? ' · 用户' : ''} · 对话 · 网关 · 外部 API · 凭据 · 网络 · 内核管理 · 关于；
             IM 收在每个智能体设定页里。
           </p>
         </div>
@@ -168,6 +170,8 @@ export function SettingsPage() {
         )}
 
         {tab === 'gateways' && <GatewayManager />}
+
+        {tab === 'external' && <ExternalApiPanel />}
 
         {tab === 'credentials' && <CredentialVault />}
 

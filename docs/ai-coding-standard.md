@@ -47,18 +47,21 @@ agents/events.py    事件协议（EventType + 构造器）
 agents/registry.py  插件注册（@register_agent + 自动加载 builtin/*）
 agents/skills.py    技能契约（SkillSpec / SkillRoot / SkillMount + 扫描）
 agents/mcp.py       MCP 契约（McpServerSpec / McpMount + JSON / TOML 解析与渲染）
+agents/metering.py  用量归一化（协议优先的 token 字段表，适配器与 runtime 共用的叶子）
 agents/builtin/*    ★ 各智能体的实现（唯一的扩展点）
         │
 models.py db.py schemas.py settings.py security.py bootstrap.py   存储 / 契约 / 配置 / 密钥
 builtin_mcp.py                                                     平台内置 MCP 的纯声明（不碰库 / HTTP / 运行时）
 auth.py auth_deps.py                                               口令 / 令牌（含 PAT） / 当前用户 / 归属校验
+api_keys.py                                                        外部模型 API Key 的签发 / 哈希 / 配额判定
+model_catalog.py                                                   models.dev 参考价（磁盘快照 + 后台刷新）
 ```
 
 ### 2.2 每条依赖规则背后的理由
 
 | 规则 | 理由 |
 | --- | --- |
-| 适配器**不得** import `api/runtime/db/models/settings` | 适配器是叶子。一旦它能读数据库或读全局配置，就无法独立测试，也无法保证"新增智能体不动框架" |
+| 适配器**不得** import `api/runtime/db/models/settings`；只能依赖 `agents/` 内的叶子（base/events/skills/mcp/metering/builtin/util）、标准库与 `httpx` | 适配器是叶子。一旦它能读数据库或读全局配置，就无法独立测试，也无法保证"新增智能体不动框架" |
 | IM 平台适配器**不得** import 上层；`cryptography` 只允许经 `im/crypto.py` | 与智能体适配器同理；把平台协议细节（企业微信 AES）收进一个叶子工具模块，依赖清单才精确可控 |
 | 适配器**不得**自己持久化 | 持久化是 `service.consume_run` 的职责；适配器只产出事件。这样才能保证"换个存储不影响任何适配器" |
 | `api/` 保持薄 | 参数校验用 `schemas.py`，业务决策在 `runtime/`。这样同一套逻辑既能被 REST 复用，也能被未来的 WebSocket/CLI 复用 |
@@ -121,6 +124,7 @@ POST /api/conversations/{id}/messages
 | `tool.call` | `name`、`call_id`、`payload.input` | 工具调用 |
 | `tool.result` | `call_id`、`payload.output`、`payload.is_error` | 工具结果 |
 | `usage` | 任意数值键 | 整轮累计的 token / 费用 / 耗时（计费口径） |
+| `usage.raw` | 原始 usage 对象 | 内核原始小票（可含嵌套 / 字符串）；运行层按协议归一化后入账，与数值 `usage` 分开 |
 | `context.usage` | `payload.tokens` | **单次请求**的输入 token（上下文窗口占用，落 `messages.context_tokens`） |
 | `context.window` | `payload.tokens` | 内核上报的**真实上下文窗口大小**（落 `conversations.context_kernel_window_tokens`；平台上限设为「自动」时跟随它） |
 | `context.compacted` | `payload.trigger`、`payload.pre_tokens`、`payload.post_tokens`… | 内核侧**原生压缩**通知（如 Claude Code auto-compact）；运行层发日志提醒并使压缩前的快照失效 |
@@ -172,6 +176,7 @@ POST /api/conversations/{id}/messages
 | `mcp` | 该内核支持 MCP：适配器**必须**实现 `discover_mcp_servers()` 与 `mcp_mount()`（有架构守卫测试）；框架按 `mcp_mount` 把智能体分配到的 MCP 服务器写进隔离目录 / 工作目录 |
 | `skills` | 该内核支持技能：适配器**必须**实现 `skill_roots()` / `discover_skills()` / `skill_mount()` |
 | `working_directory` | 为每个对话分配独立工作目录并作为 cwd |
+| `recording_gateway` | 该内核接受 `base_url_env` 覆盖，可接入记录网关；只影响 `CODA_RECORDING_GATEWAY=auto` 的启用判定，不改变调用代码 |
 
 可选钩子 `resume_supported(ctx)`：当"声明支持续接、但某些配置下退化为回放"时使用
 （参考 `codex.py` 的 `resume_style`）。**声明与实际行为必须一致。**
@@ -195,7 +200,9 @@ POST /api/conversations/{id}/messages
 `workspace_dir`(cwd)、`session_id`（续接或 `None`）、`history`（回放用的历史轮次）、`prompt`（本轮输入）。
 另有 `skills` / `mcp_servers`（框架按分配注入的技能与 MCP 服务器）与 `home_dir`（框架物化好的
 内核隔离配置目录，技能与 MCP 共用同一个「家」）；MCP 的 `env` / `headers` 值可能含密钥，
-**适配器不得写进提示词 / 日志 / 事件**。
+**适配器不得写进提示词 / 日志 / 事件**。另有 `context_limit_tokens` / `context_trigger_tokens`
+（平台解析出的原生压缩上限 / 阈值）：适配器据此生成内核自己的压缩配置（Claude Code 环境变量、
+Codex `-c` 覆盖），为空 = 不干预。
 
 `AgentRun` 提供：`state`（本次运行私有字典）、`emitted_text`/`thinking`/`tool_calls`（框架自动累积）、
 `build_invocation()`、`feed(line)`，以及**结束时补发事件的钩子 `finish()`**。
@@ -230,6 +237,11 @@ POST /api/conversations/{id}/messages
 **后加的可选列**：SQLite 的 `create_all` 不会给已存在的表加列，所以新列要登记在
 `models.py`（对话域）、`collab/tables.py`（协作域）或 `im/tables.py`（IM 域）的
 `ADDITIVE_COLUMNS`，由 `db.init_db` 幂等补齐。
+
+**计量域的三张表**：`usage_records`（一手账本，`UNIQUE(run_id, source, request_id)` 去重）、
+`api_keys`（外部 API Key，只存 sha256）、`usage_pricing`（手工单价）。`usage_records` 的后加列
+`api_key_id` / `cost_pricing` 登记在 `ADDITIVE_COLUMNS`；口径与接口见
+[`usage-gateway.md`](./usage-gateway.md)。
 
 **schema 变更规则**（本地库有真实数据）：
 1. 只做**加列/加表**这类向后兼容变更，新列必须有默认值或可空。

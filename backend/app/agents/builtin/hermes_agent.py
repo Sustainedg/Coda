@@ -27,7 +27,7 @@ from ..events import (
     text_delta,
     tool_call,
     tool_result,
-    usage,
+    usage_raw,
 )
 from ..mcp import McpMount, McpServerSpec, parse_json_servers, to_json_servers
 from ..registry import register_agent
@@ -38,6 +38,7 @@ from ..skills import (
     SkillSpec,
     scan_skill_roots,
 )
+from ..metering import PROTOCOL_UNKNOWN
 from .util import as_list, flatten_content, truthy
 
 
@@ -137,6 +138,8 @@ class HermesAgent(AgentDefinition):
     default_gateway = "https://openrouter.ai/api/v1"
     default_model = "anthropic/claude-sonnet-4.6"
     protocol = "openai"
+    #: 真实 usage 协议尚未用样本确认：显式 unknown，账本保持 unknown 而不是猜。
+    usage_protocol = PROTOCOL_UNKNOWN
     default_auth_style = "bearer"
     default_models = [
         "anthropic/claude-sonnet-4.6",
@@ -516,9 +519,10 @@ class HermesAgent(AgentDefinition):
             if sid and run.state.get("session") != sid:
                 run.state["session"] = sid
                 yield session(sid)
-            tokens = self._normalize_usage(payload.get("tokens"))
-            if tokens:
-                yield usage(**tokens)
+            raw_usage = payload.get("tokens")
+            if isinstance(raw_usage, dict) and raw_usage:
+                # 原样上报；Hermes 协议尚未验证，账本侧会保持 unknown（pending）。
+                yield usage_raw(raw_usage)
             exit_code = payload.get("exit_code")
             if payload.get("error"):
                 run.state["is_error"] = True
@@ -536,25 +540,3 @@ class HermesAgent(AgentDefinition):
             run.state["is_error"] = True
             yield error(payload.get("message") or flatten_content(payload))
             return
-
-    @staticmethod
-    def _normalize_usage(raw: Any) -> dict[str, int]:
-        """把 Hermes 的 ``input/output/total/cache_read/cache_write`` 归一成平台口径。
-
-        界面按 ``input_tokens / output_tokens / cache_read_input_tokens`` 汇总用量，
-        字段名不同就等于「没有用量」，所以这里必须翻译一次。
-        """
-        if not isinstance(raw, dict):
-            return {}
-        mapping = {
-            "input": "input_tokens",
-            "output": "output_tokens",
-            "total": "total_tokens",
-            "cache_read": "cache_read_input_tokens",
-            "cache_write": "cache_creation_input_tokens",
-        }
-        return {
-            target: int(raw[source])
-            for source, target in mapping.items()
-            if isinstance(raw.get(source), (int, float))
-        }

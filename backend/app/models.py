@@ -20,7 +20,19 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.types import TypeDecorator
 from sqlmodel import Field, SQLModel
 
@@ -103,6 +115,23 @@ ADDITIVE_COLUMNS: dict[str, dict[str, str]] = {
         "agent_profile_id": "VARCHAR(64)",
         "context_tokens": "INTEGER",
         "context_snapshot_at": "DATETIME",
+        # 这条消息 usage 快照的协议：前端按同一协议归一化，避免 DeepSeek 等
+        # “分离式”被当成 OpenAI 包含式。老行留空 = 前端按字段兜底。
+        "usage_protocol": "VARCHAR(32)",
+    },
+    # 外部 API Key 计量是后加的：老账本行留空 = 内部流量（平台托管 / 原生）。
+    # 新库由 create_all 按最新结构建表，这里只在旧表上补列。
+    "usage_records": {
+        "api_key_id": "VARCHAR(64)",
+        # 成本计算依据（手工价 / 目录价 + 费率 + 快照哈希）是后加的：老行留空 = 无价。
+        "cost_pricing": "JSON",
+        # 归一化与双轨采集是后加的：老行全部留空，不回填、不重算。
+        "raw_usage": "JSON",
+        "usage_protocol": "VARCHAR(32)",
+        "normalizer_version": "VARCHAR(16)",
+        "telemetry_source": "VARCHAR(24)",
+        "response_shape": "VARCHAR(24)",
+        "upstream_request_id": "VARCHAR(120)",
     },
 }
 
@@ -113,6 +142,12 @@ def new_id() -> str:
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+#: 账本归属：internal（平台托管 / 原生） / external（外部 API Key）。
+#: 放在叶子层，避免上层模块为了一个字符串反向依赖 runtime。
+ORIGIN_INTERNAL = "internal"
+ORIGIN_EXTERNAL = "external"
 
 
 class UTCDateTime(TypeDecorator):
@@ -490,6 +525,9 @@ class Message(SQLModel, table=True):
     content: str = Field(default="", sa_column=Column(Text, nullable=False))
     parts: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON, nullable=False, default=list))
     usage: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False, default=dict))
+    #: 这条 usage 快照的协议（如 ``anthropic_messages`` / ``deepseek_camel``）。
+    #: 前端据此按同一口径归一化；老行留空 = 按字段兜底。
+    usage_protocol: str | None = Field(default=None, sa_column=Column(String(32)))
     status: str = Field(default="complete", sa_column=Column(String(16), nullable=False))
     error: str | None = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime, index=True))
@@ -504,6 +542,160 @@ class Message(SQLModel, table=True):
     #: 之后。失效判定必须比这个时间，否则压缩后的新快照会被自己的失效线误杀。
     #: 为空 = 升级前的旧行，判定时回退到 ``created_at``。
     context_snapshot_at: datetime | None = Field(default=None, sa_column=Column(UTCDateTime))
+
+
+class UsageRecord(SQLModel, table=True):
+    """平台「一手账本」：**每一次模型请求**一行 token 计数。
+
+    与 :class:`Message` 的分工（见 ``docs/usage-gateway.md`` 的「数据模型」章节）：
+    ``Message.usage`` 是**展示快照**，会随对话 / 消息删除而消失；本表是**权威账本**，
+    用于用量页、审计、成本与外部 API 计量。删除对话时按 ``conversation_id`` 级联删除，
+    但历史对账、成本与跨对话汇总仍以本表为准。
+
+    **去重键**是 ``(run_id, source, request_id)``：同一请求的重复上报（重试 / 断线重连、
+    流式响应多次 usage 快照）只入账一次，靠数据库唯一约束 + ``INSERT OR IGNORE`` 兜底。
+
+    ``source`` 标明这笔数的**权威来源**：
+
+    * ``gateway`` —— 记录网关在代理响应终态读到的上游 ``usage``（一手，最可信）；
+    * ``native``  —— 适配器解析内核原生事件上报（二手兜底）；
+    * ``harness`` —— 平台自己的进程内 HTTP 客户端（本身就是一手）；
+    * ``legacy``  —— 历史数据回填（可选脚本，默认不跑）。
+
+    **互斥不双记**：一次 run 只能有一个权威源（见 ``runtime.usage_ledger``）。
+    """
+
+    __tablename__ = "usage_records"
+    __table_args__ = (
+        # 去重键：同一 run 内、同一来源、同一请求 id 只允许一行。
+        UniqueConstraint("run_id", "source", "request_id", name="uq_usage_records_run_source_request"),
+        # 双轨去重：同一笔上游请求如果既被 Agent 自报、又过网关，按上游响应 ID 只留一行。
+        # SQLite / PostgreSQL 的唯一索引允许多个 NULL，老行不受影响。
+        Index(
+            "uq_usage_records_upstream_request_id",
+            "upstream_request_id",
+            unique=True,
+        ),
+        Index("ix_usage_records_owner_created", "owner_id", "created_at"),
+        Index("ix_usage_records_conversation_created", "conversation_id", "created_at"),
+        Index("ix_usage_records_profile_created", "agent_profile_id", "created_at"),
+    )
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    owner_id: str | None = Field(default=None, sa_column=Column(String(64), index=True))
+    conversation_id: str | None = Field(default=None, sa_column=Column(String(64), index=True))
+    run_id: str = Field(sa_column=Column(String(64), nullable=False))
+    #: 上游响应 id（Anthropic ``message.id`` / OpenAI ``response.id``）；没有就取生成的序号 id。
+    request_id: str = Field(sa_column=Column(String(120), nullable=False))
+    #: 上游返回的响应 ID（可选唯一键）：用于跨来源幂等去重。没有则为空。
+    upstream_request_id: str | None = Field(
+        default=None, sa_column=Column(String(120))
+    )
+    #: gateway / native / harness / legacy，见类 docstring。
+    source: str = Field(sa_column=Column(String(16), nullable=False))
+    #: 双轨采集标记：``agent_report``（Agent 自报） / ``gateway_proxy``（网关旁路抓取）。
+    telemetry_source: str | None = Field(
+        default=None, sa_column=Column(String(24))
+    )
+    #: internal（平台托管 / 原生） / external（外部 API Key）。
+    origin: str = Field(default="internal", sa_column=Column(String(16), nullable=False))
+    #: 外部流量用的 API Key id（internal 为空）；配额与审计按它归属。
+    api_key_id: str | None = Field(default=None, sa_column=Column(String(64), index=True))
+    #: 内核类型 id（如 ``claude-code``）；外部流量可为空串。
+    agent_type_id: str = Field(default="", sa_column=Column(String(64), nullable=False, default=""))
+    agent_profile_id: str | None = Field(default=None, sa_column=Column(String(64)))
+    model: str = Field(default="", sa_column=Column(String(160), nullable=False, default=""))
+    provider: str = Field(default="", sa_column=Column(String(64), nullable=False, default=""))
+    #: 上游地址（脱敏后可存；不落密钥）。
+    base_url: str = Field(default="", sa_column=Column(String(500), nullable=False, default=""))
+    #: 归一化时使用的协议（如 ``anthropic_messages`` / ``openai_responses``）。
+    usage_protocol: str | None = Field(default=None, sa_column=Column(String(32)))
+    #: 归一化规则版本：老行 / 历史行为为 NULL 或 ``v0``，本模块首次落地为 ``v1``。
+    normalizer_version: str | None = Field(default=None, sa_column=Column(String(16)))
+    #: 上游响应形状：``chat`` / ``responses`` / ``anthropic_messages`` / ``gemini``。
+    response_shape: str | None = Field(default=None, sa_column=Column(String(24)))
+    #: 普通输入（不含缓存）。
+    input_tokens: int | None = Field(default=None, sa_column=Column(Integer))
+    output_tokens: int | None = Field(default=None, sa_column=Column(Integer))
+    cache_read_tokens: int | None = Field(default=None, sa_column=Column(Integer))
+    cache_creation_tokens: int | None = Field(default=None, sa_column=Column(Integer))
+    reasoning_tokens: int | None = Field(default=None, sa_column=Column(Integer))
+    #: 该请求的窗口占用（按协议归一化：输入侧含缓存）。
+    context_tokens: int | None = Field(default=None, sa_column=Column(Integer))
+    #: 原始 usage payload（截断后）；只做对账留痕，不参与计算。
+    raw_usage: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+    api_calls: int = Field(default=1, sa_column=Column(Integer, nullable=False, default=1))
+    api_duration_ms: int | None = Field(default=None, sa_column=Column(Integer))
+    cost_usd: float | None = Field(default=None, sa_column=Column(Float))
+    cost_source: str = Field(default="unknown", sa_column=Column(String(16), nullable=False, default="unknown"))
+    #: 成本计算依据：手工单价的 id / 目录价的模型与快照哈希 / 费率。为空 = 没有可用的价。
+    cost_pricing: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+    is_estimated: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, default=False))
+    request_started_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime))
+    #: 请求完成（统计分桶用它，而不是请求开始）。
+    created_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime, index=True))
+
+
+class ApiKey(SQLModel, table=True):
+    """外部模型 API 的长期访问密钥（**只存哈希**，明文只在签发时返回一次）。
+
+    外部客户端带 ``Authorization: Bearer cosk_…`` 调 ``/api/model-gateway/...``；平台按哈希
+    查表、用绑定网关的上游密钥转发，并把用量记成 ``origin=external`` + ``api_key_id``。
+    配额按日 / 月，超限 429。吊销只置 ``revoked_at`` / ``enabled=False``，保留审计。
+    """
+
+    __tablename__ = "api_keys"
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    owner_id: str | None = Field(default=None, sa_column=Column(String(64), index=True))
+    name: str = Field(default="", sa_column=Column(String(120), nullable=False, default=""))
+    #: 绑定的自定义网关（平台持有上游密钥，代理用 inject 模式转发）。
+    gateway_id: str = Field(
+        sa_column=Column(
+            String(64),
+            ForeignKey("gateways.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )
+    )
+    #: 展示用掩码（如 ``cosk_1a2b…9f0e``）；不是秘密。
+    key_mask: str = Field(sa_column=Column(String(64), nullable=False))
+    #: sha256(明文 key)；唯一，校验时直接按哈希等值查库。
+    key_hash: str = Field(
+        sa_column=Column(String(64), nullable=False, unique=True, index=True)
+    )
+    enabled: bool = Field(default=True, sa_column=Column(Boolean, nullable=False, default=True))
+    revoked_at: datetime | None = Field(default=None, sa_column=Column(UTCDateTime))
+    last_used_at: datetime | None = Field(default=None, sa_column=Column(UTCDateTime))
+    #: 日 / 月配额；为空或 0 = 不限制。请求数在转发前判，token 在转发前按已用量判。
+    daily_request_limit: int | None = Field(default=None, sa_column=Column(Integer))
+    daily_token_limit: int | None = Field(default=None, sa_column=Column(Integer))
+    monthly_request_limit: int | None = Field(default=None, sa_column=Column(Integer))
+    monthly_token_limit: int | None = Field(default=None, sa_column=Column(Integer))
+    created_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime, index=True))
+    updated_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime))
+
+
+class UsagePricing(SQLModel, table=True):
+    """模型单价（手工价）。只对**写入之后**的新账本行生效，不重算历史。
+
+    ``model_pattern`` 匹配规则：精确等于，或以它开头的模型名都命中（越长越优先）。
+    价格单位是「美元 / 每百万 token」。没有单价时账本行保持 ``cost_usd=None``、
+    ``cost_source=unknown``，界面显示「未记录」，**不假装是 0**。
+    """
+
+    __tablename__ = "usage_pricing"
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    owner_id: str | None = Field(default=None, sa_column=Column(String(64), index=True))
+    model_pattern: str = Field(sa_column=Column(String(160), nullable=False))
+    input_per_million: float = Field(default=0.0, sa_column=Column(Float, nullable=False, default=0.0))
+    output_per_million: float = Field(default=0.0, sa_column=Column(Float, nullable=False, default=0.0))
+    cache_read_per_million: float = Field(default=0.0, sa_column=Column(Float, nullable=False, default=0.0))
+    cache_creation_per_million: float = Field(default=0.0, sa_column=Column(Float, nullable=False, default=0.0))
+    enabled: bool = Field(default=True, sa_column=Column(Boolean, nullable=False, default=True))
+    created_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime))
+    updated_at: datetime = Field(default_factory=utcnow, sa_column=Column(UTCDateTime))
 
 
 class TaskCard(SQLModel, table=True):

@@ -1,0 +1,306 @@
+{
+  "version": 1,
+  "description": "用量归一化 fixture 清单：raw 文件只放原始 usage payload；期望值放这里，便于评审与变更审阅。",
+  "standard_fields": [
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "reasoning_tokens",
+    "context_tokens",
+    "total_tokens"
+  ],
+  "invariants": [
+    "context_tokens = input_tokens + cache_read_tokens + cache_creation_tokens",
+    "total_tokens = context_tokens + output_tokens",
+    "reasoning_tokens 只做明细，绝不重复加进 total_tokens；是否为输出子集按协议确认（DeepSeek 样例 reasoning>output，待真实样本）",
+    "协议明确时以协议为准；字段名探测只在 protocol=null 时兜底",
+    "cache_write_input_tokens / cacheWriteInputTokens 不能单独作为「缓存分离」的判定依据"
+  ],
+  "fixtures": [
+    {
+      "file": "anthropic_message_delta_real.json",
+      "kernel": "claude-code",
+      "source": "native",
+      "frame": "stream_event/message_delta（单次请求的窗口占用）",
+      "protocol": "anthropic_messages",
+      "provenance": "real",
+      "captured_from": "backend/data/coda.db -> trace_events.raw_lines",
+      "extract": null,
+      "expected": {
+        "input_tokens": 40683,
+        "output_tokens": 66,
+        "cache_read_tokens": 512,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": null,
+        "context_tokens": 41195,
+        "total_tokens": 41261
+      },
+      "notes": "真实帧；input_tokens 与缓存分离，窗口占用 = 输入 + 缓存读 + 缓存写。"
+    },
+    {
+      "file": "anthropic_result_thinking_real.json",
+      "kernel": "claude-code",
+      "source": "native",
+      "frame": "result（整轮累计，不是单次窗口）",
+      "protocol": "anthropic_messages",
+      "provenance": "real",
+      "captured_from": "backend/data/coda.db -> trace_events.raw_lines",
+      "extract": null,
+      "expected": {
+        "input_tokens": 11479,
+        "output_tokens": 134,
+        "cache_read_tokens": 2688,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 80,
+        "context_tokens": 14167,
+        "total_tokens": 14301
+      },
+      "notes": "真实帧；新字段 output_tokens_details.thinking_tokens 映射到 reasoning_tokens，仅明细，不重复计入 total。"
+    },
+    {
+      "file": "anthropic_cache_creation_nested.json",
+      "kernel": "claude-code",
+      "source": "native",
+      "frame": "edge-case（由真实嵌套形状构造）",
+      "protocol": "anthropic_messages",
+      "provenance": "derived",
+      "captured_from": "真实 cache_creation 嵌套形状 + 构造数值",
+      "extract": null,
+      "expected": {
+        "input_tokens": 1000,
+        "output_tokens": 10,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 500,
+        "reasoning_tokens": null,
+        "context_tokens": 1500,
+        "total_tokens": 1510
+      },
+      "notes": "cache_creation_input_tokens 为 null 时，回退到 cache_creation.{ephemeral_1h,ephemeral_5m} 求和。"
+    },
+    {
+      "file": "codebuddy_result_usage_real.json",
+      "kernel": "codebuddy-cli",
+      "source": "native",
+      "frame": "result（整轮累计）",
+      "protocol": "anthropic_messages",
+      "provenance": "real",
+      "captured_from": "backend/data/coda.db -> messages.usage（assistant）",
+      "extract": null,
+      "expected": {
+        "input_tokens": 16485,
+        "output_tokens": 7375,
+        "cache_read_tokens": 246272,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": null,
+        "context_tokens": 262757,
+        "total_tokens": 270132
+      },
+      "notes": "真实帧；缓存读是大头。该帧是整轮累计，不能当作窗口快照使用。"
+    },
+    {
+      "file": "openai_chat_cached.json",
+      "kernel": "openai-chat（任意兼容端点）",
+      "source": "gateway/harness",
+      "frame": "非流式单体 / 末尾 usage chunk",
+      "protocol": "openai_chat",
+      "provenance": "schema-derived",
+      "captured_from": "backend/tests/test_usage_ledger.py 既有用例",
+      "extract": null,
+      "expected": {
+        "input_tokens": 700,
+        "output_tokens": 50,
+        "cache_read_tokens": 300,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": null,
+        "context_tokens": 1000,
+        "total_tokens": 1050
+      },
+      "notes": "prompt_tokens 已含缓存：普通输入要减缓存，窗口占用 = prompt_tokens。"
+    },
+    {
+      "file": "openai_responses_reasoning.json",
+      "kernel": "openai-responses（任意兼容端点）",
+      "source": "gateway/harness",
+      "frame": "response.completed",
+      "protocol": "openai_responses",
+      "provenance": "schema-derived",
+      "captured_from": "backend/tests/test_usage_ledger.py 既有用例",
+      "extract": null,
+      "expected": {
+        "input_tokens": 600,
+        "output_tokens": 60,
+        "cache_read_tokens": 200,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 20,
+        "context_tokens": 800,
+        "total_tokens": 860
+      },
+      "notes": "input_tokens 含缓存；reasoning 从 output_tokens_details 取，是输出子集。"
+    },
+    {
+      "file": "codex_app_server_snake.json",
+      "kernel": "codex",
+      "source": "native",
+      "frame": "thread/tokenUsage/updated -> last",
+      "protocol": "openai_responses",
+      "provenance": "schema-derived",
+      "captured_from": "backend/tests/test_adapters.py 既有用例（真实协议字段）",
+      "extract": null,
+      "expected": {
+        "input_tokens": 4,
+        "output_tokens": 6,
+        "cache_read_tokens": 1,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 2,
+        "context_tokens": 5,
+        "total_tokens": 11
+      },
+      "notes": "回归重点：协议为 openai_responses 时，cache_write_input_tokens 只是普通字段，不能把缓存再加一遍；total_tokens=11 与派生值一致。"
+    },
+    {
+      "file": "codex_app_server_camel.json",
+      "kernel": "codex",
+      "source": "native",
+      "frame": "thread/tokenUsage/updated -> last（驼峰原样）",
+      "protocol": "openai_responses",
+      "provenance": "schema-derived",
+      "captured_from": "backend/tests/test_adapters.py 既有用例",
+      "extract": null,
+      "expected": {
+        "input_tokens": 4,
+        "output_tokens": 6,
+        "cache_read_tokens": 1,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 2,
+        "context_tokens": 5,
+        "total_tokens": 11
+      },
+      "notes": "驼峰字段必须在协议明确时同样正确；不得因缓存词把总数翻倍。"
+    },
+    {
+      "file": "custom_cli_camel.json",
+      "kernel": "custom-cli",
+      "source": "native",
+      "frame": "usage_path 提取的原始对象",
+      "protocol": null,
+      "provenance": "schema-derived",
+      "captured_from": "自定义 CLI 常见 OpenAI 兼容字段（待真实样本确认）",
+      "extract": null,
+      "expected": {
+        "input_tokens": 600,
+        "output_tokens": 50,
+        "cache_read_tokens": 400,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": null,
+        "context_tokens": 1000,
+        "total_tokens": 1050
+      },
+      "notes": "protocol=null 的兜底：驼峰 inputTokens 视为包含式，普通输入 = inputTokens - cachedInputTokens。"
+    },
+    {
+      "file": "deepseek_step_end.json",
+      "kernel": "deepseek-harness",
+      "source": "harness",
+      "frame": "status/step_end",
+      "protocol": "deepseek_camel",
+      "provenance": "schema-derived",
+      "captured_from": "backend/tests/test_deepseek_harness.py 既有用例（待真实样本确认包含式/分离式）",
+      "extract": null,
+      "expected": {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "cache_read_tokens": 1,
+        "cache_creation_tokens": 2,
+        "reasoning_tokens": 5,
+        "context_tokens": 6,
+        "total_tokens": 10
+      },
+      "notes": "按「分离式」期望：totalTokens=7 只等于 input+output，缓存不在 total 里；平台派生 total 按窗口口径为 10。另有语义疑点：reasoningTokens=5 > outputTokens=4，说明推理并非输出子集（或字段不是同一口径），上线前必须用真实样本确认。"
+    },
+    {
+      "file": "gemini_usage_metadata.json",
+      "kernel": "gemini 谱系（Antigravity 候选）",
+      "source": "native",
+      "frame": "usageMetadata",
+      "protocol": "gemini",
+      "provenance": "schema-derived",
+      "captured_from": "Gemini 官方 usageMetadata 字段（待 Antigravity 真实样本确认）",
+      "extract": null,
+      "expected": {
+        "input_tokens": 700,
+        "output_tokens": 50,
+        "cache_read_tokens": 300,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": 20,
+        "context_tokens": 1000,
+        "total_tokens": 1050
+      },
+      "notes": "promptTokenCount 含 cachedContentTokenCount；thoughtsTokenCount 是输出子集。"
+    },
+    {
+      "file": "legacy_anthropic_no_cache.json",
+      "kernel": "historical",
+      "source": "legacy",
+      "frame": "老历史消息",
+      "protocol": "anthropic_messages",
+      "provenance": "historical",
+      "captured_from": "历史 messages.usage 的缺失缓存形态",
+      "extract": null,
+      "expected": {
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": null,
+        "context_tokens": 100,
+        "total_tokens": 110
+      },
+      "notes": "历史消息没有缓存字段：缺省按 0，不报错。"
+    },
+    {
+      "file": "legacy_openai_bare.json",
+      "kernel": "historical",
+      "source": "legacy",
+      "frame": "老历史消息",
+      "protocol": null,
+      "provenance": "historical",
+      "captured_from": "历史 messages.usage 的 bare prompt_tokens 形态",
+      "extract": null,
+      "expected": {
+        "input_tokens": 42,
+        "output_tokens": 8,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "reasoning_tokens": null,
+        "context_tokens": 42,
+        "total_tokens": 50
+      },
+      "notes": "protocol=null 且只有 prompt_tokens：按包含式处理。"
+    },
+    {
+      "file": "antigravity_result_stats_pending.json",
+      "kernel": "antigravity-cli",
+      "source": "native",
+      "frame": "result -> stats",
+      "protocol": "unknown",
+      "provenance": "pending",
+      "captured_from": "尚无真实样本；形状来自当前适配器过滤规则",
+      "extract": "stats",
+      "expected": null,
+      "notes": "阻塞项：先用真实 Antigravity stream-json 样本确认 stats 字段与包含/分离关系，再补期望值。当前适配器只保留 *_tokens 键。"
+    },
+    {
+      "file": "hermes_result_tokens_pending.json",
+      "kernel": "hermes",
+      "source": "native",
+      "frame": "result -> tokens",
+      "protocol": "unknown",
+      "provenance": "pending",
+      "captured_from": "尚无真实样本；形状来自当前适配器映射表",
+      "extract": "tokens",
+      "expected": null,
+      "notes": "阻塞项：Hermes 的 input 是否包含 cache_read 未知，必须用真实样本确认，不能靠字段名猜。"
+    }
+  ]
+}

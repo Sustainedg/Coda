@@ -30,7 +30,7 @@ from ..events import (
     thinking_delta,
     tool_call,
     tool_result,
-    usage,
+    usage_raw,
 )
 from ..mcp import McpMount, McpServerSpec, parse_json_servers, to_json_config
 from ..registry import register_agent
@@ -41,8 +41,10 @@ from ..skills import (
     SkillSpec,
     scan_skill_roots,
 )
+from ..metering import PROTOCOL_ANTHROPIC
 from .util import (
     as_list,
+    claude_compaction_env,
     context_tokens,
     flatten_content,
     npm_cli,
@@ -258,6 +260,8 @@ class ClaudeCodeAgent(AgentDefinition):
     default_gateway = "https://api.anthropic.com"
     default_model = "sonnet"
     protocol = "anthropic"
+    #: 原始 usage 的协议：input 与缓存分离（真实样本已验证）。
+    usage_protocol = PROTOCOL_ANTHROPIC
     default_auth_style = "x-api-key"
     default_models = ["sonnet"]
     docs_url = "https://docs.claude.com/en/docs/claude-code"
@@ -273,6 +277,8 @@ class ClaudeCodeAgent(AgentDefinition):
         permission_modes=True,
         working_directory=True,
         skills=True,
+        # 接受 ANTHROPIC_BASE_URL 覆盖，协议（Anthropic Messages）在记录网关支持范围内。
+        recording_gateway=True,
     )
     config_fields = (
         ConfigField(
@@ -548,6 +554,12 @@ class ClaudeCodeAgent(AgentDefinition):
 
         env = self.effective_env(ctx)
         self._apply_auth_style(env, ctx)
+        # 原生压缩：把平台上限 / 阈值翻成 Claude Code 的环境变量，让内核按同一口径自己压。
+        # 用户显式设了 --autocompact 时不覆盖（那是更明确的意图）。
+        if options.get("autocompact") in (None, ""):
+            env.update(
+                claude_compaction_env(ctx.context_limit_tokens, ctx.context_trigger_tokens)
+            )
         # 以 root 跑 bypassPermissions 需要内核认作「有意的沙箱」，见 _root_bypass_escape
         sandbox_escape = _root_bypass_escape(ctx)
         if sandbox_escape is not None:
@@ -674,7 +686,10 @@ class ClaudeCodeAgent(AgentDefinition):
             # 它比 result 里的整轮累计更能代表「当前上下文离上限还有多远」（见 runtime.context）。
             # 注意：2.1.327 起 message_start 的 usage 常常是全 0（真实数字推迟到
             # message_delta 才给），所以这里取到 0 是正常的，由下面的 message_delta 兜底。
-            tokens = context_tokens((event.get("message") or {}).get("usage") or {})
+            tokens = context_tokens(
+                (event.get("message") or {}).get("usage") or {},
+                protocol=PROTOCOL_ANTHROPIC,
+            )
             if tokens:
                 yield context_usage(tokens)
             return
@@ -687,7 +702,9 @@ class ClaudeCodeAgent(AgentDefinition):
             # 早先这里直接跳过 message_delta（注释说"它只有 output_tokens"）——那是旧版行为；
             # 按现在的内核，跳过它就等于**永远拿不到窗口快照**，界面只能一直显示按内容估算。
             # 老内核若确实只有 output_tokens，context_tokens() 会算出 0，不会误报。
-            tokens = context_tokens(event.get("usage") or {})
+            tokens = context_tokens(
+                event.get("usage") or {}, protocol=PROTOCOL_ANTHROPIC
+            )
             if tokens:
                 yield context_usage(tokens)
             return
@@ -701,7 +718,9 @@ class ClaudeCodeAgent(AgentDefinition):
             yield thinking_delta(delta["thinking"])
 
     def _from_assistant(self, message: dict[str, Any], run: AgentRun) -> Iterable[AgentEvent]:
-        tokens = context_tokens(message.get("usage") or {})
+        tokens = context_tokens(
+            message.get("usage") or {}, protocol=PROTOCOL_ANTHROPIC
+        )
         if tokens:
             yield context_usage(tokens)
         for block in message.get("content") or []:
@@ -726,11 +745,11 @@ class ClaudeCodeAgent(AgentDefinition):
                 )
 
     def _from_result(self, payload: dict[str, Any], run: AgentRun) -> Iterable[AgentEvent]:
-        if payload.get("usage"):
-            # Anthropic 的用量里嵌套了字典，这里只保留数值，界面更干净。
-            scalar = {k: v for k, v in payload["usage"].items() if isinstance(v, (int, float))}
-            if scalar:
-                yield usage(**scalar)
+        raw_usage = payload.get("usage")
+        if isinstance(raw_usage, dict) and raw_usage:
+            # 原样上报：嵌套的 cache_creation / output_tokens_details 由运行层
+            # 统一归一化，适配器不再提前丢字段（见 docs/usage-normalization-design.md）。
+            yield usage_raw(raw_usage)
         for src, dst in (("total_cost_usd", "cost_usd"), ("duration_ms", "duration_ms"),
                          ("num_turns", "num_turns")):
             if payload.get(src) is not None:

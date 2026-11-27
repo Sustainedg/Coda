@@ -115,17 +115,18 @@ def test_parse_line_projects_the_headless_event_stream(tmp_path):
     assert kinds.count("session") == 1
     assert "thinking.delta" in kinds
     assert "tool.call" in kinds and "tool.result" in kinds
-    assert "usage" in kinds
+    assert "usage.raw" in kinds
     assert run.emitted_text == "你好"
     assert run.session_id == "session-42"
-    usage_event = next(event for event in events if event.type.value == "usage")
+    usage_event = next(event for event in events if event.type.value == "usage.raw")
+    # P4：适配器不再提前翻译，原样保留驼峰字段供 metering 层统一归一化。
     assert usage_event.payload == {
-        "input_tokens": 3,
-        "output_tokens": 4,
-        "total_tokens": 7,
-        "cache_read_input_tokens": 1,
-        "cache_creation_input_tokens": 2,
-        "reasoning_output_tokens": 5,
+        "inputTokens": 3,
+        "outputTokens": 4,
+        "totalTokens": 7,
+        "cacheReadTokens": 1,
+        "cacheWriteTokens": 2,
+        "reasoningTokens": 5,
     }
 
 

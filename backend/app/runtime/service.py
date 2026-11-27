@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 from starlette.concurrency import run_in_threadpool
 
-from ..agents import AgentContext, AgentDefinition, EventType, get_agent
+from ..agents import AgentContext, AgentDefinition, EventType, Runtime, get_agent
 from ..agents.events import AgentEvent, error, log, run_finished
 from ..attachments import AttachmentError, attachment_relative_path, compose_with_attachments
 from ..credentials import with_notice
@@ -23,9 +24,11 @@ from ..image_ingest import ingest_images
 from ..models import AgentProfile, Conversation, Gateway, Message
 from ..settings import get_settings
 from . import context as context_service
+from . import recording_gateway
 from . import task_cards as task_card_service
+from . import usage_ledger
 from .credentials import decrypt_for_profile
-from .gateway import bind_gateway
+from .gateway import GatewayBinding, bind_gateway, bind_recording
 from .manager import ActiveRun, registry
 from .mcp import prepare_mcp_home
 from .runner import stream_run
@@ -224,6 +227,104 @@ def supports_sessions(definition: AgentDefinition, ctx: AgentContext) -> bool:
         return False
     probe = getattr(definition, "resume_supported", None)
     return bool(probe(ctx)) if callable(probe) else True
+
+
+def apply_context_policy(
+    ctx: AgentContext,
+    settings: context_service.ContextSettings,
+    conversation: Conversation,
+) -> None:
+    """把上下文上限 / 触发阈值写进上下文，供适配器生成内核原生压缩配置。
+
+    - 上限按「自动跟随内核真实窗口」解析（见 ``ContextSettings.for_window``）；
+    - 与平台压缩共用同一个 ``threshold_tokens``，避免「面板说没超、内核却提前压」。
+    """
+    effective = settings.for_window(conversation.context_kernel_window_tokens)
+    ctx.context_limit_tokens = effective.limit_tokens
+    ctx.context_trigger_tokens = effective.threshold_tokens
+
+
+def _record_provider(prepared: PreparedRun) -> str:
+    """账本行的 provider：网关协议优先，官方直连回落到适配器声明的协议。"""
+    return (
+        getattr(prepared.gateway, "protocol", None)
+        or getattr(prepared.definition, "protocol", None)
+        or ""
+    )
+
+
+#: 记录网关代理 URL 的稳定片段：收尾判定「本轮是否走了记录网关」。
+RECORDING_GATEWAY_URL_MARKER = "/api/internal/usage-gateway/"
+
+
+def _recording_gateway_binding(
+    definition: AgentDefinition,
+    gateway: Gateway | None,
+    profile: AgentProfile,
+    conversation: Conversation,
+    run: ActiveRun,
+    model: str | None,
+    run_started_at: datetime | None = None,
+) -> GatewayBinding | None:
+    """按开关 / 能力 / 网关类型判断是否给本轮启用记录网关；不满足返回 ``None``。
+
+    P1 只在 ``inject`` 形态落地：网关必须是用户自建（平台持有上游密钥），内核必须有
+    ``base_url_env`` 注入缝，``auto`` 模式还要求适配器声明 ``recording_gateway`` 能力。
+    官方登录 / 无注入缝的内核一律回退直连，由原生解析兜底（见计划 §5.4 / §11）。
+    """
+    mode = recording_gateway.recording_gateway_mode()
+    if mode == recording_gateway.MODE_OFF:
+        return None
+    if not definition.base_url_env:
+        return None
+    if mode == recording_gateway.MODE_AUTO and not definition.capabilities.recording_gateway:
+        return None
+    if gateway is None or gateway.kind != "custom":
+        return None
+    try:
+        return bind_recording(
+            definition,
+            gateway,
+            run_id=run.id,
+            owner_id=conversation.owner_id,
+            conversation_id=conversation.id,
+            agent_type_id=definition.id,
+            agent_profile_id=profile.id,
+            model=model or "",
+            provider=gateway.protocol or "",
+            run_started_at=run_started_at,
+        )
+    except Exception:  # noqa: BLE001 - 代理注册失败必须回退直连，不能把整轮跑挂
+        logger.warning("记录网关注册失败，本轮回退直连（原生解析兜底）", exc_info=True)
+        return None
+
+
+def _apply_recording_gateway(ctx: AgentContext, binding: GatewayBinding | None) -> None:
+    """把代理 URL / 一次性 token 写进上下文：子进程只拿代理 token，不拿上游密钥。"""
+    if binding is None:
+        return
+    ctx.gateway_url = binding.url
+    ctx.api_key = binding.api_key
+    ctx.auth_style = binding.auth_style
+
+
+async def _await_gateway_rows(run_id: str, timeout: float = 2.0) -> bool:
+    """短暂等待记录网关把本 run 的行提交。
+
+    代理在自己的会话里写账本；若收尾判定早于它提交，会误判成「网关没数据」而触发
+    原生兜底，造成双记。这里只等一个很短的上限，拿不到就按现状继续（不阻塞用户）。
+
+    **每次用独立会话**探测：SQLite 的读事务是快照隔离，复用主会话的旧事务会看不到
+    别的连接新提交的账本行，轮询会白等。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        async with SessionLocal() as probe:
+            if await usage_ledger.has_gateway_rows(probe, run_id):
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.05)
 
 
 async def _auto_compact_context(
@@ -508,6 +609,8 @@ async def prepare_run(
             session, definition, profile, gateway, conversation, prompt_text, history, workspace,
             credentials=credentials,
         )
+    # 原生压缩口径：上限 / 阈值在估算与压缩都算完之后再下发，保证与平台压缩同一份。
+    apply_context_policy(ctx, context_settings, conversation)
     skill_warnings = await prepare_skill_home(
         session, definition, profile, conversation, ctx, scope_id=home_scope
     )
@@ -555,6 +658,14 @@ async def prepare_run(
     )
     run.user_message_id = user_message.id
     run.assistant_message_id = assistant_message.id
+    # 记录网关（P1，默认 off）：满足条件时把 base_url 指向本机代理、密钥换成一次性 token。
+    _apply_recording_gateway(
+        ctx,
+        _recording_gateway_binding(
+            definition, gateway, profile, conversation, run, ctx.model,
+            run_started_at=assistant_message.created_at,
+        ),
+    )
     trace = await _start_trace(
         session,
         conversation=conversation,
@@ -722,6 +833,8 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
     text_parts: list[str] = []
     parts: list[dict[str, Any]] = []
     usage_totals: dict[str, Any] = {}
+    #: 内核原始 usage 小票（`usage.raw`）：保留嵌套/驼峰，供对账与统一归一化。
+    raw_usage_totals: dict[str, Any] = {}
     extra: dict[str, Any] = {}
     status = "complete"
     error_text: str | None = None
@@ -735,6 +848,33 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
     kernel_compacted_at: datetime | None = None
     #: 内核上报的真实上下文窗口（tokens）。上限设为「自动」时跟随它。
     kernel_window: int | None = None
+
+    # —— 原生事件实时入账（plan A） ——
+    # record 模式下 gateway 是权威源，原生 usage 只用于展示；否则每个 context.usage
+    # 都实时更新本 run 唯一的一行 native/harness 账本，运行中的上下文面板即可读到。
+    record_mode = RECORDING_GATEWAY_URL_MARKER in (
+        (prepared.ctx.gateway_url if prepared.ctx else "") or ""
+    )
+    can_record_native = (
+        not record_mode
+        and prepared.definition is not None
+        and prepared.profile is not None
+        and prepared.ctx is not None
+    )
+    native_source = (
+        usage_ledger.SOURCE_HARNESS
+        if prepared.definition is not None and prepared.definition.runtime is Runtime.API
+        else usage_ledger.SOURCE_NATIVE
+    )
+    #: 本轮原生 usage 的协议（由适配器声明 / Custom CLI 配置决定）。
+    #: 收尾归一化用它，字段名探测只作兜底；未验证协议保持 None。
+    native_usage_protocol = (
+        prepared.definition.usage_protocol_for(prepared.ctx)
+        if prepared.definition is not None and prepared.ctx is not None
+        else None
+    )
+    #: 上一次已写入账本的窗口值：同值重复上报不重复写库（app-server 可能高频上报）。
+    live_context_written: int | None = None
 
     for warning in prepared.skill_warnings:
         yield log(f"技能：{warning}", "warn")
@@ -771,6 +911,10 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
                 )
             elif event.type is EventType.USAGE:
                 usage_totals.update({k: v for k, v in (event.payload or {}).items() if v is not None})
+            elif event.type is EventType.USAGE_RAW:
+                raw_usage_totals.update(
+                    {k: v for k, v in (event.payload or {}).items() if v is not None}
+                )
             elif event.type is EventType.CONTEXT_USAGE:
                 # 只记最后一次（最接近当前窗口的占用）；非法值不能污染落库。
                 tokens = (event.payload or {}).get("tokens")
@@ -781,6 +925,22 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
                 ):
                     context_tokens = int(tokens)
                     context_snapshot_at = datetime.now(timezone.utc)
+                    if can_record_native and context_tokens != live_context_written:
+                        # 实时入账：独立会话提交，运行中的面板轮询即可看到原生窗口。
+                        live_context_written = context_tokens
+                        await usage_ledger.record_native_snapshot_isolated(
+                            run_id=prepared.run.id,
+                            source=native_source,
+                            context_tokens=context_tokens,
+                            usage_protocol=native_usage_protocol,
+                            started_at_hint=prepared.assistant_message.created_at,
+                            owner_id=prepared.conversation.owner_id,
+                            conversation_id=prepared.conversation.id,
+                            agent_type_id=prepared.definition.id,
+                            agent_profile_id=prepared.profile.id,
+                            model=prepared.ctx.model or "",
+                            provider=_record_provider(prepared),
+                        )
             elif event.type is EventType.CONTEXT_WINDOW:
                 # 内核上报的真实上下文窗口（Claude Code effective_window / Codex
                 # modelContextWindow）。上限设为「自动」时平台跟着它走，避免在 200k / 1M
@@ -834,6 +994,68 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
         yield error(str(exc))
         yield run_finished("error", detail=str(exc))
     finally:
+        # —— 计量收尾：记录网关优先、原生兜底、互斥不双记（计划 §5.2 / §5.5） ——
+        # 网关在自己的会话里写账本，可能比内核退出晚几十毫秒：短暂等一下再判权。
+        authority = "none"
+        ledger_context: int | None = None
+        ledger_at: datetime | None = None
+        try:
+            # 独立会话判权 / 读快照：SQLite 读事务是快照隔离，复用主会话看不到
+            # 记录网关在别的连接上刚提交的账本行。
+            async with SessionLocal() as probe:
+                authority = await usage_ledger.resolve_authority(probe, prepared.run.id)
+                if record_mode and authority != usage_ledger.SOURCE_GATEWAY:
+                    if await _await_gateway_rows(prepared.run.id):
+                        authority = usage_ledger.SOURCE_GATEWAY
+                if authority == usage_ledger.SOURCE_GATEWAY:
+                    ledger_context, ledger_at = await usage_ledger.latest_context_for_run(
+                        probe, prepared.run.id
+                    )
+        except Exception:  # noqa: BLE001 - 判权失败不能影响落库，按原生口径继续
+            logger.warning("解析计量权威源失败，按原生口径继续", exc_info=True)
+
+        # 优先用原始小票归一化；没有原始小票的适配器（Codex/Harness/Custom）继续用数值 usage。
+        raw_for_ledger = raw_usage_totals or usage_totals
+        if authority == usage_ledger.SOURCE_GATEWAY:
+            # 一手窗口快照：取该 run 最新一次请求的 context_tokens 校准消息快照。
+            if ledger_context:
+                context_tokens = ledger_context
+                context_snapshot_at = ledger_at or context_snapshot_at
+        else:
+            # 原生 / harness 收尾：把整轮计费计数补进本 run **唯一**那一行。
+            # 运行中若已随 context.usage 实时建过行，这里是 update；否则是 create。
+            if (
+                prepared.definition is not None
+                and prepared.profile is not None
+                and (raw_for_ledger or context_tokens)
+            ):
+                counts = (
+                    usage_ledger.normalize_usage(
+                        raw_for_ledger, protocol=native_usage_protocol
+                    )
+                    if raw_for_ledger
+                    else None
+                )
+                await usage_ledger.record_native_snapshot_isolated(
+                    run_id=prepared.run.id,
+                    source=native_source,
+                    context_tokens=context_tokens,
+                    counts=counts,
+                    raw_usage=raw_for_ledger or None,
+                    usage_protocol=native_usage_protocol,
+                    finalize=True,
+                    started_at_hint=prepared.assistant_message.created_at,
+                    owner_id=prepared.conversation.owner_id,
+                    conversation_id=prepared.conversation.id,
+                    agent_type_id=prepared.definition.id,
+                    agent_profile_id=prepared.profile.id,
+                    model=(prepared.ctx.model if prepared.ctx else "") or "",
+                    provider=_record_provider(prepared),
+                )
+
+        # 本轮结束：吊销代理 token（在途代理请求已持有目标对象，不受影响）。
+        recording_gateway.registry.revoke_run(prepared.run.id)
+
         raw_text = "".join(text_parts)
         # 任务卡协议块永远不展示给用户：运行失败 / 解析失败也要剥掉原文再落库。
         content = task_card_service.strip_task_card(raw_text)
@@ -853,7 +1075,9 @@ async def consume_run(session: AsyncSession, prepared: PreparedRun) -> AsyncIter
         message = prepared.assistant_message
         message.content = content
         message.parts = parts
-        message.usage = usage_totals
+        message.usage = raw_for_ledger
+        # 前端按同一协议归一化，避免 DeepSeek 等“分离式”被当成包含式。
+        message.usage_protocol = native_usage_protocol
         message.context_tokens = context_tokens
         message.context_snapshot_at = context_snapshot_at
         message.error = error_text
@@ -949,6 +1173,7 @@ async def regenerate_last(
         session, definition, profile, gateway, conversation, prompt_text, history, workspace,
         credentials=credentials,
     )
+    apply_context_policy(ctx, context_settings, conversation)
     skill_warnings = await prepare_skill_home(session, definition, profile, conversation, ctx)
     mcp_warnings = await prepare_mcp_home(session, definition, profile, conversation, ctx)
     if not supports_sessions(definition, ctx):
@@ -977,6 +1202,14 @@ async def regenerate_last(
     )
     run.user_message_id = last_user.id
     run.assistant_message_id = assistant_message.id
+    # 重生成同样走记录网关（与正常发送一致）。
+    _apply_recording_gateway(
+        ctx,
+        _recording_gateway_binding(
+            definition, gateway, profile, conversation, run, ctx.model,
+            run_started_at=assistant_message.created_at,
+        ),
+    )
     trace = await _start_trace(
         session,
         conversation=conversation,

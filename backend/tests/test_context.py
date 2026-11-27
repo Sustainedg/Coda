@@ -12,11 +12,15 @@ import httpx
 import pytest
 from sqlmodel import select
 
+from types import SimpleNamespace
+
+from app.agents.base import Runtime
 from app.agents.builtin.util import context_tokens as request_context_tokens
-from app.agents.events import context_compacted, context_usage, log, text_delta
+from app.agents.events import context_compacted, context_usage, log, text_delta, usage_raw
 from app.db import SessionLocal
-from app.models import Conversation, Message
+from app.models import Conversation, Message, UsageRecord
 from app.runtime import context as context_service
+from app.runtime import registry, usage_ledger
 from app.runtime import service as runtime_service
 from app.runtime.manager import ActiveRun
 
@@ -229,6 +233,74 @@ async def test_context_usage_event_persists_snapshot(client: httpx.AsyncClient, 
         await session.refresh(assistant)
         assert assistant.context_tokens == 4321
         assert assistant.content == "好"
+
+
+async def test_usage_raw_event_persists_snapshot_and_ledger(
+    client: httpx.AsyncClient, monkeypatch
+):
+    """``usage.raw``：消息保留原始小票，账本按消息协议归一化。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+    raw_usage = {
+        "inputTokens": 3,
+        "outputTokens": 4,
+        "totalTokens": 7,
+        "cacheReadTokens": 1,
+        "cacheWriteTokens": 2,
+    }
+
+    async with SessionLocal() as session:
+        conv = await session.get(Conversation, conversation["id"])
+        user = Message(conversation_id=conv.id, role="user", content="你好")
+        assistant = Message(conversation_id=conv.id, role="assistant", content="")
+        session.add_all([user, assistant])
+        await session.commit()
+        await session.refresh(assistant)
+
+        run = ActiveRun(id="run-raw", conversation_id=conv.id, agent_name="假智能体")
+        prepared = runtime_service.PreparedRun(
+            conversation=conv,
+            profile=SimpleNamespace(id=agent["id"], name=agent["name"]),
+            gateway=None,
+            definition=SimpleNamespace(
+                id="deepseek-harness",
+                runtime=Runtime.CLI,
+                usage_protocol_for=lambda ctx: "deepseek_camel",
+            ),
+            ctx=SimpleNamespace(model="deepseek-test", gateway_url=None),
+            run=run,
+            user_message=user,
+            assistant_message=assistant,
+        )
+
+        async def fake_stream(definition, ctx, active_run):
+            yield usage_raw(raw_usage)
+            yield text_delta("好")
+
+        monkeypatch.setattr(runtime_service, "stream_run", fake_stream)
+        async for _ in runtime_service.consume_run(session, prepared):
+            pass
+
+        await session.refresh(assistant)
+        assert assistant.usage == raw_usage
+        assert assistant.usage_protocol == "deepseek_camel"
+
+        rows = (
+            await session.execute(
+                select(UsageRecord).where(UsageRecord.run_id == "run-raw")
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.usage_protocol == "deepseek_camel"
+        assert row.raw_usage == raw_usage
+        assert row.input_tokens == 3
+        assert row.output_tokens == 4
+        assert row.cache_read_tokens == 1
+        assert row.cache_creation_tokens == 2
+        assert row.context_tokens == 6
 
 
 async def test_context_settings_defaults_and_roundtrip(client: httpx.AsyncClient):
@@ -887,3 +959,93 @@ async def test_context_settings_limit_mode_roundtrip(client: httpx.AsyncClient):
     )
     assert bad.status_code == 422
     assert (await client.get("/api/system/context")).json()["limit_tokens"] == 64000
+
+
+# ---------------------------------------------------------------------------
+# P2：运行中上下文面板优先读一手账本
+# ---------------------------------------------------------------------------
+
+
+async def test_context_usage_prefers_running_ledger_snapshot(client: httpx.AsyncClient):
+    """运行中：账本最新一次请求的窗口占用直接作为当前已用（measured=True）。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+    async with SessionLocal() as session:
+        conv = await session.get(Conversation, conversation["id"])
+        await usage_ledger.record(
+            session,
+            usage_ledger.build_record(
+                run_id="live-run", request_id="r1",
+                source=usage_ledger.SOURCE_GATEWAY,
+                counts=usage_ledger.normalize_usage(
+                    {"input_tokens": 1234, "cache_read_input_tokens": 66}
+                ),
+                conversation_id=conv.id,
+            ),
+        )
+        await session.commit()
+        used, measured = await context_service.conversation_usage(
+            session, conv, "系统提示", active_run_id="live-run"
+        )
+    assert used == 1300
+    assert measured is True
+
+
+async def test_running_ledger_snapshot_invalidated_by_kernel_compaction(client: httpx.AsyncClient):
+    """账本行早于内核原生压缩 → 失效，回退估算（不拿压缩前的旧数糊弄人）。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+    async with SessionLocal() as session:
+        conv = await session.get(Conversation, conversation["id"])
+        row_time = datetime(2026, 11, 1, tzinfo=timezone.utc)
+        await usage_ledger.record(
+            session,
+            usage_ledger.build_record(
+                run_id="live-run-2", request_id="r1",
+                source=usage_ledger.SOURCE_GATEWAY,
+                counts=usage_ledger.normalize_usage({"input_tokens": 500}),
+                conversation_id=conv.id,
+                created_at=row_time,
+                request_started_at=row_time,
+            ),
+        )
+        conv.context_kernel_compacted_at = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        session.add(conv)
+        await session.commit()
+        used, measured = await context_service.conversation_usage(
+            session, conv, None, active_run_id="live-run-2"
+        )
+    assert measured is False
+    assert used == 0  # 没有消息可估算，回落到 0 而不是旧账本的 500
+
+
+async def test_context_endpoint_uses_active_run_ledger(client: httpx.AsyncClient):
+    """接口层把当前 active run 传给口径层：运行中就能看到账本最新数字。"""
+    agent = await make_agent(client)
+    conversation = (
+        await client.post("/api/conversations", json={"agent_profile_id": agent["id"]})
+    ).json()
+    run = registry.register(conversation["id"], agent["name"], conversation.get("owner_id"))
+    try:
+        async with SessionLocal() as session:
+            await usage_ledger.record(
+                session,
+                usage_ledger.build_record(
+                    run_id=run.id, request_id="r1",
+                    source=usage_ledger.SOURCE_GATEWAY,
+                    counts=usage_ledger.normalize_usage({"input_tokens": 777}),
+                    conversation_id=conversation["id"],
+                ),
+            )
+            await session.commit()
+        data = (
+            await client.get(f"/api/conversations/{conversation['id']}/context")
+        ).json()
+    finally:
+        registry.finish(run, "ok")
+    assert data["used_tokens"] == 777
+    assert data["measured"] is True

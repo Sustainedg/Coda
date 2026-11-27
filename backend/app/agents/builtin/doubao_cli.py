@@ -46,6 +46,7 @@ from ..events import (
 )
 from ..registry import register_agent
 from ..skills import SkillMount, SkillRoot, SkillSpec, scan_skill_roots
+from ..metering import PROTOCOL_ANTHROPIC
 from .util import as_list, flatten_content, npm_cli, npm_install_argv, npm_prepare_argv
 
 #: npm 包与可执行文件名。
@@ -261,6 +262,8 @@ class DoubaoCliAgent(AgentDefinition):
     default_gateway = None
     default_model = None
     protocol = "openai"
+    #: 事件形状与 Claude Code 同构；当前内核不上报 usage，声明保留给将来。
+    usage_protocol = PROTOCOL_ANTHROPIC
     default_auth_style = "bearer"
     docs_url = "https://www.doubao.com/work/docs/zh-cn/doubao-cli"
     logo = "/icons/kernels/doubao.png"

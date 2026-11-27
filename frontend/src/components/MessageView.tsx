@@ -14,7 +14,7 @@ export interface RenderMessage {
   parts: MessagePart[]
   status: string
   error?: string | null
-  usage?: Record<string, number>
+  usage?: Record<string, unknown>
   /** 消息创建时间（导出对话时写进文件；界面上不显示） */
   created_at?: string | null
   streaming?: boolean

@@ -3027,3 +3027,17 @@ code, pre, .mono { font-family: var(--mono); }
 .task-progress-toggle:hover { color: var(--text); border-color: var(--border-strong); }
 .task-progress-item { gap: 8px; font-size: 13px; line-height: 1.55; }
 .task-progress-mark { width: 16px; }
+
+/* ---------- 外部 API 面板：账本 / Key / 单价明细表 ---------- */
+.audit-table-wrap { overflow-x: auto; }
+.audit-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.audit-table th,
+.audit-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: top;
+}
+.audit-table th { color: var(--text-dim); font-weight: 600; }
+.audit-table tbody tr:hover { background: var(--bg-hover); }

@@ -51,7 +51,7 @@ from ..events import (
     thinking_delta,
     tool_call,
     tool_result,
-    usage,
+    usage_raw,
 )
 from ..mcp import McpMount, McpServerSpec, parse_json_servers, to_json_config
 from ..registry import register_agent
@@ -62,6 +62,7 @@ from ..skills import (
     SkillSpec,
     scan_skill_roots,
 )
+from ..metering import PROTOCOL_ANTHROPIC
 #: 账号槽位（平台侧多账号）：登录态文件是单账号的，槽位负责存档 / 切换。
 #: ``auth_store_dir`` 从这里再导出，测试与文档都按这个入口找。
 from .codebuddy_accounts import (
@@ -325,6 +326,8 @@ class CodeBuddyCliAgent(AgentDefinition):
     default_gateway = None
     default_model = "default-model"
     protocol = "openai"
+    #: 原始 usage 的协议与 Claude Code 同构（真实样本已验证）。
+    usage_protocol = PROTOCOL_ANTHROPIC
     default_auth_style = "bearer"
     default_models = ["default-model"]
     docs_url = "https://cnb.cool/codebuddy/codebuddy-code"
@@ -790,7 +793,10 @@ class CodeBuddyCliAgent(AgentDefinition):
         if kind == "message_start":
             # 输入 token 在 ``message_start.message.usage`` 里（不是 ``event.usage``）；
             # result 里的是整轮累计，不能拿来当窗口占用。
-            tokens = context_tokens((event.get("message") or {}).get("usage") or {})
+            tokens = context_tokens(
+                (event.get("message") or {}).get("usage") or {},
+                protocol=PROTOCOL_ANTHROPIC,
+            )
             if tokens:
                 yield context_usage(tokens)
             return
@@ -800,7 +806,9 @@ class CodeBuddyCliAgent(AgentDefinition):
             # 而 result 里的是整轮累计，不能当窗口占用。早先这里直接跳过（以为它只有
             # output_tokens），那会让内核永远报不出窗口快照、界面只能一直显示按内容估算。
             # 若某个版本确实只有 output_tokens，context_tokens() 会算出 0，不会误报。
-            tokens = context_tokens(event.get("usage") or {})
+            tokens = context_tokens(
+                event.get("usage") or {}, protocol=PROTOCOL_ANTHROPIC
+            )
             if tokens:
                 yield context_usage(tokens)
             return
@@ -814,7 +822,9 @@ class CodeBuddyCliAgent(AgentDefinition):
             yield thinking_delta(delta["thinking"])
 
     def _from_assistant(self, message: dict[str, Any], run: AgentRun) -> Iterable[AgentEvent]:
-        tokens = context_tokens(message.get("usage") or {})
+        tokens = context_tokens(
+            message.get("usage") or {}, protocol=PROTOCOL_ANTHROPIC
+        )
         if tokens:
             yield context_usage(tokens)
         for block in message.get("content") or []:
@@ -839,11 +849,10 @@ class CodeBuddyCliAgent(AgentDefinition):
                 )
 
     def _from_result(self, payload: dict[str, Any], run: AgentRun) -> Iterable[AgentEvent]:
-        if payload.get("usage"):
-            # 内核的用量里可能嵌套字典，只保留数值，界面更干净。
-            scalar = {k: v for k, v in payload["usage"].items() if isinstance(v, (int, float))}
-            if scalar:
-                yield usage(**scalar)
+        raw_usage = payload.get("usage")
+        if isinstance(raw_usage, dict) and raw_usage:
+            # 与 Claude Code 同构：原样上报，嵌套字段由运行层统一归一化。
+            yield usage_raw(raw_usage)
         for src, dst in (
             ("total_cost_usd", "cost_usd"),
             ("duration_ms", "duration_ms"),

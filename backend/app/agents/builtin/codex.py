@@ -42,8 +42,10 @@ from ..skills import (
     SkillSpec,
     scan_skill_roots,
 )
+from ..metering import PROTOCOL_OPENAI_RESPONSES
 from .util import (
     as_list,
+    codex_compaction_overrides,
     context_tokens,
     flatten_content,
     npm_cli,
@@ -114,6 +116,10 @@ class CodexAgent(AgentDefinition):
     default_gateway = "https://api.openai.com/v1"
     default_model = "gpt-5-codex"
     protocol = "openai"
+    #: app-server 的 tokenUsage 是 OpenAI Responses 形状：缓存包含在输入里。
+    #: 注意 ``_app_usage`` 会输出 ``cache_write_input_tokens`` 键，但它只是别名，
+    #: **不能**据此判成“分离式”（见 docs/usage-normalization-design.md）。
+    usage_protocol = PROTOCOL_OPENAI_RESPONSES
     default_auth_style = "bearer"
     default_models = ["gpt-5-codex"]
     docs_url = "https://developers.openai.com/codex/cli/"
@@ -129,6 +135,8 @@ class CodexAgent(AgentDefinition):
         permission_modes=True,
         working_directory=True,
         skills=True,
+        # 经 model_providers.<name>.base_url 接受覆盖；记录网关支持 responses 协议。
+        recording_gateway=True,
     )
     config_fields = (
         ConfigField(
@@ -415,6 +423,11 @@ class CodexAgent(AgentDefinition):
         effort = ctx.option("reasoning_effort")
         if effort:
             overrides["model_reasoning_effort"] = f'"{effort}"'
+        # 原生压缩：把平台上限 / 阈值翻成 Codex 的 model_context_window /
+        # model_auto_compact_token_limit；Codex 自己会在 90% 上限内再夹取。
+        overrides.update(
+            codex_compaction_overrides(ctx.context_limit_tokens, ctx.context_trigger_tokens)
+        )
         return overrides
 
     def resume_supported(self, ctx: AgentContext) -> bool:
@@ -585,7 +598,7 @@ class CodexAgent(AgentDefinition):
             counters = self._app_usage(params.get("tokenUsage") or {})
             if counters:
                 yield usage(**counters)
-                window = context_tokens(counters)
+                window = context_tokens(counters, protocol=PROTOCOL_OPENAI_RESPONSES)
                 if window:
                     yield context_usage(window)
             # 模型真正的上下文窗口：上限设为「自动」时平台跟随它。

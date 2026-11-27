@@ -17,7 +17,11 @@ class EventType(str, Enum):
     THINKING_DELTA = "thinking.delta"
     TOOL_CALL = "tool.call"
     TOOL_RESULT = "tool.result"
+    #: 整轮累计的**数值**计数（计费口径；只允许数值键）。
     USAGE = "usage"
+    #: 内核的**原始** usage 小票（可含嵌套 / 字符串）；运行层按协议归一化后入账。
+    #: 与 ``USAGE`` 分开，保证「数值计数」与「原始留痕」两条契约互不污染。
+    USAGE_RAW = "usage.raw"
     #: 单次模型请求的输入 token 数（上下文窗口的真实占用，不是整轮累计）。
     CONTEXT_USAGE = "context.usage"
     #: 内核上报的**真实上下文窗口大小**（tokens）。平台上限设为「自动」时跟随它。
@@ -79,6 +83,20 @@ def tool_result(call_id: str | None, output: str, is_error: bool = False) -> Age
 
 def usage(**counters: Any) -> AgentEvent:
     return AgentEvent(EventType.USAGE, payload=counters)
+
+
+def usage_raw(counters: Any) -> AgentEvent:
+    """原样上报一份 usage（保留嵌套字段 / 驼峰字段），由运行层统一归一化。
+
+    与 :func:`usage` 的区别：``usage(**counters)`` 是**数值**计数（计费口径）；
+    ``usage_raw`` 是内核的原始小票，适合交给 :mod:`app.agents.metering`，
+    避免适配器提前丢掉 ``cache_creation`` / ``output_tokens_details`` 等嵌套信息。
+    两者是不同的规范化事件，不要混用。
+    """
+    return AgentEvent(
+        EventType.USAGE_RAW,
+        payload=dict(counters) if isinstance(counters, dict) else {},
+    )
 
 
 def context_usage(tokens: int) -> AgentEvent:

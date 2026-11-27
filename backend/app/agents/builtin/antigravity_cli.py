@@ -45,6 +45,7 @@ from ..events import (
     usage,
 )
 from ..registry import register_agent
+from ..metering import PROTOCOL_UNKNOWN
 from .util import as_list, flatten_content
 
 #: 官方安装脚本（下载并校验签名的原生产物）。`agy` 会随后台自更新。
@@ -201,6 +202,8 @@ class AntigravityCliAgent(AgentDefinition):
     #: 模型的真实取值由内核按账号能力决定；平台不填默认值，避免传一个内核不认的名字。
     default_model = None
     protocol = "openai"
+    #: 真实 usage 协议尚未用样本确认：显式 unknown，账本保持 unknown 而不是猜。
+    usage_protocol = PROTOCOL_UNKNOWN
     default_auth_style = "bearer"
     docs_url = "https://antigravity.google/docs/cli-getting-started"
     #: Antigravity 官方图标（蓝底 A 形 + 彩色光晕）。

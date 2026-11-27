@@ -997,14 +997,15 @@ export function ChatPage() {
   }
 
   // 整段对话（含正在流式输出的这一轮）累计的 token 消耗。
-  const usageSummary = useMemo(
-    () =>
-      summarizeUsage([
-        ...messages.filter((m) => m.role === 'assistant').map((m) => m.usage),
-        live?.usage,
-      ]),
-    [messages, live?.usage],
-  )
+  const usageSummary = useMemo(() => {
+    const assistants = messages.filter((m) => m.role === 'assistant')
+    return summarizeUsage(
+      [...assistants.map((m) => m.usage), live?.usage],
+      // 流式那一轮还没落库，没有可信的协议快照：走字段兜底；
+      // 落库后以消息上的 usage_protocol 为准。
+      [...assistants.map((m) => m.usage_protocol), undefined],
+    )
+  }, [messages, live?.usage])
 
   // 气泡与输入区里的图片（附件缩略图、智能体产出的图）都从这条出口取：rel_path → 只读文件 URL。
   const resolveMediaUrl = useCallback(
@@ -1275,10 +1276,10 @@ export function ChatPage() {
                   }
                   footer={
                     usageSummary.messages > 0 ? (
-                      <div className="usage-bar" title="整段对话累计消耗">
+                      <div className="usage-bar" title="整段对话累计消耗（≠ 当前上下文窗口）">
                         <span className="usage-tag">本对话消耗</span>
                         <span className="usage-item">
-                          <span className="usage-label">读取</span>
+                          <span className="usage-label" title="普通输入，不含缓存；缓存单列">输入</span>
                           <span className="usage-value">{usageSummary.input.toLocaleString()}</span>
                           <span className="usage-unit">tok</span>
                         </span>
@@ -1293,7 +1294,7 @@ export function ChatPage() {
                           <span className="usage-unit">tok</span>
                         </span>
                         <span className="usage-item">
-                          <span className="usage-label">缓存命中</span>
+                          <span className="usage-label" title="缓存读 /（普通输入 + 缓存读 + 缓存写）">缓存命中</span>
                           <span className="usage-value">
                             {usageSummary.cacheRatio === null
                               ? '—'
@@ -1302,8 +1303,15 @@ export function ChatPage() {
                         </span>
                         {usageSummary.cacheRead > 0 && (
                           <span className="usage-item usage-muted">
-                            <span className="usage-label">命中缓存</span>
+                            <span className="usage-label">缓存读</span>
                             <span className="usage-value">{usageSummary.cacheRead.toLocaleString()}</span>
+                            <span className="usage-unit">tok</span>
+                          </span>
+                        )}
+                        {usageSummary.cacheCreation > 0 && (
+                          <span className="usage-item usage-muted">
+                            <span className="usage-label">缓存写</span>
+                            <span className="usage-value">{usageSummary.cacheCreation.toLocaleString()}</span>
                             <span className="usage-unit">tok</span>
                           </span>
                         )}

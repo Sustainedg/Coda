@@ -78,6 +78,20 @@ async def init_db() -> None:
         await conn.run_sync(SQLModel.metadata.create_all)
         if _settings.sqlalchemy_url.startswith("sqlite"):
             await conn.run_sync(_add_missing_columns, additive_columns)
+            # 双轨去重键：老库补列后用模型的索引定义建一次（create_all 只对新表建索引）。
+            # checkfirst=True 对已有的新表是 no-op；多个 NULL 的唯一索引在 SQLite 合法。
+            index = next(
+                (
+                    idx
+                    for idx in models.UsageRecord.__table__.indexes
+                    if idx.name == "uq_usage_records_upstream_request_id"
+                ),
+                None,
+            )
+            if index is not None:
+                await conn.run_sync(
+                    lambda sync_conn: index.create(sync_conn, checkfirst=True)
+                )
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

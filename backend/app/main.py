@@ -24,6 +24,7 @@ from .bootstrap import (
     seed_if_empty,
     seed_initial_admin,
 )
+from . import model_catalog
 from .db import SessionLocal, init_db
 from .runtime import availability as availability_service
 from .runtime import mcp as mcp_service
@@ -83,6 +84,8 @@ async def _scan_skills(session) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    # 模型目录：先读磁盘旧快照（同步、很快），新版本放到后台下载，绝不阻塞启动。
+    model_catalog.load_from_disk()
     await init_db()
     async with SessionLocal() as session:
         # 先迁掉已下线内核的存量智能体，免得下面的播种 / 默认智能体拿到不存在的 type_id。
@@ -112,6 +115,8 @@ async def lifespan(app: FastAPI):
     # 运行时可用性（内核装没装、什么版本）是缓存 + 定时检测的，绝不放在请求路径上：
     # 探测要起一次 `内核 --version` 子进程，同步跑会冻住整个事件循环。
     detector = asyncio.create_task(availability_service.scheduler())
+    # 模型目录（参考价）：后台拉一次；失败保留磁盘快照，不影响任何请求。
+    catalog_task = asyncio.create_task(model_catalog.refresh_from_network())
     # IM 连接：只连「启用了、凭据齐全」的那些；连不上不影响服务启动（状态显示在设置页）。
     im_task = asyncio.create_task(_start_im())
     try:
@@ -120,6 +125,10 @@ async def lifespan(app: FastAPI):
         detector.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await detector
+        if not catalog_task.done():
+            catalog_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await catalog_task
         await im_manager.stop_all()
         if not im_task.done():
             im_task.cancel()

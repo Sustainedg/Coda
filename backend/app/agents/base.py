@@ -112,6 +112,10 @@ class Capabilities:
     working_directory: bool = False
     #: 是否支持技能（声明即表示适配器实现了 discover_skills/skill_mount）
     skills: bool = False
+    #: 是否可接入记录网关：声明即表示该内核接受 ``base_url_env`` 覆盖，且其协议
+    #: （Anthropic Messages / OpenAI Chat / Responses）在网关的支持范围内。
+    #: 只影响 ``CODA_RECORDING_GATEWAY=auto`` 的启用判定，不改变调用代码。
+    recording_gateway: bool = False
 
     def to_dict(self) -> dict[str, bool]:
         return {
@@ -123,6 +127,7 @@ class Capabilities:
             "permission_modes": self.permission_modes,
             "working_directory": self.working_directory,
             "skills": self.skills,
+            "recording_gateway": self.recording_gateway,
         }
 
 
@@ -287,6 +292,11 @@ class AgentContext:
     #: 所选网关声明的鉴权方式（bearer / x-api-key / query / none）；官方默认时为 None
     auth_style: str | None = None
     model: str | None = None
+    #: 平台解析出的「原生压缩」参数（上下文上限 / 触发阈值，tokens）。适配器据此生成
+    #: 内核自己的压缩配置（Claude Code 的环境变量 / Codex 的 ``-c`` 覆盖）；为空 = 不干预，
+    #: 内核用自己的默认。与平台侧压缩共用同一个阈值，避免「面板说没超、内核却提前压」。
+    context_limit_tokens: int | None = None
+    context_trigger_tokens: int | None = None
     #: 人格（智能体的系统提示词，已由框架解析成最终文本）
     system_prompt: str | None = None
     #: 工作目录
@@ -332,6 +342,11 @@ class AgentDefinition(ABC):
     default_model: ClassVar[str | None] = None
     #: 官方链路的协议与鉴权方式（决定「获取模型」怎么请求，以及播种官方网关的默认值）
     protocol: ClassVar[str] = "openai"
+    #: 该适配器**原始 usage** 的协议（见 ``app.agents.metering``）。
+    #: ``None`` = 未知 / 待真实样本确认，归一化层会走字段兜底或按 pending 阻塞。
+    #: 注意它和上面的 ``protocol`` 不是一回事：``protocol`` 是“怎么请求模型”，
+    #: ``usage_protocol`` 是“模型返回的 token 小票怎么写”。
+    usage_protocol: ClassVar[str | None] = None
     default_auth_style: ClassVar[str] = "bearer"
     #: 官方链路可选的模型清单（播种官方网关时作为默认白名单；用户可再改）
     default_models: ClassVar[list[str]] = []
@@ -495,6 +510,14 @@ class AgentDefinition(ABC):
         if model and model != self.default_model:
             return model
         return self.system_defaults().get("model") or model
+
+    def usage_protocol_for(self, ctx: AgentContext) -> str | None:
+        """本次运行的**原始 usage 协议**（见 ``app.agents.metering``）。
+
+        默认取类级声明；需要按用户配置 / 请求形态动态选择的适配器
+        （Custom CLI、Harness）覆盖它。返回 ``None`` = 未知，由归一化层兜底/阻塞。
+        """
+        return self.usage_protocol
 
     def fields_by_key(self) -> dict[str, ConfigField]:
         return {f.key: f for f in self.config_fields}

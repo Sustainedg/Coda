@@ -812,7 +812,9 @@ export interface Message {
   role: 'user' | 'assistant' | 'system'
   content: string
   parts: MessagePart[]
-  usage: Record<string, number>
+  usage: Record<string, unknown>
+  /** usage 快照的协议（老行为空）；前端据此按同一口径归一化 */
+  usage_protocol?: string | null
   status: string
   error?: string | null
   created_at: string
@@ -822,7 +824,7 @@ export interface Message {
 
 export type AgentEventType =
   | 'turn.started' | 'run.started' | 'message.delta' | 'thinking.delta' | 'tool.call'
-  | 'tool.result' | 'usage' | 'context.usage' | 'context.window' | 'context.compacted'
+  | 'tool.result' | 'usage' | 'usage.raw' | 'context.usage' | 'context.window' | 'context.compacted'
   | 'session' | 'log' | 'error' | 'run.finished' | 'stream.closed'
 
 export interface AgentEvent {
@@ -922,7 +924,93 @@ export interface UsageOverview {
   by_agent: UsageAgentRow[]
   by_conversation: UsageConversationRow[]
   daily: UsageDayRow[]
+  /** 按权威源拆分的 token 汇总（gateway / native / harness / legacy）；旧后端可能不返回 */
+  by_source?: Record<string, UsageTokens>
+  /** 已定价账本行的成本合计（美元）；没有任何已定价行时为 null（未知，不是 0） */
+  cost_usd?: number | null
+  /** 成本覆盖率：各来源的账本行数（reported / estimated / unknown） */
+  cost_coverage?: { reported: number; estimated: number; unknown: number }
   skills: UsageSkills
+}
+
+/* ---------- 外部模型 API（后端 app/api/api_keys.py · model_gateway.py）---------- */
+
+/** 一把外部 API Key（**只有掩码**，明文只在签发时返回一次）。 */
+export interface ApiKeyRow {
+  id: string
+  name: string
+  gateway_id: string
+  gateway_name?: string | null
+  key_mask: string
+  enabled: boolean
+  revoked_at?: string | null
+  last_used_at?: string | null
+  daily_request_limit?: number | null
+  daily_token_limit?: number | null
+  monthly_request_limit?: number | null
+  monthly_token_limit?: number | null
+  created_at?: string | null
+}
+
+/** 签发响应：比列表多一个一次性明文 `key`。 */
+export interface ApiKeyCreateResult extends ApiKeyRow {
+  key: string
+  key_warning: string
+}
+
+/** 手工模型单价（美元 / 每百万 token）。 */
+export interface UsagePricingRow {
+  id: string
+  model_pattern: string
+  input_per_million: number
+  output_per_million: number
+  cache_read_per_million: number
+  cache_creation_per_million: number
+  owner_global: boolean
+  enabled: boolean
+  created_at?: string | null
+}
+
+/** 一行账本明细（审计视图用）。 */
+export interface UsageRecordRow {
+  id: string
+  run_id: string
+  request_id: string
+  source: string
+  /** 双轨采集标记：agent_report / gateway_proxy（老行为 null） */
+  telemetry_source?: string | null
+  origin: string
+  api_key_id?: string | null
+  conversation_id?: string | null
+  agent_type_id?: string
+  agent_profile_id?: string | null
+  model: string
+  provider: string
+  usage_protocol?: string | null
+  normalizer_version?: string | null
+  response_shape?: string | null
+  upstream_request_id?: string | null
+  raw_usage?: Record<string, unknown> | null
+  input_tokens?: number | null
+  output_tokens?: number | null
+  cache_read_tokens?: number | null
+  cache_creation_tokens?: number | null
+  reasoning_tokens?: number | null
+  context_tokens?: number | null
+  api_calls: number
+  api_duration_ms?: number | null
+  cost_usd?: number | null
+  cost_source: string
+  cost_pricing?: Record<string, unknown> | null
+  is_estimated: boolean
+  created_at: string
+}
+
+export interface UsageRecordPage {
+  records: UsageRecordRow[]
+  has_more: boolean
+  limit: number
+  offset: number
 }
 
 /** 「设置 → 关于 → 检测更新」的状态（GET /api/update/check 与 /api/update/status 同形）。 */
@@ -1199,7 +1287,7 @@ export interface CollabStep {
   parts_count?: number
   /** 这一步调用过的工具名（后端从 parts 提取、去重限量；看板/进度展示用） */
   tool_names?: string[]
-  usage: Record<string, number>
+  usage: Record<string, unknown>
   error?: string | null
   audit: Record<string, unknown>
   started_at: string
@@ -1218,7 +1306,7 @@ export interface CollabChatMessage {
   status: string
   content: string
   parts: MessagePart[]
-  usage: Record<string, number>
+  usage: Record<string, unknown>
   error?: string | null
   /** 需求细化与同步结果 */
   meta: Record<string, unknown>
@@ -1239,7 +1327,7 @@ export interface CollabRun {
   budget: CollabBudget
   steps_used: number
   tickets_used: number
-  usage: Record<string, number>
+  usage: Record<string, unknown>
   error?: string | null
   created_at: string
   updated_at: string
@@ -1308,7 +1396,7 @@ export interface CollabEvent {
   status?: string
   reason?: string | null
   action?: string
-  usage?: Record<string, number>
+  usage?: Record<string, unknown>
   error?: string | null
   ticket?: CollabTicket
   text?: string

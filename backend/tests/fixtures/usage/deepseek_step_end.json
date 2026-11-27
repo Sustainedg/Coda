@@ -1,0 +1,8 @@
+{
+  "inputTokens": 3,
+  "outputTokens": 4,
+  "totalTokens": 7,
+  "cacheReadTokens": 1,
+  "cacheWriteTokens": 2,
+  "reasoningTokens": 5
+}

@@ -22,6 +22,13 @@ from ..base import (
 )
 from ..events import AgentEvent, error, log, session, text_delta, tool_call, tool_result, usage
 from ..registry import register_agent
+from ..metering import (
+    PROTOCOL_ANTHROPIC,
+    PROTOCOL_DEEPSEEK,
+    PROTOCOL_GEMINI,
+    PROTOCOL_OPENAI_CHAT,
+    PROTOCOL_OPENAI_RESPONSES,
+)
 from .util import as_list, flatten_content, truthy
 
 
@@ -128,6 +135,22 @@ class CustomCliAgent(AgentDefinition):
             placeholder="usage",
             advanced=True,
         ),
+        ConfigField(
+            "usage_style",
+            "用量字段口径",
+            FieldType.SELECT,
+            default="auto",
+            advanced=True,
+            options=[
+                {"value": "auto", "label": "自动识别（字段兜底）"},
+                {"value": "anthropic", "label": "Anthropic：输入与缓存分离"},
+                {"value": "openai_chat", "label": "OpenAI Chat：缓存含在 prompt_tokens"},
+                {"value": "openai_responses", "label": "OpenAI Responses：缓存含在 input_tokens"},
+                {"value": "gemini", "label": "Gemini：缓存含在 promptTokenCount"},
+                {"value": "deepseek", "label": "DeepSeek：输入与缓存分离（待验证）"},
+            ],
+            help="auto = 按实际字段识别；如果你的 CLI 字段名有歧义，在这里显式指定。",
+        ),
         ConfigField("api_key_env", "API 密钥环境变量名", FieldType.STRING, advanced=True,
                     placeholder="MY_AGENT_API_KEY"),
         ConfigField("gateway_env", "网关环境变量名", FieldType.STRING, advanced=True,
@@ -139,6 +162,17 @@ class CustomCliAgent(AgentDefinition):
 
     def availability(self) -> Availability:
         return Availability(True, detail="由实例上的「可执行命令」决定")
+
+    def usage_protocol_for(self, ctx: AgentContext) -> str | None:
+        """按用户配置的 ``usage_style`` 选协议；``auto`` 交给字段兜底。"""
+        style = str(ctx.option("usage_style", "auto") or "auto").strip().lower()
+        return {
+            "anthropic": PROTOCOL_ANTHROPIC,
+            "openai_chat": PROTOCOL_OPENAI_CHAT,
+            "openai_responses": PROTOCOL_OPENAI_RESPONSES,
+            "gemini": PROTOCOL_GEMINI,
+            "deepseek": PROTOCOL_DEEPSEEK,
+        }.get(style)
 
     async def probe(self, ctx: AgentContext) -> tuple[bool, str]:
         command = str(ctx.option("command") or "")

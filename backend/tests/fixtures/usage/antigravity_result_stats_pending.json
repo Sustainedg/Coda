@@ -1,0 +1,10 @@
+{
+  "stats": {
+    "input_tokens": 1200,
+    "output_tokens": 300,
+    "cache_read_tokens": 800,
+    "cache_creation_tokens": 100,
+    "reasoning_tokens": 50,
+    "duration_ms": 1234
+  }
+}

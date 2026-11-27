@@ -1,6 +1,8 @@
 import { getAccessToken, notifyUnauthorized } from './auth'
 import type {
   ActiveCollabRun,
+  ApiKeyCreateResult,
+  ApiKeyRow,
   AgentEvent, AgentProfile, AgentRuntime, AgentType, AttachmentRef, Availability, CollabChatMessage,
   CollabRun,
   CollabRunDetail, CollabTeam, CollabTeamUpdate, CollabTeamValidateIn, CollabValidation, CollabBudgetPatch, Conversation,
@@ -20,6 +22,8 @@ import type {
   TitleSettings,
   TracePage,
   UsageOverview,
+  UsagePricingRow,
+  UsageRecordPage,
   AuthUser,
   AuthSession,
   AuthConfig,
@@ -186,6 +190,65 @@ export const api = {
     const suffix = search.toString() ? `?${search.toString()}` : ''
     return request<UsageOverview>(`/api/usage/overview${suffix}`)
   },
+
+  // --- 外部模型 API（P3） --------------------------------------------------
+  /** 外部 API Key 列表（只有掩码，明文只在签发时出现一次）。 */
+  listApiKeys: () => request<{ keys: ApiKeyRow[] }>('/api/api-keys'),
+  createApiKey: (body: {
+    name?: string
+    gateway_id: string
+    daily_request_limit?: number | null
+    daily_token_limit?: number | null
+    monthly_request_limit?: number | null
+    monthly_token_limit?: number | null
+  }) =>
+    request<ApiKeyCreateResult>('/api/api-keys', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateApiKey: (id: string, body: Record<string, unknown>) =>
+    request<ApiKeyRow>(`/api/api-keys/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  revokeApiKey: (id: string) =>
+    request<{ ok: boolean }>(`/api/api-keys/${id}`, { method: 'DELETE' }),
+
+  /** 手工单价（美元 / 每百万 token）。 */
+  listPricing: () => request<{ pricing: UsagePricingRow[] }>('/api/usage/pricing'),
+  createPricing: (body: {
+    model_pattern: string
+    input_per_million?: number
+    output_per_million?: number
+    cache_read_per_million?: number
+    cache_creation_per_million?: number
+    owner_global?: boolean
+  }) =>
+    request<UsagePricingRow>('/api/usage/pricing', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  deletePricing: (id: string) =>
+    request<{ ok: boolean }>(`/api/usage/pricing/${id}`, { method: 'DELETE' }),
+
+  /** 账本明细（审计视图）。 */
+  listUsageRecords: (params?: {
+    run_id?: string
+    conversation_id?: string
+    source?: string
+    limit?: number
+    offset?: number
+  }) => {
+    const search = new URLSearchParams()
+    if (params?.run_id) search.set('run_id', params.run_id)
+    if (params?.conversation_id) search.set('conversation_id', params.conversation_id)
+    if (params?.source) search.set('source', params.source)
+    if (params?.limit !== undefined) search.set('limit', String(params.limit))
+    if (params?.offset !== undefined) search.set('offset', String(params.offset))
+    const suffix = search.toString() ? `?${search.toString()}` : ''
+    return request<UsageRecordPage>(`/api/usage/records${suffix}`)
+  },
+
   /** 「设置 → 关于」的版本更新：检测（GitHub Release）、本地状态。 */
   updateCheck: () => request<UpdateStatus>('/api/update/check'),
   updateStatus: () => request<UpdateStatus>('/api/update/status'),
@@ -685,4 +748,22 @@ export function streamGet<T = AgentEvent>(
   signal?: AbortSignal,
 ): Promise<void> {
   return streamRequest<T>(path, { method: 'GET' }, onEvent, signal)
+}
+
+/**
+ * 下载账本 CSV：导出接口不是 JSON，不能走 `request<T>`；这里单独用 `fetch` 取 Blob，
+ * 由调用方创建临时链接触发保存。Bearer 头与其它接口同一套。
+ */
+export async function fetchUsageCsv(params?: Record<string, string>): Promise<Blob> {
+  const search = new URLSearchParams(params ?? {})
+  const suffix = search.toString() ? `?${search.toString()}` : ''
+  const response = await fetch(`${BASE}/api/usage/records/export.csv${suffix}`, {
+    headers: authHeaders(),
+  })
+  if (!response.ok) {
+    const body = await readBody(response)
+    if (response.status === 401) notifyUnauthorized()
+    throw new ApiError(response.status, describeBody(response, body))
+  }
+  return await response.blob()
 }

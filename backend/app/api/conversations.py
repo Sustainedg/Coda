@@ -289,8 +289,14 @@ async def get_conversation_context(
     conversation = await _owned_conversation(conversation_id, session, user)
     profile = await session.get(AgentProfile, conversation.agent_profile_id)
     settings = await context_service.read_settings(session, conversation.owner_id)
+    # 运行中优先读一手账本：网关 / 原生在请求终态就写了 context_tokens，
+    # 消息还没落库时面板也能看到最新数字（见 runtime.context.conversation_usage）。
+    active_run = registry.active_for(conversation.id)
     used, measured = await context_service.conversation_usage(
-        session, conversation, profile.system_prompt if profile else None
+        session,
+        conversation,
+        profile.system_prompt if profile else None,
+        active_run_id=active_run.id if active_run else None,
     )
     return context_service.usage_view(used, settings, conversation, measured=measured)
 

@@ -40,6 +40,8 @@ DOCUMENTED_EVENTS = {
     "tool.call",
     "tool.result",
     "usage",
+    # 原始 usage 小票（保留嵌套/驼峰），与数值计费的 usage 分开。
+    "usage.raw",
     # 单次模型请求的输入 token（上下文窗口占用），与整轮累计的 usage 分开。
     "context.usage",
     # 内核上报的真实上下文窗口大小（上限设为「自动」时平台跟随它）。
@@ -76,6 +78,7 @@ def _adapter_modules() -> list[Path]:
             AGENTS_DIR / "registry.py",
             AGENTS_DIR / "skills.py",
             AGENTS_DIR / "mcp.py",
+            AGENTS_DIR / "metering.py",
             *BUILTIN_DIR.glob("*.py"),
         ]
     )

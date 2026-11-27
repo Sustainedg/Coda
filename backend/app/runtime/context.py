@@ -50,7 +50,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 from starlette.concurrency import run_in_threadpool
 
-from ..models import Conversation, Message, PlatformSetting
+from ..models import Conversation, Message, PlatformSetting, UsageRecord
+from . import usage_ledger
 
 logger = logging.getLogger("coda")
 
@@ -424,16 +425,70 @@ async def write_settings(
 # ---------------------------------------------------------------------------
 
 
+async def _running_ledger_tokens(
+    session: AsyncSession, conversation: Conversation, active_run_id: str
+) -> int | None:
+    """运行中该对话最新一次请求的窗口占用（一手账本），不可用时返回 ``None``。
+
+    只认**当前 run** 的行：运行结束后仍以 ``messages.context_tokens`` 快照为准，
+    否则会把「最新一次请求」和「其后的消息」重复计算。失效线复用现有规则：
+    快照必须晚于最近一次平台压缩 / 内核原生压缩。
+    """
+    row = (
+        await session.execute(
+            select(UsageRecord)
+            .where(
+                UsageRecord.run_id == active_run_id,
+                UsageRecord.context_tokens.is_not(None),
+                UsageRecord.source.in_(
+                    (
+                        usage_ledger.SOURCE_GATEWAY,
+                        usage_ledger.SOURCE_NATIVE,
+                        usage_ledger.SOURCE_HARNESS,
+                    )
+                ),
+            )
+            .order_by(UsageRecord.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None or not row.context_tokens:
+        return None
+    taken_at = _aware(row.created_at)
+    compacted_at = _aware(conversation.context_compacted_at)
+    if compacted_at is not None and taken_at is not None and taken_at <= compacted_at:
+        return None
+    kernel_compacted_at = _aware(conversation.context_kernel_compacted_at)
+    if (
+        kernel_compacted_at is not None
+        and taken_at is not None
+        and taken_at < kernel_compacted_at
+    ):
+        return None
+    return int(row.context_tokens)
+
+
 async def conversation_usage(
     session: AsyncSession,
     conversation: Conversation,
     system_prompt: str | None,
     prompt: str = "",
+    *,
+    active_run_id: str | None = None,
 ) -> tuple[int, bool]:
-    """一条对话当前的上下文用量，返回 ``(tokens, 是否用了内核上报的快照)``。
+    """一条对话当前的上下文用量，返回 ``(tokens, 是否用了真实快照)``。
 
     「展示」与「上限不得低于已用」校验共用（见 ``GET /conversations/{id}/context``）。
+
+    **运行中优先读一手账本**：记录网关 / 原生 / harness 在请求终态就写下了
+    ``usage_records.context_tokens``，此时消息还没落库，面板也能看到最新数字
+    （比等 ``Message.context_tokens`` 落库更快）。没有账本行才回退现有快照 / 估算。
     """
+    if active_run_id:
+        ledger_tokens = await _running_ledger_tokens(session, conversation, active_run_id)
+        if ledger_tokens is not None:
+            return ledger_tokens, True
+
     rows = (
         await session.execute(
             select(Message)

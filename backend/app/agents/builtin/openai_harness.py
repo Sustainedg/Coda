@@ -37,6 +37,7 @@ from ..events import (
 )
 from ..registry import register_agent
 from .harness_tools import ToolError, WorkspaceTools
+from ..metering import PROTOCOL_OPENAI_CHAT
 from ...credentials import scrub
 from ...egress import wrap_client
 
@@ -454,6 +455,8 @@ class OpenAICompatibleHarness(OpenAIHarnessBase):
     default_gateway = "https://api.openai.com/v1"
     default_model = "gpt-4o-mini"
     protocol = "openai"
+    #: 当前 harness 只走 /chat/completions，usage 是 OpenAI Chat 形状。
+    usage_protocol = PROTOCOL_OPENAI_CHAT
     default_auth_style = "bearer"
     default_models = ["gpt-4o-mini"]
     logo = "/icons/kernels/openai.webp"

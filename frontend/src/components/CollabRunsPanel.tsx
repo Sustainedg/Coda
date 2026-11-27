@@ -1002,10 +1002,10 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
                   }
                   footer={
                     runUsage.messages > 0 ? (
-                      <div className="usage-bar" title="本次协作累计消耗">
+                      <div className="usage-bar" title="本次协作累计消耗（≠ 当前上下文窗口）">
                         <span className="usage-tag">本次协作消耗</span>
                         <span className="usage-item">
-                          <span className="usage-label">读取</span>
+                          <span className="usage-label" title="普通输入，不含缓存">输入</span>
                           <span className="usage-value">{runUsage.input.toLocaleString()}</span>
                           <span className="usage-unit">tok</span>
                         </span>
@@ -1020,14 +1020,14 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
                           <span className="usage-unit">tok</span>
                         </span>
                         <span className="usage-item">
-                          <span className="usage-label">缓存命中</span>
+                          <span className="usage-label" title="缓存读 /（普通输入 + 缓存读 + 缓存写）">缓存命中</span>
                           <span className="usage-value">
                             {runUsage.cacheRatio === null ? '—' : `${Math.round(runUsage.cacheRatio * 100)}%`}
                           </span>
                         </span>
                         {runUsage.cacheRead > 0 && (
                           <span className="usage-item usage-muted">
-                            <span className="usage-label">命中缓存</span>
+                            <span className="usage-label">缓存读</span>
                             <span className="usage-value">{runUsage.cacheRead.toLocaleString()}</span>
                             <span className="usage-unit">tok</span>
                           </span>

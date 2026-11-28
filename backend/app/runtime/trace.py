@@ -8,8 +8,11 @@
   任何写入失败只 ``logger.warning(..., exc_info=True)``，绝不打断正常回复与 SSE。
 * 入库前统一脱敏：复用 :func:`app.credentials.scrub` 擦掉凭据值，并按字段名掩码
   ``Authorization`` / ``Cookie`` / ``api_key`` / ``token`` / ``secret`` 等敏感键。
-* 体积上限写死在本模块：单事件 256 KiB、单会话 2000 条 / 20 MiB；超限按
+* 体积上限写死在本模块：单事件 2 MiB、单会话 500 条 / 100 MiB；超限按
   ``created_at`` 从旧到新裁剪，保证最新一轮仍然完整可查。
+* 超限时**优先结构感知裁剪**：保留 ``messages`` 数组完整性（逐条保留结构，只裁单条
+  超长字段、从最早的消息开始丢弃），排障时「少了几轮」比「整段 JSON 坏掉」有用得多；
+  实在裁不动才退回「合法 JSON 的头 / 尾摘要」。
 """
 from __future__ import annotations
 
@@ -57,15 +60,28 @@ if _sqlite:  # pragma: no cover - 仅在 SQLite 部署下注册
 _TraceSessionLocal = async_sessionmaker(_trace_engine, expire_on_commit=False)
 
 #: 单条轨迹事件 payload 的上限（序列化后的 UTF-8 字节数）。
-MAX_EVENT_BYTES = 256 * 1024
-#: 单对话最多保留的事件条数。
-MAX_EVENTS_PER_CONV = 2000
+#: 完整上下文动辄几十到几百 KiB，256 KiB 会直接卡脖子；2 MiB 能容纳大多数整轮请求。
+MAX_EVENT_BYTES = 2 * 1024 * 1024
+#: 单对话最多保留的事件条数。与总量一起收紧：2 MiB × 2000 远超总量上限，
+#: 条数永远不会触发，参数之间失去平衡；500 条与 100 MiB 大致同步。
+MAX_EVENTS_PER_CONV = 500
 #: 单对话轨迹数据的总体积上限（按 ``bytes`` 累加）。
-MAX_CONV_BYTES = 20 * 1024 * 1024
+MAX_CONV_BYTES = 100 * 1024 * 1024
 
-#: 超限 payload 保留头 / 尾的字节数。
-_TRUNCATE_HEAD_BYTES = 128 * 1024
-_TRUNCATE_TAIL_BYTES = 64 * 1024
+#: 超限 payload 保留头 / 尾的字节数（结构裁剪失败时的兜底摘要）。
+_TRUNCATE_HEAD_BYTES = 256 * 1024
+_TRUNCATE_TAIL_BYTES = 128 * 1024
+
+#: 结构裁剪：单条消息里单个字段（content / text / thinking…）的上限。
+_MESSAGE_ITEM_BYTES = 256 * 1024
+#: 结构裁剪时为 JSON 括号 / 逗号 / 标记字段预留的余量。
+_STRUCTURAL_MARGIN = 512
+
+#: 可能承载「消息数组」的字段名：Chat / Anthropic 的 ``messages``、
+#: Responses 的 ``input``、Gemini 的 ``contents``。
+_MESSAGE_KEYS = ("messages", "input", "contents")
+#: 消息数组可能挂在这些包装层下面（网关轨迹是 ``{"transport", "body"}``）。
+_MESSAGE_WRAPPERS = ("body", "request", "payload")
 
 #: 上下文快照里每条历史正文与历史正文总量的上限。
 _HISTORY_ENTRY_BYTES = 8 * 1024
@@ -165,16 +181,144 @@ def _serialise(payload: Any) -> int:
     return len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
 
 
-def _truncate_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """超过单事件上限时保留头 128 KiB + 尾 64 KiB（JSON 文本层面截断）。"""
+def _clip_text(text: str, limit: int = _MESSAGE_ITEM_BYTES) -> tuple[str, bool]:
+    """按 UTF-8 字节数截断一段文本；截断时附一句可读说明，不产生乱码。"""
+    raw = text.encode("utf-8")
+    if len(raw) <= limit:
+        return text, False
+    head = raw[:limit].decode("utf-8", "ignore")
+    return f"{head}\n…（已截断，原 {len(raw)} 字节）", True
+
+
+def _clip_strings(value: Any, limit: int = _MESSAGE_ITEM_BYTES) -> tuple[Any, bool]:
+    """递归裁剪一段结构里的超长字符串，保留 dict / list 的原始形状。"""
+    if isinstance(value, str):
+        return _clip_text(value, limit)
+    if isinstance(value, dict):
+        clipped = False
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            out[key], item_clipped = _clip_strings(item, limit)
+            clipped = clipped or item_clipped
+        return out, clipped
+    if isinstance(value, (list, tuple)):
+        clipped = False
+        items: list[Any] = []
+        for item in value:
+            new_item, item_clipped = _clip_strings(item, limit)
+            items.append(new_item)
+            clipped = clipped or item_clipped
+        return items, clipped
+    return value, False
+
+
+def _message_container(payload: dict[str, Any]) -> tuple[dict[str, Any], str] | None:
+    """在 payload（含一层包装）里找承载消息数组的容器与字段名。"""
+    candidates: list[dict[str, Any]] = [payload]
+    for wrapper in _MESSAGE_WRAPPERS:
+        nested = payload.get(wrapper)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    for container in candidates:
+        for key in _MESSAGE_KEYS:
+            value = container.get(key)
+            if isinstance(value, list) and value:
+                return container, key
+    return None
+
+
+def _truncate_messages(payload: dict[str, Any], max_bytes: int) -> bool:
+    """结构感知裁剪：裁单条超长字段 + 从最早的非 system 消息开始丢弃。
+
+    原地修改 ``payload``，成功返回 True；payload 里没有消息数组或仍裁不下返回 False
+    （由调用方退回头 / 尾摘要）。
+    """
+    found = _message_container(payload)
+    if found is None:
+        return False
+    container, key = found
+    original = list(container[key])
+
+    clipped = False
+    # Anthropic / Responses 的 system prompt 在消息数组之外；它太大时也要裁，
+    # 否则整个结构会退化成头 / 尾摘要，反而丢掉所有消息。
+    for head_key in ("system", "instructions"):
+        if isinstance(container.get(head_key), (str, list)):
+            container[head_key], head_clipped = _clip_strings(container[head_key])
+            clipped = clipped or head_clipped
+
+    prepared: list[Any] = []
+    for message in original:
+        item, item_clipped = _clip_strings(message)
+        prepared.append(item)
+        clipped = clipped or item_clipped
+
+    # 开头的 system / developer 消息永不丢弃（它们是内核行为的前提）。
+    head_count = 0
+    while (
+        head_count < len(prepared)
+        and isinstance(prepared[head_count], dict)
+        and prepared[head_count].get("role") in ("system", "developer")
+    ):
+        head_count += 1
+    head = prepared[:head_count]
+    body = prepared[head_count:]
+
+    # 先算「不含消息数组」的骨架体积，再按单条消息体积从尾部往前装。
+    container[key] = []
+    base_size = _serialise(payload) + _STRUCTURAL_MARGIN
+    head_size = sum(_serialise(message) + 1 for message in head)
+    budget = max_bytes - base_size - head_size
+    if budget <= 0:
+        # system 自己就超标：把头也当成普通消息，从尾部保留即可（至少留最后一条）。
+        head = []
+        body = prepared
+        budget = max(0, max_bytes - base_size)
+
+    sizes = [_serialise(message) + 1 for message in body]
+    kept = 0
+    kept_size = 0
+    for size in reversed(sizes):
+        if kept and kept_size + size > budget:
+            break
+        kept += 1
+        kept_size += size
+    kept = max(kept, min(1, len(body)))  # 至少保留最后一条消息
+
+    dropped = len(body) - kept
+    container[key] = [*head, *body[len(body) - kept :]]
+    if clipped or dropped:
+        payload["truncated_messages"] = dropped
+        payload["original_messages"] = len(original)
+    return _serialise(payload) <= max_bytes
+
+
+def _truncate_payload(
+    payload: dict[str, Any], *, max_bytes: int | None = None
+) -> dict[str, Any]:
+    """超限 payload 的结构感知裁剪；裁不动时退回**合法 JSON** 的头 / 尾摘要。
+
+    原则：宁可少几条消息，也不给出坏掉的 JSON。兜底摘要同样是合法 JSON，
+    只是失去结构（``head`` / ``tail`` 是字符串），便于前端继续渲染与导出。
+    """
+    max_bytes = MAX_EVENT_BYTES if max_bytes is None else max_bytes
+    original_bytes = _serialise(payload)
+    if _truncate_messages(payload, max_bytes):
+        payload["truncated"] = True
+        return payload
+
     raw = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-    head = raw[:_TRUNCATE_HEAD_BYTES].decode("utf-8", "ignore")
-    tail = raw[-_TRUNCATE_TAIL_BYTES:].decode("utf-8", "ignore")
+    # 兜底也要守住单事件上限：留 20% 余量给 JSON 转义与包装字段。
+    budget = max(512, int(max_bytes * 0.8) - _STRUCTURAL_MARGIN)
+    head_budget = min(_TRUNCATE_HEAD_BYTES, budget * 2 // 3)
+    tail_budget = min(_TRUNCATE_TAIL_BYTES, max(0, budget - head_budget))
+    head = raw[:head_budget].decode("utf-8", "ignore")
+    tail = raw[-tail_budget:].decode("utf-8", "ignore") if tail_budget else ""
     return {
         "__truncated__": True,
         "head": head,
         "tail": tail,
-        "original_bytes": len(raw),
+        "original_bytes": original_bytes,
     }
 
 
@@ -528,6 +672,9 @@ class TraceRecorder:
                 safe_payload = {"value": safe_payload}
             if redacted:
                 safe_payload["redacted_fields"] = redacted
+            # ``error`` 不进 payload、单独成列，所以脱敏要在这里补一道：
+            # 异常文本可能带完整 URL / 凭据，和正文一样不能原样落库。
+            safe_error = scrub(error, self._secrets) if error else error
             size = _serialise(safe_payload)
             event_truncated = bool(truncated)
             if size > MAX_EVENT_BYTES:
@@ -543,7 +690,7 @@ class TraceRecorder:
                 "type": event_type,
                 "payload": safe_payload,
                 "duration_ms": duration_ms,
-                "error": error,
+                "error": safe_error,
                 "truncated": event_truncated,
                 "bytes": size,
                 "created_at": utcnow(),

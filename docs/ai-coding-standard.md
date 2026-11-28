@@ -176,7 +176,7 @@ POST /api/conversations/{id}/messages
 | `mcp` | 该内核支持 MCP：适配器**必须**实现 `discover_mcp_servers()` 与 `mcp_mount()`（有架构守卫测试）；框架按 `mcp_mount` 把智能体分配到的 MCP 服务器写进隔离目录 / 工作目录 |
 | `skills` | 该内核支持技能：适配器**必须**实现 `skill_roots()` / `discover_skills()` / `skill_mount()` |
 | `working_directory` | 为每个对话分配独立工作目录并作为 cwd |
-| `recording_gateway` | 该内核接受 `base_url_env` 覆盖，可接入记录网关；只影响 `CODA_RECORDING_GATEWAY=auto` 的启用判定，不改变调用代码 |
+| `recording_gateway` | 该内核**接受任意形式的 base_url 覆盖**（环境变量 / 配置文件 / 命令行），可接入记录网关；它是「有没有注入缝」的唯一判据（`base_url_env` 只是其中一种实现），影响记录网关的启用判定，不改变调用代码 |
 
 可选钩子 `resume_supported(ctx)`：当"声明支持续接、但某些配置下退化为回放"时使用
 （参考 `codex.py` 的 `resume_style`）。**声明与实际行为必须一致。**
@@ -194,7 +194,9 @@ POST /api/conversations/{id}/messages
 ### 4.5 `AgentContext` / `AgentRun`
 
 `AgentContext` 字段语义：`options`（合并后的配置）、`gateway_url`/`api_key`/`auth_style`/`model`
-（已解析最终值，由智能体引用的网关与所选模型解析而来；官方默认时不注入地址与密钥）、
+（已解析最终值，由智能体引用的网关与所选模型解析而来；官方默认时不注入地址与密钥；
+`gateway_passthrough` 表示「base_url 指向记录网关、但平台不注入密钥、内核用自己的
+OAuth 登录态直通」）、
 `credentials`（智能体自己的凭据解密后的「环境变量名 → 明文」，框架合并进子进程环境，
 **适配器不得写进提示词 / 日志 / 事件**）、`agent_name`/`system_prompt`（人格）、
 `workspace_dir`(cwd)、`session_id`（续接或 `None`）、`history`（回放用的历史轮次）、`prompt`（本轮输入）。

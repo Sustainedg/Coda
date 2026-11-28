@@ -377,15 +377,19 @@ CLI → http://127.0.0.1:<port>/api/internal/usage-gateway/<token>/... → 上�
 ```
 
 - **开关**：`CODA_RECORDING_GATEWAY=off | auto | on`，默认 `off`；关闭即全部回退直连。
-- **启用条件**（`runtime/service._recording_gateway_binding`）：自定义网关（平台持有密钥，
-  `inject` 模式）+ 适配器声明 `Capabilities.recording_gateway` + 有 `base_url_env` 注入缝。
-  官方登录 / 无注入缝的内核保持直连，由原生解析兜底。
+- **启用条件**（`runtime/service._recording_gateway_binding`）：适配器声明
+  `Capabilities.recording_gateway`（「有注入缝」的唯一判据，`base_url_env` 不再是门槛；
+  hermes 走命令行、CodeBuddy 走 `models.json`），且网关是自定义网关或官方网关 + API Key
+  （`inject` 模式）。官方网关无密钥（OAuth）只在强制 `on` 且内核为 CLI 时走实验性
+  passthrough（平台不注入密钥，透传内核自己的鉴权头）。无注入缝的内核（Doubao /
+  Antigravity / Custom CLI）保持直连。
 - **互斥不双记**：一次 run 收尾按 `gateway > native > none` 判权（`runtime/usage_ledger.py`）。
   已有 gateway 行时原生 `usage` 只做展示；没有才把本轮原生累计作为一行 `source=native` 入账；
   两边都没有就记 `unknown`，**不伪造 0**。
 - **安全**：代理只监听回环、路由再校验来源；每 run 一个 256-bit 一次性 token（TTL 2h，run
   结束吊销）；`inject` 模式下上游密钥留在服务端内存，子进程 env 里只有代理 token；
-  不落请求 / 响应正文。
+  正文默认不落库。开启轨迹调试时，转发层额外写脱敏的 `transport="gateway"` 轨迹事件
+  （CLI 内核真实报文；API 内核跳过以防双记），passthrough 的客户端凭据值也从错误体里擦除。
 - **回退**：代理注册失败 / 不可达不自动改走直连（避免半轮混源）；本轮失败但已测用量保留。
 
 > P1 只做**同协议转发**（Anthropic Messages / OpenAI Chat / Responses），不做跨协议翻译、

@@ -419,6 +419,7 @@ docs/
 | 多智能体协作怎么跑、能做什么 | [`docs/collab-mechanism.md`](./docs/collab-mechanism.md) · [`docs/collab-guide.html`](./docs/collab-guide.html)（图文版） |
 | IM 平台、配对与消息路由 | [`docs/im.md`](./docs/im.md) |
 | 系统管理 MCP 与个人访问令牌 | [`docs/admin-mcp.md`](./docs/admin-mcp.md) |
+| 上下文计量、记录网关与成本 | [`docs/usage-gateway.md`](./docs/usage-gateway.md) |
 | 编码规范与工程铁律 | [`AGENTS.md`](./AGENTS.md) · [`docs/ai-coding-standard.md`](./docs/ai-coding-standard.md) |
 
 ---

@@ -153,6 +153,8 @@ class DeepSeekHarnessAgent(AgentDefinition):
         permission_modes=True,
         working_directory=True,
         skills=True,
+        # 接受 DEEPSEEK_BASE_URL 覆盖；协议（Anthropic Messages）在网关支持范围内。
+        recording_gateway=True,
     )
     config_fields = (
         ConfigField(

@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import httpx
@@ -20,6 +21,7 @@ from app.models import (
     Gateway,
     Message,
     SQLModel,
+    TraceEvent,
     UsageRecord,
 )
 from app.runtime import context as context_service
@@ -27,6 +29,8 @@ from app.runtime import recording_gateway as gw
 from app.runtime import service as runtime_service
 from app.runtime import usage_ledger
 from app.runtime.manager import ActiveRun
+from app.runtime.manager import registry as run_registry
+from app.runtime.trace import TraceRecorder
 from app.security import encrypt
 
 
@@ -135,13 +139,45 @@ def test_forward_headers_bearer_inject():
     assert headers["authorization"] == "Bearer REAL-KEY"
 
 
+def test_trace_headers_use_whitelist_and_drop_custom_secrets():
+    """轨迹只留白名单头：自定义头可能夹带密钥，不能原样入库。"""
+    headers = gw.trace_safe_headers(
+        {
+            "authorization": "Bearer CLIENT",
+            "x-api-key": "CLIENT-KEY",
+            "content-type": "application/json",
+            "anthropic-version": "2023-06-01",
+            "x-custom-secret": "LEAK-ME",
+            "host": "127.0.0.1:8010",
+        }
+    )
+    assert headers["authorization"] == "Bearer CLIENT"  # 键在，值由 sanitize 掩码
+    assert headers["content-type"] == "application/json"
+    assert headers["anthropic-version"] == "2023-06-01"
+    assert "x-custom-secret" not in headers
+    assert "host" not in headers
+
+
 def test_forward_headers_passthrough_keeps_client_auth():
     target = gw.ProxyTarget(
         token="t", run_id="r", upstream_url="https://up", auth_style="bearer",
         api_key="REAL-KEY", inject_key=False,
     )
-    headers = gw.build_forward_headers({"authorization": "Bearer CLIENT"}, target, inject=False)
+    headers = gw.build_forward_headers(
+        {
+            "authorization": "Bearer CLIENT",
+            "chatgpt-account-id": "acct-1",
+            "originator": "codex_cli_rs",
+            "session_id": "s-1",
+        },
+        target,
+        inject=False,
+    )
     assert headers["authorization"] == "Bearer CLIENT"
+    # Codex ChatGPT 登录的身份头必须原样透传，否则上游会拒。
+    assert headers["chatgpt-account-id"] == "acct-1"
+    assert headers["originator"] == "codex_cli_rs"
+    assert headers["session_id"] == "s-1"
 
 
 # ---------------------------------------------------------------------------
@@ -532,3 +568,229 @@ async def test_native_context_event_lands_in_ledger_mid_run(monkeypatch):
     assert row.output_tokens == 50
     assert row.context_tokens == 333
     assert row.source == "native"
+
+
+# ---------------------------------------------------------------------------
+# 轨迹采集：网关是 CLI 内核真实报文的唯一可见点
+# ---------------------------------------------------------------------------
+
+
+async def _cli_run_with_trace(*, conversation_id: str = "trace-conv") -> tuple[ActiveRun, TraceRecorder]:
+    async with SessionLocal() as session:
+        if await session.get(AgentProfile, "trace-profile") is None:
+            session.add(
+                AgentProfile(id="trace-profile", name="cl", type_id="claude-code")
+            )
+        session.add(
+            Conversation(id=conversation_id, agent_profile_id="trace-profile", title="轨迹联调")
+        )
+        await session.commit()
+        run = run_registry.register(conversation_id, "cl")
+        ctx = AgentContext(
+            agent_id="trace-profile", agent_name="cl", model="claude-x",
+            api_key="PROXY-TOKEN",
+        )
+        recorder = await TraceRecorder.create(
+            session,
+            conversation_id=conversation_id,
+            owner_id=None,
+            run_id=run.id,
+            turn_index=0,
+            ctx=ctx,
+            user_message_id=None,
+        )
+    run.trace = recorder
+    return run, recorder
+
+
+async def test_route_writes_gateway_trace_for_cli_run(client: httpx.AsyncClient, monkeypatch):
+    """CLI 内核 + 开启轨迹：网关请求 / 响应各写一条，正文脱敏后可查。"""
+    run, recorder = await _cli_run_with_trace()
+    try:
+        target = gw.registry.register(
+            run_id=run.id,
+            upstream_url="https://upstream.example/v1",
+            protocol="anthropic",
+            auth_style="x-api-key",
+            api_key="REAL-UPSTREAM-KEY",
+            owner_id="u1",
+            conversation_id=run.conversation_id,
+            model="claude-x",
+            capture_trace=True,
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = (
+                'event: message_start\n'
+                'data: {"type":"message_start","message":{"id":"msg_trace","model":"claude-x",'
+                '"usage":{"input_tokens":10,"output_tokens":1},"echo":"REAL-UPSTREAM-KEY"}}\n\n'
+                'event: message_stop\n'
+                'data: {"type":"message_stop"}\n\n'
+            )
+            return httpx.Response(
+                200, content=body.encode(), headers={"content-type": "text/event-stream"}
+            )
+
+        transport = httpx.MockTransport(handler)
+        monkeypatch.setattr(gw, "make_http_client", lambda: httpx.AsyncClient(transport=transport))
+
+        response = await client.post(
+            f"/api/internal/usage-gateway/{target.token}/v1/messages",
+            content=json.dumps(
+                {
+                    "model": "claude-x",
+                    "note": "leaked REAL-UPSTREAM-KEY",
+                    "messages": [{"role": "user", "content": "hi REAL-UPSTREAM-KEY"}],
+                }
+            ).encode(),
+            headers={
+                "x-api-key": "PROXY-TOKEN",
+                "authorization": "Bearer PROXY-TOKEN",
+                "content-type": "application/json",
+            },
+        )
+        assert response.status_code == 200
+        await recorder.flush()
+
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(
+                    select(TraceEvent)
+                    .where(TraceEvent.run_id == run.id)
+                    .order_by(TraceEvent.seq)
+                )
+            ).scalars().all()
+
+        assert [row.type for row in rows] == ["context_snapshot", "request", "response"]
+        request_row, response_row = rows[1:]
+        assert request_row.payload["transport"] == "gateway"
+        assert request_row.payload["path"] == "v1/messages"
+        # 消息数组完整保留（这正是 CLI 内核过去看不到的东西）。
+        assert request_row.payload["body"]["messages"] == [
+            {"role": "user", "content": "hi ***"}
+        ]
+        # 鉴权头按敏感键掩码，正文里的上游密钥按值擦除。
+        assert request_row.payload["headers"]["x-api-key"] == "***"
+        assert request_row.payload["headers"]["authorization"] == "***"
+        dumped_request = json.dumps(request_row.payload, ensure_ascii=False)
+        assert "REAL-UPSTREAM-KEY" not in dumped_request
+        assert "PROXY-TOKEN" not in dumped_request
+
+        assert response_row.payload["transport"] == "gateway"
+        assert response_row.payload["status_code"] == 200
+        assert response_row.payload["body"]["sse_events"][0]["type"] == "message_start"
+        assert "REAL-UPSTREAM-KEY" not in json.dumps(response_row.payload, ensure_ascii=False)
+    finally:
+        run_registry.finish(run)
+
+
+async def test_route_skips_trace_when_capture_disabled(client: httpx.AsyncClient, monkeypatch):
+    """API 内核（capture_trace=False）不重复写轨迹：它自己的采集已经更完整。"""
+    run, recorder = await _cli_run_with_trace(conversation_id="trace-conv-api")
+    try:
+        target = gw.registry.register(
+            run_id=run.id,
+            upstream_url="https://upstream.example/v1",
+            protocol="openai",
+            capture_trace=False,
+        )
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"usage": {"total_tokens": 3}})
+        )
+        monkeypatch.setattr(gw, "make_http_client", lambda: httpx.AsyncClient(transport=transport))
+
+        response = await client.post(
+            f"/api/internal/usage-gateway/{target.token}/chat/completions",
+            content=b'{"messages":[]}',
+        )
+        assert response.status_code == 200
+        await recorder.flush()
+
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(select(TraceEvent).where(TraceEvent.run_id == run.id))
+            ).scalars().all()
+        # 只有建采集器时的 context_snapshot；转发层一条都不补。
+        assert [row.type for row in rows] == ["context_snapshot"]
+    finally:
+        run_registry.finish(run)
+
+
+async def test_passthrough_error_body_scrubs_client_oauth_token(
+    client: httpx.AsyncClient, monkeypatch
+):
+    """官方 OAuth passthrough：平台没有密钥，也要把客户端带来的令牌从错误体里擦掉。"""
+    oauth = "OAUTH-ACCESS-TOKEN-1234"
+    target = gw.registry.register(
+        run_id="pass-run",
+        upstream_url="https://api.anthropic.com",
+        protocol="anthropic",
+        auth_style="bearer",
+        api_key=None,
+        inject_key=False,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # passthrough：客户端自己的 Authorization 原样到上游。
+        assert request.headers.get("authorization") == f"Bearer {oauth}"
+        body = json.dumps({"error": f"invalid token {oauth}"})
+        return httpx.Response(
+            401, content=body.encode(), headers={"content-type": "application/json"}
+        )
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(gw, "make_http_client", lambda: httpx.AsyncClient(transport=transport))
+
+    response = await client.post(
+        f"/api/internal/usage-gateway/{target.token}/v1/messages",
+        content=b"{}",
+        headers={"authorization": f"Bearer {oauth}"},
+    )
+    assert response.status_code == 401
+    assert oauth not in response.text
+    assert "***" in response.text
+
+
+async def test_gateway_trace_error_column_scrubs_query_key(
+    client: httpx.AsyncClient, monkeypatch
+):
+    """上游异常文本可能带完整 URL：query 鉴权的密钥不能跟着进轨迹的 error 列。"""
+    run, recorder = await _cli_run_with_trace(conversation_id="trace-conv-err")
+    try:
+        target = gw.registry.register(
+            run_id=run.id,
+            upstream_url="https://upstream.example/v1",
+            protocol="anthropic",
+            auth_style="query",
+            api_key="QUERY-UPSTREAM-KEY",
+            conversation_id=run.conversation_id,
+            capture_trace=True,
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError(
+                f"connection failed: {request.url}", request=request
+            )
+
+        transport = httpx.MockTransport(handler)
+        monkeypatch.setattr(gw, "make_http_client", lambda: httpx.AsyncClient(transport=transport))
+
+        response = await client.post(
+            f"/api/internal/usage-gateway/{target.token}/v1/messages", content=b"{}"
+        )
+        assert response.status_code == 502
+        await recorder.flush()
+
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(
+                    select(TraceEvent)
+                    .where(TraceEvent.run_id == run.id, TraceEvent.type == "response")
+                )
+            ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].error
+        assert "QUERY-UPSTREAM-KEY" not in rows[0].error
+        assert "QUERY-UPSTREAM-KEY" not in json.dumps(rows[0].payload, ensure_ascii=False)
+    finally:
+        run_registry.finish(run)

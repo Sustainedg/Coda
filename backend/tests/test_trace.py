@@ -372,6 +372,78 @@ async def test_payload_truncation_and_per_conversation_pruning(client: httpx.Asy
     assert len(rows) == 3
 
 
+def test_structural_truncation_keeps_messages_and_valid_json():
+    """超限时按消息条数裁剪：保留 system 与最新几条，JSON 仍可解析。"""
+    messages = [{"role": "system", "content": "S" * 500}]
+    for index in range(60):
+        messages.append({"role": "user", "content": f"turn-{index:02d}-" + "x" * 1000})
+    payload = {"transport": "gateway", "body": {"model": "m", "messages": messages}}
+    limit = 30_000
+    assert trace_mod._serialise(payload) > limit
+
+    result = trace_mod._truncate_payload(payload, max_bytes=limit)
+    raw = json.dumps(result, ensure_ascii=False).encode("utf-8")
+    assert len(raw) <= limit
+    parsed = json.loads(raw)  # 结构裁剪后必须是合法 JSON
+
+    kept = parsed["body"]["messages"]
+    assert kept[0]["role"] == "system"  # system 消息永不丢弃
+    assert len(kept) < len(messages)
+    assert parsed["truncated"] is True
+    assert parsed["truncated_messages"] > 0
+    assert parsed["original_messages"] == len(messages)
+    assert kept[-1]["content"].startswith("turn-59-")  # 最新一轮保留
+
+
+def test_structural_truncation_clips_single_huge_message():
+    """单条消息里的超长字段按字节裁剪，保留结构而不是从 JSON 文本中间切断。"""
+    payload = {
+        "messages": [
+            {"role": "assistant", "content": "a" * 400_000, "extra": "b" * 400_000}
+        ]
+    }
+    limit = 600_000
+    result = trace_mod._truncate_payload(payload, max_bytes=limit)
+    assert trace_mod._serialise(result) <= limit
+    message = result["messages"][0]
+    assert message["role"] == "assistant"
+    assert "已截断" in message["content"]
+    assert "已截断" in message["extra"]
+
+
+def test_structural_truncation_clips_oversized_system_prompt():
+    """Anthropic 的 system 在消息数组之外：它太大时先裁它，保住整条消息链。"""
+    payload = {
+        "body": {
+            "system": "S" * 400_000,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+    }
+    result = trace_mod._truncate_payload(payload, max_bytes=300_000)
+    assert trace_mod._serialise(result) <= 300_000
+    assert result["body"]["messages"] == [{"role": "user", "content": "hi"}]
+    assert "已截断" in result["body"]["system"]
+
+
+def test_truncation_fallback_is_still_valid_json():
+    """没有消息数组可裁时退回头 / 尾摘要——摘要本身也必须是合法 JSON。"""
+    payload = {"blob": "z" * 50_000}
+    limit = 20_000
+    result = trace_mod._truncate_payload(payload, max_bytes=limit)
+    raw = json.dumps(result, ensure_ascii=False).encode("utf-8")
+    assert len(raw) <= limit
+    parsed = json.loads(raw)
+    assert parsed["__truncated__"] is True
+    assert parsed["head"] and parsed["tail"]
+
+
+def test_new_volume_limits_are_balanced():
+    """2 MiB × 500 ≈ 1 GiB 仍大于 100 MiB，但两个参数已大致同步（旧值差 20 倍）。"""
+    assert trace_mod.MAX_EVENT_BYTES == 2 * 1024 * 1024
+    assert trace_mod.MAX_EVENTS_PER_CONV == 500
+    assert trace_mod.MAX_CONV_BYTES == 100 * 1024 * 1024
+
+
 def test_raw_collector_keeps_head_and_tail():
     collector = RawCollector(head_bytes=200, tail_bytes=100)
     for index in range(200):

@@ -104,6 +104,9 @@ class OpenAIHarnessBase(AgentDefinition):
         mcp=False,
         permission_modes=False,
         working_directory=True,
+        # 接受 OPENAI_BASE_URL 覆盖。API 内核自己已采集真实请求 / 响应，
+        # 网关只负责记账、**不重复写轨迹**（见 service 的 capture_trace 判定）。
+        recording_gateway=True,
     )
     config_fields = (
         ConfigField(

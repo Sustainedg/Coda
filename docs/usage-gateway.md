@@ -128,21 +128,33 @@ usage_pricing(id, owner_id, model_pattern, input/output/cache_read/cache_creatio
 **启用条件**（`service._recording_gateway_binding`）：
 
 1. `CODA_RECORDING_GATEWAY` 不是 `off`（默认 `off`）；
-2. 适配器有 `base_url_env` 注入缝；
-3. `auto` 模式还要求适配器声明 `Capabilities.recording_gateway`（目前 Claude Code、Codex）；
-4. 绑定的是**自定义网关**（`kind="custom"`，平台持有上游密钥，`inject` 模式）。
+2. 适配器声明 `Capabilities.recording_gateway`（「有注入缝」的唯一判据，**不再要求**
+   `base_url_env`：hermes 走命令行、CodeBuddy 走 `models.json`，注入代码早已就绪）；
+3. 网关形态：
+   - 自定义网关（`kind="custom"`）→ `inject` 模式；
+   - 官方网关 + 已填 API Key → `inject` 模式；
+   - 官方网关 + 无密钥（OAuth）→ **仅 `on` 模式**下 passthrough，平台不注入密钥，
+     由内核用自己的登录态直通（实验性，见 §14）；
+4. 没有任何 base_url 写入点的内核（Doubao / Antigravity / Custom CLI）不在覆盖范围。
 
-官方链路、无注入缝的内核一律**回退直连**，由原生解析兜底。
+`auto` 模式只启用前两类稳定形态；官方 OAuth 需要强制 `on` 才会尝试。
 
 **流程**：
 
 1. 每个 run 生成 256-bit 一次性 token（TTL 2h，run 结束吊销），注册上游地址 / 密钥 / 归属；
-2. CLI 的 `base_url` 指向 `/api/internal/usage-gateway/<token>`，`api_key` 换成代理 token；
+2. CLI 的 `base_url` 指向 `/api/internal/usage-gateway/<token>`，`api_key` 换成代理 token
+   （passthrough 时不换，内核继续用自己的凭据）；
 3. 路由校验**回环来源 + 有效 token**，同协议转发、tee 响应流、解析 usage；
-4. 响应终态（正常 / 取消 / 断开 / 上游异常）立即写账本；凭证不落日志、不落正文。
+4. 响应终态（正常 / 取消 / 断开 / 上游异常）立即写账本；
+5. **开启轨迹调试时**（`users.trace_debug` + `run.trace` 已就位），转发层把脱敏后的
+   请求 / 响应写进 `trace_events`（`transport="gateway"`），补上 CLI 内核「真实发出去
+   什么」这块空白。CLI 内核写；API 内核（Harness）跳过，避免与它自己的采集双记。
 
-**安全**：只收 loopback；上游密钥只存在服务端内存；不记录请求 / 响应正文；子进程 env 里
-只有代理 token。转发失败返回 502，但**已测用量保留**。
+**安全**：只收 loopback；上游密钥只存在服务端内存；正文**默认不落库**，只有用户主动
+开启轨迹调试时才脱敏写入轨迹（不进消息表、不进日志）；轨迹里的请求头只保留白名单
+（`Content-Type` / `anthropic-version` / 鉴权头等），自定义头一律丢弃，鉴权值掩码为 `***`；
+passthrough 模式下从客户端请求头收集凭据值，一并从上游错误体里擦除。子进程 env 里只有
+代理 token。转发失败返回 502，但**已测用量保留**。
 
 **不做**：跨协议翻译、请求体改写、工具执行、公网暴露。
 
@@ -274,7 +286,8 @@ usage_pricing(id, owner_id, model_pattern, input/output/cache_read/cache_creatio
 | 文件 | 覆盖 |
 | --- | --- |
 | `tests/test_usage_ledger.py` | 归一化、窗口口径、去重、权威源、成本、回填 |
-| `tests/test_recording_gateway.py` | token 生命周期、URL 拼接、转发头、SSE 解析、运行中实时入账 |
+| `tests/test_recording_gateway.py` | token 生命周期、URL 拼接、转发头、SSE 解析、运行中实时入账、网关报文轨迹、passthrough 凭据擦除 |
+| `tests/test_trace.py` | 轨迹开关、脱敏、结构感知裁剪、体积上限、分页与级联删除 |
 | `tests/test_gateway_binding.py` | direct / record / 回退 / 官方 vs 自定义 |
 | `tests/test_model_gateway.py` | 外部鉴权、密钥注入、外部记账、配额 429、非推理请求 |
 | `tests/test_api_keys.py` | 签发只回一次明文、掩码、吊销、配额校验 |
@@ -290,13 +303,21 @@ usage_pricing(id, owner_id, model_pattern, input/output/cache_read/cache_creatio
 
 以下都是**有意留白**或明确未做，不要误以为已覆盖：
 
-1. **官方直连的 passthrough 代理未做**：官方 OAuth / 内核自带登录仍走原生解析，不走记录网关。
-   （计划中的 B 阶段；需处理「CLI 不接受自定义 base_url」并自动回退。）
+1. **官方 OAuth passthrough 只做了实验性版本**（2026-11-28）：官方网关无密钥时，
+   仅在 `CODA_RECORDING_GATEWAY=on` 下把 base_url 指向代理、不注入任何密钥，由内核用
+   自己的登录态直通；`auto` 不碰，且尚未在真实订阅账号上全量实测。Codex 走具名
+   provider + `requires_openai_auth`（并原样透传 `chatgpt-account-id` / `originator` /
+   `session_id` 等身份头），Claude Code 走 `ANTHROPIC_BASE_URL`。
+   排期与边界见 [`计划任务/轨迹完整上下文采集方案.md`](计划任务/轨迹完整上下文采集方案.md)。
 2. **不做跨协议翻译**：只支持同协议直通（Anthropic Messages / OpenAI Chat / Responses）。
    OpenAI 客户端 → Anthropic 上游这类场景不支持；Gemini 协议也不在代理范围内。
-3. **有注入缝但未声明能力的内核**（如 DeepSeek Harness）暂未接入记录网关；**没有
-   `base_url_env` 的内核**（CodeBuddy / Doubao / Hermes / Antigravity / Custom CLI）无法通过
-   通用方式代理，只能原生 / 估算（除非做适配器专属注入）。
+3. **「注入缝」不等于「`base_url_env`」**（2026-11-27 更正，2026-11-28 已实施）：
+   hermes 走命令行 `--provider custom --base-url`、CodeBuddy 走 `models.json` 的 `url`
+   字段——两者的 `Capabilities.recording_gateway` 已补声明，判定逻辑也改为读这个能力，
+   `base_url_env` 不再是门槛。CodeBuddy 注意协议错配：请求是 OpenAI Chat、usage 是
+   Anthropic 形状，账本按 `usage_protocol` 归一化。真正无法代理的是**没有任何 base_url
+   写入点**的内核：Doubao / Antigravity / Custom CLI，轨迹里如实标注「不可见」，
+   不伪造。详见 [`计划任务/轨迹完整上下文采集方案.md`](计划任务/轨迹完整上下文采集方案.md)。
 4. **内部 run 没有配额 / 限流**：配额只存在于外部 API Key 路由；记录网关转发内部流量时不做
    额度判断。
 5. **外部 API 只有请求数 / token 配额，没有 USD 预算**：不像对照实现那样按「已花费美元 +
@@ -314,6 +335,12 @@ usage_pricing(id, owner_id, model_pattern, input/output/cache_read/cache_creatio
     的离线工具。
 13. **流式上游错误未逐块擦除密钥**：非流式错误体已读出来擦掉上游密钥；`text/event-stream`
     的错误片段无法跨块可靠替换，保持原样转发（上游在 SSE 错误里回显密钥属于极少数情况）。
+14. **MITM 抓包没有做**：无注入缝的内核（Doubao / Antigravity）只能靠正向代理 + 证书
+    解密，项目里没有 CA / CONNECT 隧道底座，且可能被证书固定挡住。结论是**暂不实施**，
+    只做可行性验证，不进主分支。见
+    [`计划任务/轨迹完整上下文采集方案.md`](计划任务/轨迹完整上下文采集方案.md) §9。
+15. **网关轨迹的响应正文有采集上限**：成功响应（含流式）在内存里最多留 2 MiB 原始
+    字节，超出后停采并置 `truncated=true`；它不影响转发本身，只是轨迹里的响应体不完整。
 
 ---
 
@@ -321,7 +348,7 @@ usage_pricing(id, owner_id, model_pattern, input/output/cache_read/cache_creatio
 
 | 维度 | 本项目 | ekko-studio（0.8.32） |
 | --- | --- | --- |
-| scoped 网关 | Claude Code / Codex，同协议 | 多内核 + **跨协议翻译**（Anthropic ↔ OpenAI Responses ↔ Gemini） |
+| scoped 网关 | Claude Code / Codex / hermes / CodeBuddy / 两个 Harness，同协议（官方 OAuth 实验性 passthrough） | 多内核 + **跨协议翻译**（Anthropic ↔ OpenAI Responses ↔ Gemini） |
 | 原生计量 | Claude/Codex/Harness；其余估算 | 7 种内核逐家权威边界 + 修复工具 |
 | 上下文 | 平台压缩 + Claude/Codex 原生配置 | 6 种内核原生压缩配置生成 + 版本化估算 |
 | 成本 | 手工价 > 目录价，coverage | 目录 + 分档 + 缓存/推理价 + coverage |

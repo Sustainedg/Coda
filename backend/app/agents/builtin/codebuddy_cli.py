@@ -369,6 +369,10 @@ class CodeBuddyCliAgent(AgentDefinition):
         permission_modes=True,
         working_directory=True,
         skills=True,
+        # 注入缝是隔离配置目录里 models.json 的 `url` 字段（没有 base_url_env）。
+        # 注意协议错配：请求走 OpenAI Chat，但响应 usage 是 Anthropic 形状，
+        # 账本归一化按 usage_protocol 走（见 recording_gateway.persist_usage）。
+        recording_gateway=True,
     )
     config_fields = (
         ConfigField(

@@ -112,9 +112,11 @@ class Capabilities:
     working_directory: bool = False
     #: 是否支持技能（声明即表示适配器实现了 discover_skills/skill_mount）
     skills: bool = False
-    #: 是否可接入记录网关：声明即表示该内核接受 ``base_url_env`` 覆盖，且其协议
-    #: （Anthropic Messages / OpenAI Chat / Responses）在网关的支持范围内。
-    #: 只影响 ``CODA_RECORDING_GATEWAY=auto`` 的启用判定，不改变调用代码。
+    #: 是否可接入记录网关：声明即表示该内核**接受任意形式的 base_url 覆盖**
+    #: （环境变量 / 配置文件 / 命令行参数皆可），且其协议（Anthropic Messages /
+    #: OpenAI Chat / Responses）在网关的支持范围内。
+    #: 它是「有没有注入缝」的唯一判据；``base_url_env`` 只是其中一种实现方式，
+    #: 不再是启用条件。只影响记录网关的启用判定，不改变调用代码。
     recording_gateway: bool = False
 
     def to_dict(self) -> dict[str, bool]:
@@ -286,6 +288,9 @@ class AgentContext:
     options: dict[str, Any] = field(default_factory=dict)
     gateway_url: str | None = None
     api_key: str | None = None
+    #: ``True`` = 网关地址指向记录网关，但平台**不注入密钥**：内核要用自己的登录态
+    #: （官方 OAuth）直通。适配器据此决定「不写密钥、但仍把 base_url 指向代理」。
+    gateway_passthrough: bool = False
     #: 智能体自己的凭据（解密后的「环境变量名 → 明文」）；由框架合并进子进程环境变量，
     #: 值不得出现在提示词、日志、事件与接口响应里（见 app.credentials）
     credentials: dict[str, str] = field(default_factory=dict)

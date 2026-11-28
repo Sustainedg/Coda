@@ -6,9 +6,12 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .processes import kill_tree
+
+if TYPE_CHECKING:  # 只为类型标注：运行表不依赖轨迹的具体存储实现
+    from ..agents.base import TraceSink
 
 
 @dataclass
@@ -46,6 +49,10 @@ class ActiveRun:
     #: CLI 适配器从内核自带任务工具归一出的一份平台卡片块（见 ``AgentRun.task_card_block``）；
     #: 收尾时作为围栏 / MCP 之后的兜底应用。只存在于进程内，不写数据库。
     task_card_block: dict[str, Any] | None = None
+    #: 本轮轨迹采集器（实现是 ``runtime.trace.TraceRecorder``，契约是 ``TraceSink``）；
+    #: 未开调试时为 ``None``。记录网关转发时按 ``run_id`` 反查它，把 CLI 内核真实报文
+    #: 补进同一条轨迹。只依赖叶子层的协议，不把轨迹的存储实现压进运行表。
+    trace: "TraceSink | None" = None
 
     def snapshot(self) -> dict[str, Any]:
         return {

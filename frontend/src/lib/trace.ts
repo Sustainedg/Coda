@@ -37,6 +37,7 @@ export function traceTypeLabel(type: string): string {
 export function traceSource(event: TraceEvent): string {
   const transport = event.payload?.['transport']
   if (transport === 'http') return '来源：API 内核 HTTP 调用（真实请求 / 响应）'
+  if (transport === 'gateway') return '来源：记录网关转发（CLI 内核真实请求 / 响应，已脱敏）'
   if (transport === 'cli') return '来源：CLI 内核子进程（进程入参 / 原始输出，非模型报文）'
   if (event.type === 'tool_call' || event.type === 'tool_result') return '来源：运行层规范化工具事件'
   if (event.type === 'context_snapshot') return '来源：每轮组装完成后的上下文快照'
@@ -46,8 +47,9 @@ export function traceSource(event: TraceEvent): string {
 /**
  * 这条事件之后是否要渲染「不可见环节」占位。
  *
- * 方案 §11 裁决 1：CLI 内核只记录进程入参与原始输出，子进程内部的真实 HTTP
- * 请求 / 响应平台拿不到 —— 这里必须明说「缺」，不许静默留白，更不许伪造。
+ * 方案 §11 裁决 1：CLI 的进程入参事件只记录启动描述与原始输出，不含模型报文；
+ * 真实请求 / 响应由记录网关（transport=gateway）单独成条。这里必须明说「缺口在
+ * 这条」并指路，不许静默留白，更不许伪造。
  */
 export function hasInvisibleSegment(event: TraceEvent): boolean {
   const transport = event.payload?.['transport']
@@ -56,8 +58,8 @@ export function hasInvisibleSegment(event: TraceEvent): boolean {
 
 /** CLI 不可见环节的占位文案（含来源标注）。 */
 export const INVISIBLE_SEGMENT_NOTE =
-  '不可见环节：CLI 内核在子进程内部发起模型调用，真实 HTTP 请求体与响应体平台采集不到。' +
-  '本条只记录进程入参（invocation）与原始输出（raw_lines），不含模型报文。'
+  '不可见环节：本条只记录 CLI 进程入参（invocation）与原始输出（raw_lines），不含模型报文。' +
+  '若本轮经记录网关转发且已开启调试，真实请求 / 响应见同轮的「记录网关转发」事件。'
 
 /** 单条时间的展示文案：今天只显示时分秒，其余显示日期 + 时分（与列表同口径，多了秒）。 */
 export function formatTraceTime(iso: string | null | undefined): string {

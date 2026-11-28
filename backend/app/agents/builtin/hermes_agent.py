@@ -160,6 +160,9 @@ class HermesAgent(AgentDefinition):
         permission_modes=True,
         working_directory=True,
         skills=True,
+        # 注入缝是命令行 `--provider custom --base-url …`（环境变量不生效）；
+        # 协议（OpenAI Chat）在记录网关支持范围内。
+        recording_gateway=True,
     )
     config_fields = (
         ConfigField(

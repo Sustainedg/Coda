@@ -5,8 +5,10 @@
 * **做**：同协议转发（Anthropic Messages / OpenAI Chat / OpenAI Responses）、透传必要请求头、
   按 ``auth_style`` 注入上游密钥、tee 响应解析 usage、按 ``request_id`` 去重写账本、
   失败 / 取消 / 客户端断开时写已测用量、一次性代理 token 的注册与回收。
-* **不做**：跨协议翻译、请求体改写、工具执行、公网暴露、正文落库、
+* **不做**：跨协议翻译、请求体改写、工具执行、公网暴露、账本落正文、
   把上游密钥写进子进程环境或日志。
+* **轨迹**：仅在用户开启调试且本 run 有采集器时，转发层把脱敏后的请求 / 响应写进
+  ``trace_events``（``transport="gateway"``）；不进账本、不进消息表、不进日志。
 
 安全模型：
 
@@ -36,6 +38,7 @@ import httpx
 from ..db import SessionLocal
 from ..egress import wrap_client
 from ..agents.metering import (
+    PROTOCOL_UNKNOWN,
     RESPONSE_SHAPE_ANTHROPIC,
     RESPONSE_SHAPE_CHAT,
     RESPONSE_SHAPE_RESPONSES,
@@ -94,6 +97,12 @@ class ProxyTarget:
     #: 本 run 的消息创建时刻：用作 ``usage_ledger_started_at`` 的对齐点，避免边界轮
     #: 被「旧消息段 + 账本段」各算一次。
     run_started_at: datetime | None = None
+    #: 是否把转发报文写进本 run 的轨迹。只给 CLI 内核置真：它们的真实 HTTP 请求发生在
+    #: 子进程内部，网关是唯一可见点；API 内核（Harness）自己已采集完整请求，避免双记。
+    capture_trace: bool = False
+    #: 内核原始 usage 的协议（与请求协议可能不同：CodeBuddy 请求走 OpenAI Chat，
+    #: 但响应 usage 是 Anthropic 形状）。账本归一化优先用它，而不是 ``protocol``。
+    usage_protocol: str | None = None
 
     @property
     def base_url(self) -> str:
@@ -125,6 +134,8 @@ class TokenRegistry:
         provider: str = "",
         run_started_at: datetime | None = None,
         ttl_seconds: int | None = None,
+        capture_trace: bool = False,
+        usage_protocol: str | None = None,
     ) -> ProxyTarget:
         token = secrets.token_urlsafe(32)
         target = ProxyTarget(
@@ -142,6 +153,8 @@ class TokenRegistry:
             model=model,
             provider=provider,
             run_started_at=run_started_at,
+            capture_trace=capture_trace,
+            usage_protocol=usage_protocol,
             # 注意 0 是合法 TTL（立即过期，用于测试 / 强制失效），不能被 ``or`` 吞掉。
             expires_at=utcnow()
             + timedelta(seconds=self._ttl if ttl_seconds is None else ttl_seconds),
@@ -231,6 +244,34 @@ _FORWARD_HEADERS = {
     "openai-organization",
     "openai-project",
 }
+#: passthrough（官方 OAuth）额外透传的身份头：Codex 的 ChatGPT 登录会带
+#: ``chatgpt-account-id`` / ``originator`` 等，丢了上游会拒；Claude Code 订阅登录
+#: 也会带自己的 session 头。inject 模式下这些一律丢弃（属于子进程内部信息）。
+_PASSTHROUGH_IDENTITY_HEADERS = {
+    "chatgpt-account-id",
+    "originator",
+    "session_id",
+    "conversation_id",
+}
+
+#: 轨迹里允许保留的请求头：转发白名单 + 鉴权 / 身份头。鉴权头的**值**会被
+#: ``trace.sanitize`` 掩码；自定义头（可能夹带密钥）一律不入轨迹，避免明文密钥入库。
+_TRACE_HEADERS = (
+    _FORWARD_HEADERS
+    | {"authorization", "x-api-key", "cookie", "set-cookie"}
+    | _PASSTHROUGH_IDENTITY_HEADERS
+)
+
+
+def trace_safe_headers(incoming: Mapping[str, str] | Any) -> dict[str, str]:
+    """按白名单挑出可写入轨迹的请求头（键名保留，值仍由 ``sanitize`` 脱敏）。"""
+    return {
+        str(key): str(value)
+        for key, value in incoming.items()
+        if str(key).lower() in _TRACE_HEADERS
+    }
+
+
 #: 响应侧不透传的头（由本服务 / httpx 重新生成）。
 _DROP_RESPONSE_HEADERS = {
     "content-length",
@@ -254,7 +295,7 @@ def build_forward_headers(
     """
     allowed = set(_FORWARD_HEADERS)
     if not inject:
-        allowed |= {"authorization", "x-api-key"}
+        allowed |= {"authorization", "x-api-key"} | _PASSTHROUGH_IDENTITY_HEADERS
     headers: dict[str, str] = {}
     for key, value in incoming.items():
         lower = key.lower()
@@ -489,8 +530,16 @@ async def persist_usage(
     返回是否**新增**一行（去重后可能为 False）。
     """
     try:
+        # 归一化优先看「实际响应形状」→「内核声明的 usage 协议」→「请求协议」。
+        # 三者不能混：CodeBuddy 请求是 OpenAI Chat，但 usage 是 Anthropic 形状，
+        # 用请求协议归一化会把缓存 token 算重。
+        # ``unknown`` 是「未验证、别猜」的硬阻塞值，但它不该把更粗的请求协议也挡住：
+        # 这里把 unknown 视为「没有提示」，继续回落到请求协议 / 字段探测。
+        hint = target.usage_protocol
+        if not hint or hint == PROTOCOL_UNKNOWN:
+            hint = target.protocol
         protocol = resolve_protocol(
-            accumulator.response_shape or target.protocol,
+            accumulator.response_shape or hint,
             accumulator.raw_usage,
         )
         counts = accumulator.counts(protocol=protocol)
@@ -572,6 +621,7 @@ __all__ = [
     "proxy_url_for",
     "join_upstream_url",
     "build_forward_headers",
+    "trace_safe_headers",
     "filter_response_headers",
     "with_query_key",
     "UsageAccumulator",

@@ -3,6 +3,8 @@
 > 状态：方案文档（**本阶段不写实现代码、不改配置、不装依赖**）。
 > 范围：当前桌面端对话页（`frontend/src/pages/ChatPage.tsx`）。
 > 目标读者：CTO（评审 / 拆实现任务）、QA（对照验收标准核查）。
+> **后续演进**：§11 开放问题 1 / 3 的答案与实施方案见
+> [`计划任务/轨迹完整上下文采集方案.md`](计划任务/轨迹完整上下文采集方案.md)（2026-11-27）。
 
 ---
 
@@ -332,8 +334,8 @@ export interface TraceEvent {
 | type | payload 字段（均可缺省） | 说明 |
 | --- | --- | --- |
 | `context_snapshot` | `system_prompt`(string\|null)、`prompt`(string)、`history`(array<{role,chars}>)、`history_count`(int)、`model`(string\|null)、`workspace_dir`(string\|null)、`kernel_session_id`(string\|null)、`agent_profile_id`(string)、`skills`(string[])、`mcp_servers`(string[])、`user_message_id`(string) | 每轮组装完成后写一条；历史正文按上限截断（默认只存元数据 + 截断文本，见 §8.2） |
-| `request` | `transport`("http"\|"cli")、`url`?、`method`?、`model`?、`headers`?（脱敏）、`body`?（HTTP JSON）、`step`?、`invocation`?({argv,stdin,env_keys,files,cwd})、`outbound`?（双向 JSON-RPC 写回） | HTTP 与 CLI 共用 type，靠 `transport` 区分 |
-| `response` | `transport`、`status_code`?、`finish_reason`?(string\|null)、`usage`?(object)、`raw`?(string 或 {lines:string[]})、`chunk_count`?、`granularity`?("request"\|"run")、`exit_code`?、`stderr_tail`? | API：每次 HTTP 一条；CLI：按 run 一条 |
+| `request` | `transport`("http"\|"cli"\|"gateway")、`url`?、`method`?、`path`?、`upstream`?、`model`?、`headers`?（脱敏）、`body`?（HTTP JSON；gateway 为内核真实请求体）、`step`?、`invocation`?({argv,stdin,env_keys,files,cwd})、`outbound`?（双向 JSON-RPC 写回） | HTTP / CLI / 网关共用 type，靠 `transport` 区分 |
+| `response` | `transport`、`status_code`?、`content_type`?、`bytes`?、`finish_reason`?(string\|null)、`usage`?(object)、`raw`?(string 或 {lines:string[]})、`body`?（gateway：JSON 或 `{sse_events}`）、`chunk_count`?、`granularity`?("request"\|"run")、`exit_code`?、`stderr_tail`? | API：每次 HTTP 一条；CLI：按 run 一条；gateway：每次转发一条 |
 | `tool_call` | `name`(string)、`call_id`(string\|null)、`input`(object)、`step`?(int) | 来自规范化事件 |
 | `tool_result` | `call_id`(string\|null)、`output`(string)、`is_error`(bool) | 与 `tool_call` 通过 `call_id` 配对 |
 
@@ -433,12 +435,15 @@ class TraceEvent(SQLModel, table=True):
 
 - **默认不采集**：`trace_enabled` 为 `False` 时不创建 `TraceRecorder`，零写库；判定点在运行层
   `prepare_run` / `regenerate_last`（见 §3.5、§8.1）。
-- 单事件 `payload` 上限 **256 KiB**：超限保留头/尾并置 `truncated=true`；
+- 单事件 `payload` 上限 **2 MiB**（2026-11-28 起；原 256 KiB 装不下完整上下文）：
+  超限优先**结构感知裁剪**——逐条保留 `messages` 结构、裁单条超长字段、从最早的非
+  system 消息开始丢弃，并写 `truncated=true` / `truncated_messages` / `original_messages`；
+  实在裁不动才退回「合法 JSON 的头 / 尾摘要」（`__truncated__` / `head` / `tail`）。
   二进制（图片、base64、附件内容）一律替换为 `{"__omitted__": "binary", "mime": ..., "bytes": ...}`。
-- 单对话上限 **2000 条 / 20 MiB**（按 `bytes` 累加）：写入时若超限，按 `created_at` 从旧到新删除，
-  保证最新一轮永远可查；被裁剪的条目在导出的元信息里标注 `pruned: true`。
+- 单对话上限 **500 条 / 100 MiB**（2026-11-28 起；原 2000 条 / 20 MiB）：按 `bytes` 累加，
+  超限按 `created_at` 从旧到新删除，保证最新一轮永远可查。
 - 单条输出（工具结果）沿用现有上限：`harness_tools.MAX_OUTPUT = 8000`（`harness_tools.py:16`）；
-  CLI 原始行沿用 `_MAX_LINE_BYTES = 64 MiB`（`runner.py:28`），但写入轨迹前先截断到 256 KiB。
+  CLI 原始行沿用 `_MAX_LINE_BYTES = 64 MiB`（`runner.py:28`），但写入轨迹前按上述上限裁剪。
 - 保留期：随对话删除；不做跨对话全局清理（阶段 2 不引入定时任务）。
 
 ---
@@ -592,11 +597,12 @@ class TraceEvent(SQLModel, table=True):
   - 导出弹窗提供「脱敏导出」开关（默认开）：隐藏 `context_snapshot.system_prompt` 正文（保留长度/hash）、
     隐藏 `request.headers`；单条复制也提示可能含敏感内容。
 - `context_snapshot.history` 默认只存 `{role, chars}` 元数据 + 截断正文（上限 8 KiB），
-  避免整段历史再复制一份；需要完整上下文时由 CTO 拍板是否放宽（开放问题）。
+  避免整段历史再复制一份；**完整上下文改由记录网关报文提供**（`transport="gateway"`，
+  已脱敏），所以不需要放宽快照的正文上限。
 
 ### 8.3 轨迹数据体积与性能（大 payload / base64 / 图片、虚拟列表、懒加载、分页）
 
-- 写入侧：单事件 256 KiB、单会话 2000 条 / 20 MiB 上限，超限裁旧（§5.6）；
+- 写入侧：单事件 2 MiB、单会话 500 条 / 100 MiB 上限，超限先结构裁剪再裁旧（§5.6）；
   图片与 base64 只存引用/摘要，不入库。
 - 读取侧：`GET /trace` 按 `after_seq` 分页（默认 100 条）；前端懒加载，首屏只拉一页。
 - 渲染侧：条目默认折叠；展开的 `<pre>` 默认只渲染前 200 行；超过 300 条时使用窗口化/虚拟列表
@@ -634,8 +640,10 @@ class TraceEvent(SQLModel, table=True):
    （`Runtime.API` 仅 `openai-harness`；其余 8 个内核 `Runtime.CLI` 起子进程）。
    CLI 内核的 HTTP 请求/响应在子进程内部，平台只能看到 `Invocation` 与 stdout/stderr，
    **无法拿到真实的模型请求体与 HTTP 原始响应**。本方案的 `transport:"cli"` 事件如实记录
-   进程入参与原始输出，不冒充「模型请求/响应」。若必须拿到 CLI 真实报文，需要引入本地代理/抓包层，
-   属于独立工单，本阶段不做。
+   进程入参与原始输出，不冒充「模型请求/响应」。
+   **2026-11-28 补充**：CLI 真实报文已由记录网关转发层补上（`transport:"gateway"`，
+   见 [`计划任务/轨迹完整上下文采集方案.md`](计划任务/轨迹完整上下文采集方案.md)）；
+   仅覆盖有 base_url 注入缝的内核，Doubao / Antigravity / Custom CLI 仍如实标注「不可见」。
 2. **对话页有两套物理实现**：桌面端 `frontend/src/pages/ChatPage.tsx` 与移动端
    `frontend/src/mobile/pages/MobileChatPage.tsx`（`/m/` 独立入口）。本方案只覆盖桌面端；
    移动端不改。若移动端也要轨迹视图，需另开工单。
@@ -658,12 +666,19 @@ class TraceEvent(SQLModel, table=True):
 
 ## 11. 仍需 CTO / CEO 拍板的开放问题
 
-1. 阶段 2 是否接受「API 内核完整、CLI 内核只能记录进程入参与原始输出」的采集精度？
-   还是要求先做本地代理抓包（范围明显更大）？
+1. ~~阶段 2 是否接受「API 内核完整、CLI 内核只能记录进程入参与原始输出」的采集精度？~~
+   **已解决（2026-11-28）**：不改用 MITM；把记录网关的转发层作为 CLI 内核真实报文的
+   采集点（`transport="gateway"`），在开关打开时脱敏写入轨迹。无注入缝的内核
+   （Doubao / Antigravity / Custom CLI）继续如实标注「不可见」。见
+   [`计划任务/轨迹完整上下文采集方案.md`](计划任务/轨迹完整上下文采集方案.md)。
 2. 调试开关的归属：**用户级**（本方案）还是平台级/仅管理员？若平台级，需改用 `platform_settings`。
-3. `context_snapshot` 是否允许保存完整系统提示词与完整历史正文（默认脱敏 + 截断）？
-   这直接影响排障效率与隐私风险。
-4. 轨迹保留上限（2000 条 / 20 MiB / 单事件 256 KiB）是否合适？是否需要按部署可配置。
+3. ~~`context_snapshot` 是否允许保存完整系统提示词与完整历史正文（默认脱敏 + 截断）？~~
+   **已解决（2026-11-28）**：`context_snapshot` 继续只存长度 + 哈希 / 截断正文；**完整
+   上下文由网关报文的 `messages[]` 承担**，两者职责分开：快照是平台视角，网关报文是
+   内核视角。
+4. ~~轨迹保留上限（2000 条 / 20 MiB / 单事件 256 KiB）是否合适？~~
+   **已调整（2026-11-28）**：单事件 2 MiB、单会话 500 条 / 100 MiB，并改为结构感知裁剪。
+   是否按部署可配置仍待观察。
 5. 是否把 `@ 召唤轮` 与「重新生成」也纳入同一轨迹（本方案默认纳入，建议保留）。
 6. 导出是否需要在阶段 4 增加后端流式接口（大会话）还是先只做前端 Blob 下载。
 

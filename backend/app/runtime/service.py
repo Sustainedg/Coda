@@ -272,18 +272,32 @@ def _recording_gateway_binding(
 ) -> GatewayBinding | None:
     """按开关 / 能力 / 网关类型判断是否给本轮启用记录网关；不满足返回 ``None``。
 
-    P1 只在 ``inject`` 形态落地：网关必须是用户自建（平台持有上游密钥），内核必须有
-    ``base_url_env`` 注入缝，``auto`` 模式还要求适配器声明 ``recording_gateway`` 能力。
-    官方登录 / 无注入缝的内核一律回退直连，由原生解析兜底（见计划 §5.4 / §11）。
+    判据是适配器声明的 ``Capabilities.recording_gateway``（「有没有注入缝」），
+    不再要求 ``base_url_env``——hermes 走命令行、CodeBuddy 走 ``models.json``，
+    它们的注入代码早就写好，只是过去被环境变量判据误杀。
+
+    * 自定义网关：平台持有密钥，``inject`` 模式；
+    * 官方网关 + API Key：同样 ``inject``（L2）；
+    * 官方网关 + 无密钥：**只在强制 ``on``** 时启用 passthrough（L3，实验性，
+      由内核用自己的 OAuth 登录态直通）；``auto`` 不碰，避免默认行为改变。
     """
     mode = recording_gateway.recording_gateway_mode()
     if mode == recording_gateway.MODE_OFF:
         return None
-    if not definition.base_url_env:
+    if not definition.capabilities.recording_gateway:
         return None
-    if mode == recording_gateway.MODE_AUTO and not definition.capabilities.recording_gateway:
+    if gateway is None:
         return None
-    if gateway is None or gateway.kind != "custom":
+    if gateway.kind == "custom":
+        inject_key = True
+    elif gateway.api_key_encrypted:
+        # 官方链路填了 API Key：平台可以接管密钥注入。
+        inject_key = True
+    elif mode == recording_gateway.MODE_ON and definition.runtime is Runtime.CLI:
+        # 官方 OAuth：平台没有密钥，只能原样透传内核自己的鉴权头。
+        # 只对 CLI 内核有意义（账号登录态在那）；API 内核没有「自带登录」这回事。
+        inject_key = False
+    else:
         return None
     try:
         return bind_recording(
@@ -297,6 +311,10 @@ def _recording_gateway_binding(
             model=model or "",
             provider=gateway.protocol or "",
             run_started_at=run_started_at,
+            inject_key=inject_key,
+            # 只有 CLI 内核需要网关补轨迹；API 内核自己的采集已经更完整（防双记）。
+            capture_trace=definition.runtime is Runtime.CLI,
+            usage_protocol=definition.usage_protocol,
         )
     except Exception:  # noqa: BLE001 - 代理注册失败必须回退直连，不能把整轮跑挂
         logger.warning("记录网关注册失败，本轮回退直连（原生解析兜底）", exc_info=True)
@@ -310,6 +328,8 @@ def _apply_recording_gateway(ctx: AgentContext, binding: GatewayBinding | None) 
     ctx.gateway_url = binding.url
     ctx.api_key = binding.api_key
     ctx.auth_style = binding.auth_style
+    # passthrough（官方 OAuth）：base_url 指向代理，但平台不提供密钥，内核用自己的登录态。
+    ctx.gateway_passthrough = binding.passthrough
 
 
 async def _await_gateway_rows(run_id: str, timeout: float = 2.0) -> bool:
@@ -776,6 +796,8 @@ async def _start_trace(
         logger.warning("初始化轨迹采集失败", exc_info=True)
         return None
     ctx.trace = recorder
+    # 记录网关转发层按 run_id 反查采集器：CLI 内核的真实报文只能从这里补进轨迹。
+    run.trace = recorder
     return recorder
 
 

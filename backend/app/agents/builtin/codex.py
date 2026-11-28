@@ -419,7 +419,12 @@ class CodexAgent(AgentDefinition):
             overrides["model_provider"] = provider
             overrides[f"model_providers.{provider}.name"] = f'"{provider}"'
             overrides[f"model_providers.{provider}.base_url"] = f'"{ctx.gateway_url}"'
-            overrides[f"model_providers.{provider}.env_key"] = f'"{env_key}"'
+            if ctx.gateway_passthrough:
+                # 官方 OAuth 直通：平台没有密钥可注入，让 Codex 用自己登录的
+                # ChatGPT 账号鉴权（`requires_openai_auth`），不写 env_key。
+                overrides[f"model_providers.{provider}.requires_openai_auth"] = "true"
+            else:
+                overrides[f"model_providers.{provider}.env_key"] = f'"{env_key}"'
             # 不下发 wire_api：新版 Codex 只剩 responses、旧版默认 chat ——
             # 写死任何一个都会在另一个版本上直接报错，交给 Codex 按自身版本决定。
         effort = ctx.option("reasoning_effort")

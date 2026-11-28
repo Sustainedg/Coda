@@ -1,9 +1,12 @@
 # 智能体核心记忆方案（用户偏好 + 核心记忆）
 
-> 状态：**方案，尚未开工**。
+> 状态：**方案，尚未开工**（2026-11-28 已按代码评审意见修订）。
 > 事实基线：Coda `main` 分支当前工作区。**代码是唯一事实来源**；本文与代码冲突时以代码为准。
 > 相关文档：`AGENTS.md`（铁律与分层）、`docs/功能文档/上下文窗口与自动压缩.md`（上下文口径）、
 > `docs/计划任务/skills-versioning-plan.md`（本文档结构参照）。
+> 同目录相关方案（互不冲突，见 §7）：`claude-native-memory-plan.md`（内核原生记忆）、
+> `agent-centric-memory-plan.md`（记忆锚点以智能体为核心）、`basic-memory-layering-plan.md`（MCP 记忆库分层）——
+> 那三份讨论「内核自己的记忆文件怎么跨对话」，本方案讨论「平台侧手动维护的记忆怎么注入」，是两条独立的线。
 
 ---
 
@@ -11,7 +14,7 @@
 
 给 `AgentProfile` 增加「核心记忆」与「用户偏好」两个纯文本字段，在设定页手动编辑；
 运行时由**一个统一拼装函数**把它们拼进 system prompt 的最前方（人格之前），
-五个现有拼装点全部改为调用它。**不新增事件类型、不新增依赖、不改任何适配器**；
+**六个**现有拼装点全部改为调用它。**不新增事件类型、不新增依赖、不改任何适配器**；
 网页对话、@ 召唤、协作节点、IM 四条链路经同一函数自动生效。
 AI 自动总结记忆（openclaw 式）留作后续演进——**这两个字段本身就是接口**，无需现在埋钩子。
 
@@ -44,18 +47,28 @@ AI 自动总结记忆（openclaw 式）留作后续演进——**这两个字段
 
 ### 1.3 现有 system prompt 拼装点盘点（全部要收敛）
 
-`with_notice(profile.system_prompt, credentials)`（人格 + 凭据说明）目前有 **5 处**消费点：
+`with_notice(profile.system_prompt, credentials)`（人格 + 凭据说明）目前有 **6 处**消费点：
 
-| 调用点 | 位置 | 链路 |
-| --- | --- | --- |
-| ① `prepare_run` | `runtime/service.py:220` | 网页对话 / IM（`im/bridge.py` 无独立拼装点，全部经此） |
-| ② 运行中段拼装 | `runtime/service.py:619` | @ 召唤轮（召唤的智能体带它自己的记忆） |
-| ③ 运行中段拼装 | `runtime/service.py:1305` | 另一条运行链路 |
-| ④ 协作节点 | `collab/execution.py:309` | 协作域（人格由这里拼，`collab/prompt.py` 明确不拼人格） |
-| ⑤ 上下文用量估算 | `api/conversations.py:298` | 只传 `profile.system_prompt`（无凭据块，现状即如此） |
+| 调用点 | 位置 | 链路 | 角色说明 |
+| --- | --- | --- | --- |
+| ① `build_context` | `runtime/service.py:220` | 网页对话 / @ 召唤 / 重生成 / IM（`im/bridge.py` 无独立拼装点，全部经 `prepare_run`） | **唯一真正进 `AgentContext` 的拼装**，内核实际收到的人格文本由它决定 |
+| ② `prepare_run` 内估算 | `runtime/service.py:619` | 正常发送 | 喂给 `_auto_compact_context` 的**压缩估算入口**（不直接进 `AgentContext`） |
+| ③ `regenerate_last` 内估算 | `runtime/service.py:1305` | 重生成链路 | 同 ②，重跑一轮的压缩估算入口 |
+| ④ 协作节点 | `collab/execution.py:309` | 协作域 | 人格由这里拼（`collab/prompt.py` 明确不拼人格） |
+| ⑤ 上下文面板估算 | `api/conversations.py:298` | 面板展示 | 只传 `profile.system_prompt`（无凭据块，现状即如此） |
+| ⑥ 上限校验估算 | `api/system.py:205-209`（`set_context_settings`） | 「上限不能低于当前已用量」校验 | 同 ⑤ 的口径，防止用户把上限设到低于真实已用 |
 
-只改其中一处的后果：**网页有记忆、协作没记忆**，或上下文面板的 token 数是假的
-（估算没算记忆块）。因此必须收敛成同一个函数，五处全部替换。
+**为什么 ②③⑤⑥ 四个「估算点」也必须换**：估算与实际发送共用同一份口径是
+`runtime/context.py:estimate_conversation` 文档里写死的约定。漏掉任何一个就会出现
+「面板说没超、压缩却触发了」或「上限校验放行了低于真实已用的值」这类自相矛盾——
+恰好是本方案要消灭的静默分叉。
+
+**不在覆盖范围（有意不带记忆，写明防误改）**：`runtime/titles.py:333`（自动起标题的
+one-shot，`system_prompt=None`）、`api/agents.py` 连通性测试（`system_prompt=None`）——
+两者都是与「带记忆对话」无关的旁路任务，带记忆反而污染标题/探测。
+
+只改其中一处的后果：**网页有记忆、协作没记忆**，或上下文面板 / 上限校验的 token 数是假的
+（估算没算记忆块）。因此必须收敛成同一个函数，六处全部替换。
 
 ---
 
@@ -77,7 +90,23 @@ core_memory: str = Field(default="", sa_column=Column(Text, nullable=False))
   `"agent_profiles": { ..., "user_preferences": "TEXT NOT NULL DEFAULT ''", "core_memory": "TEXT NOT NULL DEFAULT ''" }`
 * `schemas.py` 三处同步：`AgentProfileCreate`（`schemas.py:154` 附近）、
   `AgentProfileUpdate`（`:178` 附近）、`AgentProfileRead`（`:224` 附近）——
-  按现有 `system_prompt` 字段的透传方式原样加两个即可（`api/agents.py` 不需要动）。
+  按现有 `system_prompt` 字段的透传方式原样加两个即可。
+  **注意**：`AgentProfileUpdate` 里不加 `max_length`——软上限走「前端计数 + 保存时后端警告」
+  （见 §2.6），Pydantic 的 `max_length` 会直接 422 拦截，与 D4「只警告不拦截」矛盾。
+  语义沿用现有约定：**Update 里 `None` = 不改，`""` = 清空**（`update_agent` 用
+  `model_dump(exclude_unset=True)`，老前端不带这两个字段 PATCH 不会误清——见 §2.7）。
+* **`api/agents.py` 必须改三处**（原稿「不需要动」是错的，2026-11-28 评审纠正）：
+  1. `_to_read`（`api/agents.py:148-163`）是**手工逐字段**构造 `AgentProfileRead` 的，
+     不是靠 `from_attributes` 自动转——schemas 加了字段它也不会自动回传。
+     不补这两行的事故链条：读取接口不回传记忆 → 前端 `useState(agent.core_memory ?? '')`
+     初始化成空串 → 编辑页是**整包 PATCH**（`AgentEditPage.tsx:604` 把所有字段一起提交）→
+     **用户改个名字保存，记忆被静默清空**。这是本方案最大的一个隐性数据丢失坑。
+  2. 克隆智能体 `duplicate_agent`（`api/agents.py:620` 起，`clone = AgentProfile(...)` 在
+     `:640`）同样是手工挑字段：不加 `core_memory=profile.core_memory,
+     user_preferences=profile.user_preferences` 两行，副本没记忆且无任何提示。
+  3. （核对项）`create_agent`（`:328` 附近）经 `AgentProfileCreate` → 手工构造
+     `AgentProfile`，需要带上 `core_memory` / `user_preferences` 的透传——创建表单
+     也要能直接写记忆。
 
 ### 2.2 注入格式与顺序
 
@@ -107,14 +136,25 @@ core_memory: str = Field(default="", sa_column=Column(Text, nullable=False))
 对应 AGENTS.md §4.4「附件能力只有一份」的同款约定）：
 
 ```python
-def compose_system_prompt(profile: AgentProfile, credentials: dict[str, str] | None) -> str | None:
-    """核心记忆 + 用户偏好 + 人格 + 凭据说明，按 §2.2 顺序拼装；全空返回 None。"""
+def compose_system_prompt(
+    profile: AgentProfile | None,
+    credentials: dict[str, str] | None,
+) -> str | None:
+    """核心记忆 + 用户偏好 + 人格 + 凭据说明，按 §2.2 顺序拼装；全空返回 None。
+
+    ``profile=None`` 时直接返回 None（估算点的对话可能已换绑智能体，现状就是
+    ``profile.system_prompt if profile else None``，保持同款容忍）。
+    """
 ```
 
-* `credentials=None` 时跳过凭据块（⑤ 估算点现状就不带凭据块，保持原精度）；
+* `credentials=None` 时跳过凭据块（⑤⑥ 估算点现状就不带凭据块，保持原精度）；
 * 内部复用现有 `credentials.with_notice`（`credentials.py:100`），不重写凭据逻辑；
-* ①②③④⑤ 五处全部改为调它，替换后 grep `with_notice(` 应只剩 `persona.py` 与
-  `credentials.py` 自身。
+* ①②③④⑤⑥ 六处全部改为调它，替换后 grep `with_notice(` 应只剩 `persona.py` 与
+  `credentials.py` 自身；
+* `persona.py` 是**顶层叶子模块**（与 `attachments.py` / `credentials.py` 同层），
+  协作域 import 它不违反分层守卫（`tests/test_collab_architecture.py` 只拦
+  api / runtime / agents 前缀），但 AGENTS.md §2 的协作域白名单文字与分层图需要
+  同步提一句（见 §3.4）。
 
 ### 2.4 为什么不用动适配器（铁律 1/2/3 自检）
 

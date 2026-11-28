@@ -5,8 +5,8 @@
 > 事实基线：Coda `main` 分支，提交 `2b23ded`（技能物化快速路径 / 硬链接 / 跨内核批量挂载之后的完整形态）。
 > **代码是唯一事实来源**；本文与代码冲突时，以代码为准。
 >
-> 相关文档：`docs/architecture.md` §5（技能编目 / 分配 / 物化的架构视角）、`AGENTS.md` §3.8（技能契约铁律）、
-> `docs/collab-mechanism.md`（协作域如何用节点级技能覆盖）。
+> 相关文档：`docs/架构/architecture.md` §5（技能编目 / 分配 / 物化的架构视角）、`AGENTS.md` §3.8（技能契约铁律）、
+> `docs/功能文档/collab-mechanism.md`（协作域如何用节点级技能覆盖）。
 
 ---
 

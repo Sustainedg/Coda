@@ -1,11 +1,12 @@
-# 接入 CodeBuddy CLI 的方案
+# CodeBuddy CLI 接入说明
 
 > 调研对象：腾讯 CodeBuddy Code CLI（`@tencent-ai/codebuddy-code`）。
-> 本文回答三件事：它是什么、平台怎么接、按什么顺序落地。
+> 本文说明它是什么、平台怎么接、已验证的能力与边界。实现以
+> `backend/app/agents/builtin/codebuddy_cli.py` 为准。
 
 ---
 
-## 1. 结论先行
+## 1. 内核定位
 
 **CodeBuddy CLI 是 Claude Code 家族的内核，headless 协议与 Claude Code 几乎逐字对齐**
 （包内类型声明直接写着 "vendored from Claude Code 2.1.316"）。这意味着：
@@ -30,7 +31,7 @@
 
 ---
 
-## 2. 调研到的事实（证据都在包内）
+## 2. 内核能力与协议
 
 来源：npm 包 `@tencent-ai/codebuddy-code@2.185.0`（2026-11-17 发布，tgz 69MB / 解压 226MB），
 文档随包分发在 `dist/web-ui/docs/cn/cli/*.md`，公开仓库 https://cnb.cool/codebuddy/codebuddy-code 。
@@ -103,7 +104,7 @@ codebuddy -p "提示词" \
 - 严格仅分配：`--mcp-config <file> --strict-mcp-config`，与 Claude Code 同名同义，
   `mcp_mount()` 照抄 claude 适配器的写法。
 
-### 2.6 鉴权与模型路由（本方案的核心差异点）
+### 2.6 鉴权与模型路由（平台适配的核心差异点）
 
 | 路径 | 机制 | 平台对接方式 |
 | --- | --- | --- |
@@ -121,7 +122,7 @@ codebuddy -p "提示词" \
 
 ---
 
-## 3. 适配器设计
+## 3. 平台适配实现
 
 新建 `backend/app/agents/builtin/codebuddy_cli.py`，骨架与 `claude_code.py` 对齐：
 
@@ -331,7 +332,7 @@ def mcp_mount(self, ctx):         # McpMount(home_name="codebuddy-home",
 >    在 win32 上是 `os.homedir()` + `AppData\Local`，而 Windows 的「用户文件夹」
 >    由 Known Folder API 解析。平台**不改** `USERPROFILE`，因此登录态与对话看到的是
 >    同一份 —— 这一点与豆包相反：豆包要隔离 HOME，所以必须额外把真实数据目录接进去
->    （见 `docs/doubao-cli.md` §2.7）。
+>    （见 `docs/功能文档/doubao-cli.md` §2.7）。
 >
 > 另外，内核抛「未登录」时用的是一句英文（`Authentication required. Please use /login
 > command to sign in to your account`）。平台在 `parse_line` 里把它翻成中文并指明
@@ -375,13 +376,13 @@ session 文件是**本机密钥加密**的，平台不解析内容，只做字�
 
 ---
 
-## 4. 需要动的文件
+## 4. 代码位置
 
 | 文件 | 改动 |
 | --- | --- |
-| `backend/app/agents/builtin/codebuddy_cli.py` | **新增**适配器（唯一的功能代码） |
-| `backend/app/agents/builtin/codebuddy_login.py` | **新增**可视化登录助手（`login_argv` 指向它，按 `QR_IMAGE=` 协议输出二维码） |
-| `backend/app/agents/builtin/codebuddy_accounts.py` | **新增**账号槽位：存档 / 切换 / 删除（多账号） |
+| `backend/app/agents/builtin/codebuddy_cli.py` | 适配器（唯一的功能代码） |
+| `backend/app/agents/builtin/codebuddy_login.py` | 可视化登录助手（`login_argv` 指向它，按 `QR_IMAGE=` 协议输出二维码） |
+| `backend/app/agents/builtin/codebuddy_accounts.py` | 账号槽位：存档 / 切换 / 删除（多账号） |
 | `backend/app/agents/base.py` | `RuntimeAccount`、`AuthStatus.accounts`、`activate_account()` / `remove_account()` / `supports_accounts()` |
 | `backend/app/api/runtimes.py` | 账号切换 / 删除接口 |
 | `backend/tests/test_adapters.py` | 注册表断言 + invocation/parse/权限/env/models.json/登录态用例 |
@@ -392,9 +393,9 @@ session 文件是**本机密钥加密**的，平台不解析内容，只做字�
 | `frontend/src/components/KernelManager.tsx`、`mobile/pages/MobileRuntimesPage.tsx` | 账号列表与切换按钮 |
 | `backend/tests/test_architecture.py` | `BUILTIN_IDS` 加 `"codebuddy-cli"` |
 | `backend/requirements.txt` | 加 `segno`（纯 Python 二维码，不依赖 Pillow） |
-| `frontend/public/icons/kernels/codebuddy.webp` | **新增**真彩色 Logo（`logo_style = "image"`，原色显示） |
+| `frontend/public/icons/kernels/codebuddy.webp` | 真彩色 Logo（`logo_style = "image"`，原色显示） |
 | `README.md` 「都能接什么」表 | 加一行 `codebuddy-cli` |
-| `docs/codebuddy-cli.md` | 本方案（调研依据） |
+| `docs/功能文档/codebuddy-cli.md` | 本文（接入说明） |
 
 不需要改的：智能体表单 / 内核列表的数据来源（仍由后端 descriptor 驱动）、事件协议、
 runner / skills / mcp 物化层、Docker 镜像（npm 内核走 provisioner；镜像自带 Node 24 满足要求）。
@@ -424,35 +425,32 @@ runner / skills / mcp 物化层、Docker 镜像（npm 内核走 provisioner；�
 7. **多账号是平台侧快照，不是内核原生能力**：切换需要在同一台机器、同一个 `HOME` 下
    （session 文件用本机密钥加密）。切换只影响之后启动的对话，正在跑的任务不会中途换号；
    长时间运行的服务建议在切换后确认当前账号（详情里会显示「当前」标记）。
-8. **`--strict-mcp-config` 的语义以实测为准**：旗标在 CLI 参数解析里确认存在，
-   但「是否真的忽略 user/project 配置」要在 P1 验收时实测一次（拿一个本机配置的
-   MCP 服务器验证它没被加载）。
+8. **`--strict-mcp-config` 的语义以实测为准**：旗标在 CLI 参数解析里确认存在；
+   「是否真的忽略 user/project 配置」需要在本机配置一个 MCP 服务器后验证它没被加载。
 9. **没有「仅工作目录」档**：CodeBuddy 没有 Claude Code 的
    `blockReadsOutsideWorkingDirectories` 一类设置，硬造一个只会给出虚假的安全承诺，
    因此本适配器不声明 `file_access_scope` 字段。需要强隔离请在容器级做。
 
 ---
 
-## 6. 落地顺序
+## 6. 已有能力与后续增强
 
-**P0 — 跑通官方链路（1 个文件 + 测试）**
-适配器骨架（invocation / parse_line / 权限 / root 逃生口 / env）、Logo、README 表格、
-`test_adapters.py` 用真实 stream-json 样本的解析用例 + `test_architecture.py` 注册表用例。
-可视化登录（`codebuddy_login.py`）：`--serve` 取授权链接 → 二维码 → 轮询完成。
-验收：**不碰终端**，在 `内核管理` 点「登录」扫码完成授权后，平台里新建 CodeBuddy 智能体
-→ 对话、流式、工具调用、多轮续接全部可用；`内核管理` 页能安装 / 更新 / 卸载，并显示登录状态。
+### 6.1 已有能力
 
-**P1 — 技能与 MCP（与 claude 同构）**
-`skill_roots / discover_skills / skill_mount / skill_invocation` 与
-`discover_mcp_servers / mcp_mount`，隔离目录 `CODEBUDDY_CONFIG_DIR` 实测：
-技能分配 → 只有分配的技能可见；MCP 分配 → `--strict-mcp-config` 下本机配置不漏进来。
+- **对话主链路**：`-p --output-format stream-json`、`--resume` 多轮续接、
+  工具调用、流式输出；
+- **内核管理**：安装 / 更新 / 卸载，登录状态展示；
+- **可视化登录**：`codebuddy_login.py` 拉起临时 `--serve`，取授权链接渲染二维码，
+  轮询登录状态；
+- **多账号**：`codebuddy_accounts.py` 存档 / 切换 / 删除，切换只影响之后启动的对话；
+- **技能与 MCP**：隔离目录 `CODEBUDDY_CONFIG_DIR` 下物化，只暴露分配给该智能体的技能 /
+  MCP；`--strict-mcp-config` 阻止本机配置漏进来；
+- **自定义网关**：写 `models.json`，只支持 OpenAI 兼容格式；协议不匹配时给明确报错；
+- **用量**：usage 协议为 Anthropic 形状，跟请求协议（OpenAI Chat）不同，网关按
+  `usage_protocol` 归一化。
 
-**P2 — 自定义网关（models.json 路由）**
-`build_invocation` 写 `models.json` + 协议校验报错 + `system_defaults()` 读本机配置。
-验收：绑一个 OpenAI 兼容网关（如 OpenRouter）→ `--model` 选中注入的模型 →
-对话走网关密钥，`usage` 事件正常回报。
+### 6.2 后续增强（未实现，不影响当前接入）
 
-**P3（可选）— 增强项**
-长驻模式（`--input-format stream-json` + `stdin_hold`，像 codex app-server 那样常驻
-进程省掉每次冷启动）、`--json-schema` 结构化输出、后台任务事件（`task_*`）映射成
-平台的工具事件。
+- 长驻模式（`--input-format stream-json` + `stdin_hold`），省掉每次冷启动；
+- `--json-schema` 结构化输出；
+- 后台任务事件（`task_*`）映射成平台工具事件。

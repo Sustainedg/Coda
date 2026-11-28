@@ -1,4 +1,4 @@
-# 上下文用量按钮与自动压缩
+# 上下文用量与自动压缩：实现说明
 
 输入框上方新增一枚「上下文」按钮，展示**已用 / 上限 / 百分比**；点开是详情面板
 （当前已用、可配置上限、触发阈值、压缩策略、最近一次压缩状态），上限与阈值可在面板
@@ -47,7 +47,7 @@
 > 新上报的快照误判成压缩前的旧数据作废，估算回落到「按内容估算」把内核已折叠的历史
 > 又算一遍，用量虚高数倍——反过来触发一次多余的平台压缩。
 
-> **记录网关（P1，默认关闭）开启时，窗口快照优先读一手账本**：`usage_records` 里该 run
+> **记录网关（默认关闭）开启时，窗口快照优先读一手账本**：`usage_records` 里该 run
 > 最新一行的 `context_tokens`（代理从上游 `usage` 归一化：Anthropic = 输入 + 缓存读 + 缓存写；
 > OpenAI Chat = `prompt_tokens`；OpenAI Responses = `input_tokens`）比内核二次上报更可信。
 > 运行收尾用它校准 `messages.context_tokens`；没有账本行才回退上面的原生快照 / 内容估算。
@@ -55,7 +55,7 @@
 > 最新数字）；原生 / harness 的 `context.usage` 现在也**实时入账**——每个 run 一行、运行中
 > 更新，收尾再补计费，所以官方直连内核在运行中同样能看到真实窗口。
 > 运行结束后仍以消息快照为主，避免「最新请求 + 其后消息」重复计算。
-> 详细口径与互斥规则见 `docs/usage-gateway.md`。
+> 详细口径与互斥规则见 `docs/功能文档/usage-gateway.md`。
 
 > **平台还会把上限 / 阈值翻译成内核自己的压缩配置**：Claude Code 下发
 > `CLAUDE_CODE_AUTO_COMPACT_WINDOW` / `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`，Codex 下发
@@ -217,7 +217,8 @@ Claude Code 自带 auto-compact（`--autocompact <auto|tokens>`）：上下文�
 - `frontend/src/index.css`、`frontend/src/mobile/mobile.css`：两端样式（共享段逐字一致；
   移动端在共享段之后补了一条「面板输入框 16px」的微调，避免 iOS 聚焦时强制放大页面）。
 
-面向使用者的完整功能说明见 `docs/功能文档/上下文窗口与自动压缩.md`。
+面向使用者的完整功能说明见 `docs/功能文档/上下文窗口与自动压缩.md`；
+本文保留实现口径与逐内核对接细节。
 
 ## 手动验证
 

@@ -1,9 +1,8 @@
 # 协作（多智能体工单协作）设计方案
 
-> 状态：**方案已评审通过，正在按 §11 里程碑落地**（进度见 §13）。本文档描述的是完整设计，
-> M0（契约冻结）、M1（引擎 MVP：后端跑通含返工的闭环）、M2（画布编排 + 协作页）已落地，
-> 未实现的部分在表格里标了里程碑。
-> 相关约束：`AGENTS.md`（铁律与分层）、`docs/architecture.md`（现有运行时序）。
+> 状态：**主体已落地，仍有少量打磨项**（进度与剩余项见 §13）。本文档是协作域的设计基线，
+> 保留各里程碑的决策与实现记录；未完成的部分在 §13 明确列出。
+> 相关约束：`AGENTS.md`（铁律与分层）、`docs/架构/architecture.md`（现有运行时序）。
 
 ---
 
@@ -59,7 +58,7 @@ SSE、前端 Markdown 渲染全部直接复用，**不新增事件类型、不�
 非结构化自由流转（必须走工单协议）。
 
 > 并行执行**一期未做**，已在 M6 落地为「波次并行、默认串行」（`max_parallel=1` 时行为不变），
-> 设计基线见 §3.4，专题见 `docs/collab-parallel.md`。
+> 设计基线见 §3.4，专题见 `docs/功能文档/collab-parallel.md`。
 
 ---
 
@@ -150,7 +149,7 @@ api.py ──▶ engine.py ──▶ store.py ──▶ tables.py
 | 9 | `frontend/src/index.css` | 追加协作样式（按 AGENTS.md §4.7，不新增 `collab.css`） | ✅ M2 |
 | 10 | `frontend/src/pages/ChatPage.tsx` | 把 `applyEvent` 提到 `lib/agentStream.ts` 复用（协作页也要用它，所以提前到 M2 做） | ✅ M2 |
 | 11 | `frontend/src/components/MessageView.tsx` | 加可选 `label` 属性（时间线上显示岗位名，默认仍是「智能体」） | ✅ M2 |
-| 11 | `docs/architecture.md` | §7 扩展点表加一行指向本文档 | ✅ M0 |
+| 11 | `docs/架构/architecture.md` | §7 扩展点表加一行指向本文档 | ✅ M0 |
 | 12 | `backend/app/collab/schemas.py` `store.py` `execution.py` `prompt.py` | 新建协作任务（run）时可指定工作路径：留空 → 团队默认 → 自动分配；所有岗位统一 cwd，`workspace_scope` 只约束读写权限与越权审计 | ✅ |
 | 13 | `frontend/src/components/ConversationThread.tsx` `CollabAgentThread.tsx` `AgentConversationPanel.tsx`、`src/mobile/components/MobileAgentConversationSheet.tsx` | 对话只有一份展示模块：单聊 / 协作主对话 / 协作看板岗位实时对话（含移动端岗位弹层）共用同一线程与气泡样式 | ✅ |
 
@@ -281,7 +280,7 @@ Edge {
 
 ### 3.4 调度规则（波次并行，默认串行）
 
-> 并行的动机、并发安全细节与运维用法展开在 `docs/collab-parallel.md`（专题），本节是设计基线。
+> 并行的动机、并发安全细节与运维用法展开在 `docs/功能文档/collab-parallel.md`（专题），本节是设计基线。
 
 - 引擎维护**就绪队列**：状态 ∈ {`open`, `rework`} 的工单，按 `(深度, created_at)` 排序。
 - **默认（`max_parallel=1`）只有一个步骤在跑**：谁在等谁，UI 才说得清、日志才好查、取消语义才确定。
@@ -544,7 +543,7 @@ UI 提供「继续」按钮（从就绪队列重新推进）。不删数据、�
 | `DELETE` | `/api/collab/runs/{id}` | 删除运行（级联删工单与步骤消息） |
 
 校验错误用 **422** + 结构化 `detail`（含 `errors[]`，编辑器逐条高亮节点/边）；
-智能体的删除是**软删除**（见 `docs/architecture.md` §6）：协作历史里引用的智能体
+智能体的删除是**软删除**（见 `docs/架构/architecture.md` §6）：协作历史里引用的智能体
 不会因为删除而消失，仍被**未删除**的智能体引用的网关删除时返回 **409**。
 
 **节点 key 是引用键，不是显示名**：工单（`owner_key` / `holder_key` / `submitter_key` / `escalation`）、
@@ -1032,7 +1031,7 @@ ticket.updated 6 / run.status 1`，且 6 步时间线与 2 张工单的字段与
 `~/.codex/skills/.system` 的环境下会失败，**与本次改动无关**（改动前后各跑一次，同样失败）。
 本轮未改前端，故未跑 `npm run build`。
 
-面向非工程读者的图文说明另出一份单文件静态页：`docs/collab-guide.html`（无依赖，浏览器直接打开）。
+面向非工程读者的图文说明另出一份单文件静态页：`docs/功能文档/collab-guide.html`（无依赖，浏览器直接打开）。
 
 **M6 · 工单块里的裸引号不再判死（自造字段也不再被丢掉）—— 已完成。**
 
@@ -1413,7 +1412,7 @@ ticket.updated 6 / run.status 1`，且 6 步时间线与 2 张工单的字段与
 | `backend/tests/test_mobile_web.py` | 守卫改为「流程图样式两端一致」「只有流程图画布锁 touch-action」「运行页主视图是流程图」 |
 | `backend/tests/test_frontend_assets.py` | 删除办公室底图坐标类守卫（底图已不存在） |
 | `backend/tests/test_office_env.py`（删除） | 拟人化 v2 守卫随之退役 |
-| `docs/architecture.md` §11 | 重写为「协作流程图实况呈现层」 |
+| `docs/架构/architecture.md` §11 | 重写为「协作流程图实况呈现层」 |
 
 ### M18 头像跟随 · 进度图内嵌 · 节点级技能 / MCP 临时分配
 
@@ -1459,7 +1458,7 @@ ticket.updated 6 / run.status 1`，且 6 步时间线与 2 张工单的字段与
 | `frontend/src/components/CollabProgressBoard.tsx` | 删除整个标题栏与说明段，只留流程图 + 岗位对话面板；移除 `runTitle` / `teamName` / `statusLabel` / `statusPill` 四个已不使用的入参 |
 | `frontend/src/components/MobileCollabProgress.tsx` · `mobile/mobile.css` | 删除小标题与提示，`.m-collab-progress-head` 样式随之移除 |
 | `frontend/src/index.css` | 删除进度覆盖层标题相关样式；流程图在覆盖层内改为铺满 |
-| `docs/architecture.md` §11 | 补记「界面只留图本身」 |
+| `docs/架构/architecture.md` §11 | 补记「界面只留图本身」 |
 
 ### M20 路由目标「源头减熵 + 克制归一 + 一次修复」
 

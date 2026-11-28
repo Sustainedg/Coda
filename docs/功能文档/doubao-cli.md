@@ -1,12 +1,13 @@
-# 接入豆包 CLI 的方案
+# 豆包 CLI 接入说明
 
 > 调研对象：字节跳动「豆包 CLI」（npm 包 `@bytedance/doubao-cli`，可执行文件 `doubao`）。
-> 本文回答三件事：它是什么、平台怎么接、内核管理怎么换成「实打实的图标」。
+> 本文说明它是什么、平台怎么接、内核管理里的真彩色图标怎么落地。
 > 结论全部来自**本机实装与实跑**（2.37.2，Linux x64），不是文档摘抄。
+> 实现以 `backend/app/agents/builtin/doubao_cli.py` 为准。
 
 ---
 
-## 1. 结论先行
+## 1. 内核定位
 
 豆包 CLI 是**账号登录型**内核，不是 API-Key 型内核：
 
@@ -21,13 +22,13 @@
   Windows x64 / macOS ARM64 / Linux x64，且 Linux 还依赖 `libgcrypt.so.20`。
 
 「实打实的图标」部分：当前内核管理把单色 SVG 当遮罩染色，用户要的是**真彩色位图**
-（像示例里那张 102×102 PNG）。方案是让 `logo` 支持位图（PNG/WebP），
+（像示例里那张 102×102 PNG）。做法是让 `logo` 支持位图（PNG/WebP），
 前端按扩展名/声明选择 `<img>` 或遮罩，并把每个内核的真实品牌图**随仓库发布**，
 不做运行时外链。
 
 ---
 
-## 2. 调研到的事实（实测）
+## 2. 内核能力与协议（实测）
 
 ### 2.1 安装与可执行文件
 
@@ -190,7 +191,7 @@ doubao -C <工作目录> --output-format stream-json -p -
 
 ---
 
-## 3. 适配器设计
+## 3. 平台适配实现
 
 新建 `backend/app/agents/builtin/doubao_cli.py`。
 
@@ -395,17 +396,17 @@ def skill_mount(self, ctx):
 
 ---
 
-## 4. 登录在平台侧怎么落地
+## 4. 登录在平台侧的实现
 
-登录是二维码交互，平台现在没有「内核登录」这个概念。建议分两步：
+登录是二维码交互，平台提供两条路径：
 
-### P0（本方案必做）：宿主机手工登录 + 状态可见
+### 4.1 宿主机手工登录 + 状态可见
 
 - 文档与内核详情提示：在宿主机（或容器内）执行 `doubao login`，扫码一次即可。
 - 「连通性测试」检查 `doubao auth status`，未登录给明确中文提示。
-- 这是与 CodeBuddy / Claude Code 等账号型内核一致的做法，改动最小。
+- 这是与 CodeBuddy / Claude Code 等账号型内核一致的做法。
 
-### P2（已随首版实现）：内核管理里「一键登录」
+### 4.2 内核管理里「一键登录」
 
 复用安装日志那套 SSE：
 
@@ -416,8 +417,8 @@ def skill_mount(self, ctx):
 4. 轮询 / 等待命令退出后自动跑 `doubao auth status` 回报结果；
 5. 仅管理员可触发（与安装 / 卸载同权限）。
 
-> 这一步会动 `provisioning.Action` / API 路由 / 桌面与移动两套前端，
-> 建议独立排期，别和适配器首版混在一起。
+> 这条链路已接进 `provisioning.Action`、API 路由与桌面 / 移动两套前端；
+> 二维码以 `data:` URL 返回，前端不接触服务器临时路径。
 
 ---
 
@@ -513,17 +514,17 @@ CSS（桌面 `index.css` 与移动端 `mobile.css` 各一份）：
   - 断言 `KernelLogo` 同时包含 `maskImage` 与 `<img`，防止有人把其中一种形态删掉。
 - 文档三处要一起改：
   - `AGENTS.md`（§ 内核 Logo 约定）
-  - `docs/architecture.md`（4.1 运行时管理）
-  - `docs/ai-coding-standard.md`（6.1 适配器骨架里的 `logo` 说明）
+  - `docs/架构/architecture.md`（4.1 运行时管理）
+  - `docs/架构/ai-coding-standard.md`（6.1 适配器骨架里的 `logo` 说明）
 - `README.md` 的「都能接什么」表加一行 `doubao-cli`。
 
 ---
 
-## 6. 需要动的文件
+## 6. 代码位置
 
 | 文件 | 改动 |
 | --- | --- |
-| `backend/app/agents/builtin/doubao_cli.py` | **新增**适配器 |
+| `backend/app/agents/builtin/doubao_cli.py` | 适配器 |
 | `backend/app/agents/builtin/util.py` | `npm_install_argv(..., registry=None)` |
 | `backend/app/agents/base.py` | `AuthStatus`、`logo_style`、`auth_status()`、`RuntimeProvisioner.login_argv` |
 | `backend/app/runtime/provisioning.py` | `login` 动作、`QR_IMAGE=` 解析、`provision.qr` 事件 |
@@ -533,12 +534,12 @@ CSS（桌面 `index.css` 与移动端 `mobile.css` 各一份）：
 | `frontend/src/components/KernelManager.tsx` | 登录按钮、登录状态、二维码弹层 |
 | `frontend/src/mobile/pages/MobileRuntimesPage.tsx` | 移动端同上 |
 | `frontend/src/index.css`、`frontend/src/mobile/mobile.css` | `.kernel-logo-image`、`.login-qr` |
-| `frontend/public/icons/kernels/doubao.png` + `SOURCES.md` | **新增**真实品牌图 |
+| `frontend/public/icons/kernels/doubao.png` + `SOURCES.md` | 真实品牌图 |
 | `backend/tests/test_doubao_cli.py` | 启动参数、事件解析、登录态、登录二维码 |
 | `backend/tests/test_architecture.py` / `test_frontend_assets.py` / `test_api.py` | 注册表、图标双形态、内置内核计数 |
 | `docker/Dockerfile` | 补 `libgcrypt20 libgnutls30` |
-| `README.md` / `AGENTS.md` / `docs/architecture.md` / `docs/ai-coding-standard.md` | 内核表与图标约定 |
-| `docs/doubao-cli.md` | 本文（调研依据） |
+| `README.md` / `AGENTS.md` / `docs/架构/architecture.md` / `docs/架构/ai-coding-standard.md` | 内核表与图标约定 |
+| `docs/功能文档/doubao-cli.md` | 本文（接入说明） |
 
 不需要改：事件协议、runner / skills / mcp 物化层、表单渲染（全部由 descriptor 驱动）。
 
@@ -550,9 +551,9 @@ CSS（桌面 `index.css` 与移动端 `mobile.css` 各一份）：
    文档要写清楚；需要按用户隔离时只能一机一账号，成本另算。
 2. **登录无法在 CI / 无网环境完成**：必须人工扫码；平台已在内核详情弹层提供二维码登录，
    但扫码这一步只能在有真实账号与网络的环境里完成。
-3. **并发未知**：`doubao-cli-instance.lock` 与 `/tmp/dcli-<uid>` 控制通道是否允许
-   并行 `-p` 进程尚未实测。协作域会并行跑多个智能体，**这是 P0 验收项**；
-   如果互斥，需要加进程内/文件级串行锁，并在文档里写明并发上限。
+3. **并发边界**：`doubao-cli-instance.lock` 与 `/tmp/dcli-<uid>` 控制通道是否允许
+   并行 `-p` 进程尚未完全实测。协作域会并行跑多个智能体；如果互斥，需要加进程内 /
+   文件级串行锁，并在部署文档里写明并发上限。
 4. **平台限制**：Intel Mac、Linux arm64 安装不了；适配器要在可用性/连通性测试里说人话。
 5. **Linux 系统依赖**：缺 `libgcrypt20` 时 `--version` 都跑不起来；
    Docker 必须补包，降级方案是提示用户改用 custom-cli。
@@ -567,37 +568,30 @@ CSS（桌面 `index.css` 与移动端 `mobile.css` 各一份）：
 
 ---
 
-## 8. 落地顺序与验收
+## 8. 验收清单
 
-**P0 — 跑通 + 图标（1 个适配器 + 图标链路）**
+### 8.1 对话与内核管理
 
-- 适配器骨架：元数据、`build_invocation`、`parse_line`、技能隔离、`probe`；
-- `logo_style` 契约 + `KernelLogo` 双形态 + 豆包真实图标；
-- Docker 补库；README / 架构文档更新；
-- 测试：真实 `stream-json` 样本解析、注册表、图标守卫。
-- 验收：宿主机 `doubao login` 后，平台新建豆包智能体 → 流式回复、工具调用、
-  多轮续接正常；内核管理能安装 / 更新 / 卸载；图标显示为真彩色。
+- 宿主机 `doubao login` 后，平台新建豆包智能体 → 流式回复、工具调用、多轮续接正常；
+- 内核管理能安装 / 更新 / 卸载；
+- 图标显示为真彩色。
 
-**P1 — 并发与隔离实测**
+### 8.2 隔离与登录
 
-- 两个以上对话同时运行，确认实例锁 / 控制通道不冲突；
 - 技能分配：只看到分配到的技能，工作区自带技能有告警；
+- 两个以上对话同时运行，确认实例锁 / 控制通道不冲突；
+- 一键登录：管理员权限、失败重试、登录后自动 `auth status`；
 - 平台不支持架构上的中文报错。
 
-**P2 — 一键登录（可选）**
+### 8.3 后续增强（未实现，不影响当前接入）
 
-- `RuntimeProvisioner.login_argv` + `Action("login")` + SSE 二维码（data URL）；
-- 管理员权限、失败重试、登录后自动 `auth status`。
-
-**P3 — 增强（可选）**
-
-- 若 `doubao` 提供系统提示词/技能开关的环境变量，改成原生人格注入；
+- 若 `doubao` 提供系统提示词 / 技能开关的环境变量，改成原生人格注入；
 - `--list` / `--export` 做成「导入历史会话」；
 - 用量统计：等 CLI 输出 token 用量后再接 `usage` 事件。
 
 ---
 
-## 9. 待实测清单（P0 必须补齐）
+## 9. 验证清单
 
 - [ ] `doubao -p - --output-format stream-json` 登录后的真实事件样本（把 5 类事件各留一条）。
 - [ ] `message.delta` 与 `message.completed` 的去重：确认没有丢字/重字。

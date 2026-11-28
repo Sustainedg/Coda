@@ -5,8 +5,8 @@
 > 事实基线：Coda `V0.1`（`backend/app/__init__.py`），提交 `7c6c54c` + 当前工作区未提交改动。
 > **代码是唯一事实来源**；本文与旧设计文档冲突时，以本文标注的「代码实际行为」为准，偏差清单见 §15。
 >
-> 相关文档：`docs/collaboration-design.md`（设计与里程碑）、`docs/collab-parallel.md`（波次并行专题）、
-> `docs/collab-guide.html`（面向使用者的图文版）、`docs/architecture.md`（平台运行时序与事件协议）、
+> 相关文档：`docs/计划任务/collaboration-design.md`（设计与里程碑）、`docs/功能文档/collab-parallel.md`（波次并行专题）、
+> `docs/功能文档/collab-guide.html`（面向使用者的图文版）、`docs/架构/architecture.md`（平台运行时序与事件协议）、
 > `AGENTS.md`（工程铁律）。
 
 ---
@@ -824,7 +824,7 @@ frontend/src/
 
 - 新增动作/状态：改 `schemas.py`（枚举）+ `engine._apply_action`（流转）+ `graph.effective_output_contract`（谁可用）
   + `tickets.validate_order`（语义校验）+ `prompt.expected_instruction`（本轮要求）+ 前端 `collabDraft.ACTIONS`
-  与 `ticketBoard.BOARD_TONES`，并同步 `docs/collaboration-design.md`。
+  与 `ticketBoard.BOARD_TONES`，并同步 `docs/计划任务/collaboration-design.md`。
 - 纯逻辑只放 `tickets.py` / `graph.py` / `prompt.py`（有「必须是纯函数」的架构守卫）。
 - 对 `runtime` / `agents` 的调用只能加在 `execution.py`（守卫会红）。
 - 给协作表加列必须登记 `ADDITIVE_COLUMNS`（`test_collab_migration.py` 守着）。

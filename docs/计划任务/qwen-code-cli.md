@@ -1,5 +1,6 @@
 # 接入 Qwen Code CLI 的方案
 
+> 状态：**方案已确认，适配器尚未落地**。
 > 调研对象：阿里 Qwen Code CLI（npm 包 `@qwen-code/qwen-code`，可执行文件 `qwen`）。
 > 本文回答三件事：它是什么、平台怎么接、按什么顺序落地。
 > 结论全部来自**本机实装与实跑**（0.28.4，Linux x64，假 OpenAI 服务回环实测），不是文档摘抄。
@@ -412,7 +413,7 @@ Qwen 是单账号模型（`oauth_creds.json` 一份），平台侧「账号槽�
 | `backend/requirements.txt` | 不动（`segno` 已在 CodeBuddy 登录时引入，复用） |
 | `frontend/public/icons/kernels/qwen.webp` | **新增**真彩色 Logo（`logo_style = "image"`），来源登记进 `SOURCES.md` |
 | `README.md` 「都能接什么」表 | 加一行 `qwen-cli` |
-| `docs/qwen-code-cli.md` | 本方案（调研依据） |
+| `docs/计划任务/qwen-code-cli.md` | 本方案（调研依据） |
 
 不需要改的：事件协议、runner / skills / mcp 物化层、Docker 镜像（Node 24.22.3 满足
 `>=22`，会有内存警告但不阻断；若介意可在镜像注释里记一笔）、前端（DynamicForm /

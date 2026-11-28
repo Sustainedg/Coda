@@ -5,8 +5,8 @@
 > 事实基线：`backend/app/collab/engine.py`（`_pick_wave` / `_run_wave`）、`tickets.py`（`tickets` 数组）、
 > `schemas.py`（`BudgetSpec.max_parallel`）。**代码是唯一事实来源**；本文讲清动机、规则与边界。
 >
-> 相关文档：`docs/collaboration-design.md` §3.4（设计基线）、`docs/collab-mechanism.md`（协作全貌）、
-> `docs/collab-guide.html`（使用者图文版）。
+> 相关文档：`docs/计划任务/collaboration-design.md` §3.4（设计基线）、`docs/功能文档/collab-mechanism.md`（协作全貌）、
+> `docs/功能文档/collab-guide.html`（使用者图文版）。
 
 ---
 

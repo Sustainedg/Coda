@@ -2,7 +2,7 @@
 
 > 状态：**方案已确认，待开工**。本文档是唯一权威方案源，后续接力以本文档为准，
 > 实现中若与本文冲突，先改文档再改代码。
-> 相关约束：`AGENTS.md`（铁律与分层）、`docs/architecture.md`（现有运行时序）。
+> 相关约束：`AGENTS.md`（铁律与分层）、`docs/架构/architecture.md`（现有运行时序）。
 > 需求来源：对话页顶部最右侧增加「⋯」图标 → 展开成员侧边栏（头像 + 昵称）→
 > 支持邀请用户与智能体加入对话；被邀请用户也能把自己的智能体添加进对话。
 
@@ -27,7 +27,7 @@
 | D2 | 成员智能体发言 = **@ 召唤**（显式点将） | 复用 `summon_profile_id` 全套机制（独立隔离目录、不碰主场会话记忆）；不做"自动参与讨论"（那是协作域 `collab/` 的编排能力，对话域不重复造） |
 | D3 | **移动端同步实现** | 两端功能对齐、交互各表（AGENTS.md §4.7） |
 | D4 | 未读状态 V1 保持**对话级共享**（`last_read_at` 不按成员拆） | 多成员共享未读是已知妥协，列进 §10 后续优化 |
-| D5 | 顶栏「⋯」与 AGENTS.md §4.7「不要再往顶栏塞 ⋯」的冲突 | 该条约束针对**会话级操作**（重新生成/删除，已收在左侧栏对话行）；「成员」是全新功能域且用户指令优先，放顶栏最右侧。**落地前必须先改规则**：同步更新 `AGENTS.md` §4.7 与 `docs/ai-coding-standard.md`，把「成员」明确列为顶栏按钮的例外，否则实现即违反硬约束；同时更新 `ChatPage.tsx` 顶栏注释，保持三处一致 |
+| D5 | 顶栏「⋯」与 AGENTS.md §4.7「不要再往顶栏塞 ⋯」的冲突 | 该条约束针对**会话级操作**（重新生成/删除，已收在左侧栏对话行）；「成员」是全新功能域且用户指令优先，放顶栏最右侧。**落地前必须先改规则**：同步更新 `AGENTS.md` §4.7 与 `docs/架构/ai-coding-standard.md`，把「成员」明确列为顶栏按钮的例外，否则实现即违反硬约束；同时更新 `ChatPage.tsx` 顶栏注释，保持三处一致 |
 
 ---
 
@@ -263,7 +263,7 @@ cd frontend && npm run build  # 前端改完必 build + 重启服务自测
 - [ ] **M2 后端 API**：§5 全部接口 + `_accessible_conversation` + `send_message` 召唤校验放宽 + 详情/列表响应扩展。验证：pytest 新用例全绿。
 - [ ] **M3 桌面端**：顶栏按钮 + 成员抽屉 + 邀请 Modal + @ 合并 + 作者头像 + 兑换路由。验证：tsc + build + 手工自测。
 - [ ] **M4 移动端**：同 M3 的移动版。验证：tsc + build + 深链自测。
-- [ ] **M5 收尾**：更新 `AGENTS.md` §4.7 与 `docs/ai-coding-standard.md` 的顶栏按钮规则（D5，必须先改规则再落地）、`ChatPage.tsx` 顶栏注释、`docs/architecture.md` 若涉及（预计不涉及事件表）、全量 `bash scripts/test.sh` + `npm run build` + 重启自测。
+- [ ] **M5 收尾**：更新 `AGENTS.md` §4.7 与 `docs/架构/ai-coding-standard.md` 的顶栏按钮规则（D5，必须先改规则再落地）、`ChatPage.tsx` 顶栏注释、`docs/架构/architecture.md` 若涉及（预计不涉及事件表）、全量 `bash scripts/test.sh` + `npm run build` + 重启自测。
 
 每个里程碑完成后：`bash scripts/test.sh` 全绿才进下一个；前端里程碑另跑 `npm run build`。
 

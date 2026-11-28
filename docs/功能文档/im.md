@@ -6,7 +6,7 @@
   挂在智能体设定页的「IM」标签里：桌面 `pages/AgentEditPage.tsx`，移动端 `mobile/pages/MobileAgentEditPage.tsx`）
 - 参考实现：DS Bot（`Fei2411/DS-Bot`）的 IM 设置页与平台适配器 —— 只借鉴交互与协议思路，
   代码按本仓库的分层重写（Python · FastAPI · 无前端框架）。
-- 相关文档：`AGENTS.md`（分层铁律与 §4.9 接入新平台）、`docs/architecture.md`（IM 表结构与
+- 相关文档：`AGENTS.md`（分层铁律与 §4.9 接入新平台）、`docs/架构/architecture.md`（IM 表结构与
   运行域交界）、`README.md`（平台一览与 API 速查）。
 
 > **代码是唯一事实来源。** 本文描述的是当前工作区的实际行为；与旧说明冲突时，以代码为准。

@@ -1,6 +1,6 @@
 # AI 编码规范（详版）
 
-> 本文件是 [`AGENTS.md`](../AGENTS.md) 的展开版：`AGENTS.md` 是**硬约束清单**（必须遵守，会被编码代理自动加载），
+> 本文件是 [`AGENTS.md`](../../AGENTS.md) 的展开版：`AGENTS.md` 是**硬约束清单**（必须遵守，会被编码代理自动加载），
 > 这里解释**为什么这样分层、边界在哪里、怎么扩展、怎么评审**。
 > 配套阅读：[`architecture.md`](./architecture.md) 讲"一次运行发生了什么"，本文件讲"代码应该怎么组织"。
 
@@ -137,7 +137,7 @@ POST /api/conversations/{id}/messages
 携带 run_id 与消息 id）与 `stream.closed`（`transport/sse.py`，收尾）。**适配器不允许产出这两个。**
 
 新增事件类型 = 改公共协议，必须同步四处：`events.py` → `service.consume_run` → 前端
-`types.ts` + `applyEvent` → `docs/architecture.md`；`test_architecture.py` 会拦住漏改。
+`types.ts` + `applyEvent` → `docs/架构/architecture.md`；`test_architecture.py` 会拦住漏改。
 
 ### 4.2 `AgentDefinition` 元数据
 
@@ -247,7 +247,7 @@ Codex `-c` 覆盖），为空 = 不干预。
 **计量域的三张表**：`usage_records`（一手账本，`UNIQUE(run_id, source, request_id)` 去重）、
 `api_keys`（外部 API Key，只存 sha256）、`usage_pricing`（手工单价）。`usage_records` 的后加列
 `api_key_id` / `cost_pricing` 登记在 `ADDITIVE_COLUMNS`；口径与接口见
-[`usage-gateway.md`](./usage-gateway.md)。
+[`usage-gateway.md`](../功能文档/usage-gateway.md)。
 
 **schema 变更规则**（本地库有真实数据）：
 1. 只做**加列/加表**这类向后兼容变更，新列必须有默认值或可空。
@@ -286,7 +286,7 @@ Codex `-c` 覆盖），为空 = 不干预。
 ├─ 要在对话里生成图片
 │     → 用平台自带的「图片生成」MCP 服务器（scripts/mcp/image_mcp_server.py）：启动时已自动播种，
 │       在「MCP」页编辑它，填 IMAGE_GEN_GATEWAY / IMAGE_GEN_MODEL / IMAGE_GEN_API_KEY 三个环境变量（加密落库），
-│       再到「智能体 → MCP」里分配 —— 不改框架任何一层，见 docs/architecture.md §6
+│       再到「智能体 → MCP」里分配 —— 不改框架任何一层，见 docs/架构/architecture.md §6
 ├─ 新增一个平台内置 MCP 服务器
 │     → 在 app/builtin_mcp.py 的 BUILTIN_SERVERS 加一条声明（脚本随 Release / Docker 打包）；
 │       需要平台自动填值的参数用 managed=True + managed_source 声明，不要改 runtime/mcp.py
@@ -401,7 +401,7 @@ class AcmeHarness(OpenAIHarnessBase):
 | 任意 OpenAI 兼容端点 | 已有 `openai_harness.py`（OpenRouter/vLLM/Ollama/Kimi/GLM） | 新供应商 = 一个子类 |
 | 未来的 Aider / Cline / Continue 等 CLI | 无适配器 | 按 §6.1 写模块；或先用 §6.3 |
 | 非 OpenAI 协议的 API（如 Anthropic Messages API） | 复用 `OpenAIHarnessBase` 不合适 | 以 `Runtime.API` 直接实现 `async stream(ctx)`，产出标准事件即可 |
-| 需要"多智能体协作/编排" | 已有独立协作域 `app/collab/`（可视化编排 + 工单协议 + 波次并行引擎，默认串行），见 `docs/collaboration-design.md` | 在 `app/collab/` 内扩展；每一步仍复用 `runtime.runner` 与事件协议，不要改适配器，也不要让框架层反向依赖协作域 |
+| 需要"多智能体协作/编排" | 已有独立协作域 `app/collab/`（可视化编排 + 工单协议 + 波次并行引擎，默认串行），见 `docs/计划任务/collaboration-design.md` | 在 `app/collab/` 内扩展；每一步仍复用 `runtime.runner` 与事件协议，不要改适配器，也不要让框架层反向依赖协作域 |
 
 判断标准始终是：**这次改动是否只落在 `agents/builtin/` 一个文件里？** 如果能，就说明架构还健康。
 

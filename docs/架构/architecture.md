@@ -69,7 +69,7 @@ CLI 的 stdout 由 `runner._StreamLines` 拆行：`asyncio.StreamReader.readline
 或工具结果塞进一行 JSONL，所以框架层不能把行长当成已知量。超过 64 MiB 的单行只丢该行并补一条
 `log(warn)`，不会把整轮运行判成 error（铁律 10 / 11）。
 
-**协作域**（`app/collab/`，见 `docs/collaboration-design.md`）是第二个编排器：它**不重写执行链路**，
+**协作域**（`app/collab/`，见 `docs/计划任务/collaboration-design.md`）是第二个编排器：它**不重写执行链路**，
 每一步仍然调用 `runtime.runner.stream_run()`，因此取消、超时、脱敏都复用同一套实现。
 单步限时不走全局默认：团队预算的 `budget.step_timeout_seconds`（默认 36000 秒，`0 = 不限`）经
 `execution.prepare_step()` / `prepare_chat()` 落成 `handle.timeout_seconds`，其中 0 转成 -1
@@ -192,7 +192,7 @@ class AgentDefinition(ABC):
   `tests/test_frontend_assets.py` 会核对清单与文件一致。
   计时：页内埋点在 `window.__kernelLogoPerf`（`lib/kernelIcons.ts`），
   复测用 `node scripts/measure_kernel_icons.mjs <地址> 10`（要本机有 chromium）；
-  完整的验证记录见 `docs/kernel-icon-perf.md`。
+  完整的验证记录见 `docs/说明/kernel-icon-perf.md`。
 - **账号型内核可以登录**：适配器声明 `RuntimeProvisioner.login_argv` 与
   `AgentDefinition.auth_status()`，详情弹层据此显示「已登录 / 未登录」和「登录」按钮。
   登录命令按通用约定输出 `QR_IMAGE=<图片路径>`，框架读出图片（校验 PNG/JPEG/WebP 与大小）
@@ -363,7 +363,7 @@ MCP 服务器里，AI 只能调用暴露的工具（如 `create_pr`），永远�
   或走「手动旁路」录入（界面在探测失败时自动展开）。
 - 被**未删除**的智能体引用的网关不能删（409）；官方链路一律 409。
 
-### 4.4 记录网关与一手账本（P1，默认关闭）
+### 4.4 记录网关与一手账本（默认关闭）
 
 现状的计量是「内核上报的二手数据」：CLI 拿 `base_url + api_key` **直连上游**，平台只能等
 `stream-json` / `result` 事件上报 token。记录网关把自定义网关的流量改走**本机反向代理**，
@@ -392,8 +392,8 @@ CLI → http://127.0.0.1:<port>/api/internal/usage-gateway/<token>/... → 上�
   （CLI 内核真实报文；API 内核跳过以防双记），passthrough 的客户端凭据值也从错误体里擦除。
 - **回退**：代理注册失败 / 不可达不自动改走直连（避免半轮混源）；本轮失败但已测用量保留。
 
-> P1 只做**同协议转发**（Anthropic Messages / OpenAI Chat / Responses），不做跨协议翻译、
-> 不做公网模型网关。**P2 已把用量页与上下文面板切到账本**：用量页按
+> 记录网关只做**同协议转发**（Anthropic Messages / OpenAI Chat / Responses），不做跨协议翻译、
+> 不做公网模型网关。用量页与上下文面板已切到账本：用量页按
 > `usage_ledger_started_at` 分段（启用前读 `messages`、之后读 `usage_records`，两段相加），
 > 并返回可选的 `by_source`；上下文面板在**运行中**优先读当前 run 最新一条账本的
 > `context_tokens`（记录网关在请求终态落账；原生 / harness 的 `context.usage` 也**实时
@@ -401,7 +401,7 @@ CLI → http://127.0.0.1:<port>/api/internal/usage-gateway/<token>/... → 上�
 > `messages.context_tokens` 快照为主（账本行用于校准）。可选回填脚本见
 > `scripts/backfill_usage_records.py`（默认 dry-run）。
 
-### 4.5 外部模型 API（P3，可选产品化）
+### 4.5 外部模型 API（可选产品化）
 
 平台也可以对外提供模型入口，让脚本 / 第三方客户端用平台签发的密钥调用：
 
@@ -433,7 +433,7 @@ CLI → http://127.0.0.1:<port>/api/internal/usage-gateway/<token>/... → 上�
   吊销（明文只显示一次 + 复制）、单价维护、最近账本审计与 CSV 导出；用量页已能显示账本
   口径与 `by_source`。该面板只在桌面端设置页出现（低频管理动作，移动端不重复实现）。
 
-> **网络暴露提醒**：P3 不主动做公网网关，但默认部署脚本 / Docker **监听 `0.0.0.0`**
+> **网络暴露提醒**：平台不主动做公网网关，但默认部署脚本 / Docker **监听 `0.0.0.0`**
 > （`scripts/serve.sh` 与 `docker-compose.yml`），因此 `/api/model-gateway/...` 在服务可达的
 > 网络里就能被访问——**唯一的门是 `cosk_…` 密钥**。只给本机用请设 `CODA_HOST=127.0.0.1`
 > （Docker 则把端口映射写成 `127.0.0.1:8010:8010`）；真要对局域网 / 公网开放，请加反向代理
@@ -627,7 +627,7 @@ HTTP / SSE 端点。与技能完全对称，平台把它们**统一编目**，�
   `AgentRun.task_card_block`，runner 复制到 `ActiveRun`；`consume_run` 在没有 MCP /
   合法围栏块时用 `source="kernel"` 应用。平台 `task_cards` 仍是唯一展示源，内核工具只是
   输入；不做双向同步、不直接读内核会话文件。详见
-  [`计划任务/内核任务卡桥接与三态方案.md`](计划任务/内核任务卡桥接与三态方案.md)。
+  [`功能文档/任务进度卡.md`](../功能文档/任务进度卡.md)。
 - 部署约束：绑定在进程内存，当前按**单进程**运行；启用多 worker 必须把绑定与令牌
   哈希迁到数据库 / Redis，或做粘性会话。
 - 前端 `MessageView` 按工具名前缀隐藏内部工具轨迹（否则同一轮会同时出现工具卡与
@@ -757,7 +757,7 @@ mcp_servers(id, name, slug, description, type_id(空=平台通用), source_kind(
             discovered_at, updated_at, deleted_at, owner_id)
 agent_mcp_servers(agent_profile_id→agent_profiles, mcp_server_id→mcp_servers，复合主键 + position)
 
--- 协作域（独立于对话域，见 docs/collaboration-design.md）
+-- 协作域（独立于对话域，见 docs/计划任务/collaboration-design.md）
 collab_teams(id, name, description, entry_key, workspace_dir, graph JSON, budget JSON, owner_id)
 collab_runs(id, team_id→collab_teams, title, goal, status, entry_key, workspace_dir, budget, usage,
             steps_used, tickets_used, error, owner_id)
@@ -771,7 +771,7 @@ collab_steps(id, run_id→collab_runs, ticket_id→collab_tickets, agent_profile
 collab_messages(id, run_id→collab_runs, sender, role_key, agent_profile_id→agent_profiles,
                 sequence, status, content, parts JSON, usage JSON, error, meta JSON)
 
--- IM 域（旁路：通道，不是成员，见 docs/im.md）
+-- IM 域（旁路：通道，不是成员，见 docs/功能文档/im.md）
 im_connections(id, platform, account_name, account_id, fields JSON, secrets JSON,
                agent_profile_id→agent_profiles, enabled, last_status, last_error,
                runtime JSON, options JSON, owner_id)
@@ -897,7 +897,7 @@ im_chats(id, connection_id→im_connections, chat_key, kind(direct|group), title
 | 让某个适配器支持 MCP | 声明 `capabilities.mcp=True`，实现 `discover_mcp_servers()` 与 `mcp_mount()` |
 | 接入一个新的 MCP 服务器 | 平台新建（「MCP」页）或写进内核自己的配置后「重新扫描」；分配在「智能体 → MCP」里做 |
 | 新增一个平台内置 MCP 服务器 | 在 `app/builtin_mcp.py` 的 `BUILTIN_SERVERS` 加一条声明（脚本随 Release 打包），启动时自动播种 |
-| 新增协作能力（多智能体工单流转） | 全部在 `app/collab/`（独立域，不碰框架层），见 `docs/collaboration-design.md` |
+| 新增协作能力（多智能体工单流转） | 全部在 `app/collab/`（独立域，不碰框架层），见 `docs/计划任务/collaboration-design.md` |
 | 换掉事件传输（SSE→WebSocket） | 只改 `transport/sse.py` 与前端 `streamApi` |
 | 换掉存储（SQLite→Postgres） | 只改 `settings.database_url` 与 `db.py` |
 | 发布一个新版本 | 改 `backend/app/__init__.py` 的 `__version__`（唯一版本源；**只在公开发版时递增**，日常提交不动）→ 提交 → `bash scripts/release.sh`（构建前端、打 tar.gz、`gh release create`）；运行端在「设置 → 关于」一键更新 |
@@ -1093,10 +1093,23 @@ frontend/
   `compose_with_attachments()`（只有附件、没有正文也允许）。
   语音走浏览器的 Web Speech API（`lib/speech.ts`，两端共用；不支持时按钮仍显示，点一下给出中文说明），
   只把识别文字填进草稿。
-  输入区就是屏幕最下面那一块，只留 6px 收边：token 用量在输入框**上方**，底部安全区**不照搬** ——
-  iOS 独立应用里安全区 34px，Home 条本身只占 ~13px，照搬会在输入框下面空出一截；输入区底色一直
-  铺到屏幕底边。附件 / 语音 / 发送（运行中是停止）都是**框内**的图标按钮（线条 SVG，见
-  `components/Icons.tsx`；emoji 在各系统上大小不一），输入框不再有背景提示文字。
+  输入区就是屏幕最下面那一块，只留 6px 收边：token 用量在输入框**下方**（三项单行：缓存命中 /
+  输入 / 输出），底部安全区**不照搬** —— iOS 独立应用里安全区 34px，Home 条本身只占 ~13px，
+  照搬会在输入框下面空出一截；输入区底色一直铺到屏幕底边。附件 / 语音 / 发送（运行中是停止）
+  都是**框内**的图标按钮（线条 SVG，见 `components/Icons.tsx`；emoji 在各系统上大小不一），
+  输入框不再有背景提示文字。
+  另外，移动端 PWA 的状态栏样式是**系统默认**（`default`，入口 `m/index.html` 声明）：状态栏由
+  iOS 自己画、不与页面重叠，`fixed` 外壳贴的可视视口正好从状态栏正下方开始，顶部与底部都
+  严丝合缝，**不需要任何视口补偿**。曾经用 `black-translucent`（沉浸式，内容画到状态栏底下），
+  但 iOS 26 独立应用在该模式下 fixed / 可视视口比物理屏上下各矮一条状态栏、坐标系整体错位
+  （顶部露画布、输入区按钮行掉进看不见的带里），配过的整套补偿（`100lvh` 外壳、
+  `src/mobile/viewport.ts` 的 `--vv-*` gap 注入、`kb-open` 退回）随沉浸式一起下线；
+  守卫测试 `test_mobile_shell_is_pinned_to_the_visible_viewport` 断言补偿体系与沉浸式
+  都不许悄悄回来。
+  对话消息从线程**顶部**开始往下排（曾经的「短对话贴输入区」设计 —— 有消息时第一条
+  `margin-top: auto` 吃满上方空间 —— 已按用户要求下线，守卫
+  `test_mobile_thread_starts_from_the_top`；`.m-thread` 的 `flex: 1 0 0` 是 iOS WebKit
+  上大内容把输入区挤出外壳的防御）。
 - **输入区只有一份**：`components/Composer.tsx`（受控：草稿 / 附件 / 上传 / 发送都由
   页面给），两端的对话页与协作运行页（含聊天弹层）共用，交互与样式必须完全一致；
   样式段在 `index.css` 与 `mobile.css` 各写一份（桌面端 / 移动端各一段微调），共享那段逐字一致。
@@ -1111,11 +1124,14 @@ frontend/
 - **外观（深色 / 浅色 / 跟随系统）**：两端共用 `lib/theme.ts` —— 模式存在 localStorage 的
   `coda.theme`，**没设置过默认「跟随系统」**（按系统的 `prefers-color-scheme` 决定首屏外观），
   解析结果写在 `<html data-theme>`，`applyTheme()` 同时更新
-  `meta[name=theme-color]`（状态栏 / Android 系统导航条这些「原生外壳」跟着换色）与 iOS 独立应用的
-  状态栏样式。两个入口 HTML 各有一段等价的内联脚本，在首屏渲染前就把主题定下来（否则浅色系统用户
-  每次打开都会先闪一下深色外壳）。两份样式表各自的 `:root` 是深色兜底（脚本未执行时用），浅色只是
-  `[data-theme='light']` 覆盖块（变量 + 少量写死深色的装饰），`html` 也铺主题底色 —— 系统预留或
-  回弹露出的那一条才不会跟页面两个色。桌面壳的窗口底色与启动页同样按 `nativeTheme` 跟随系统。
+  `meta[name=theme-color]`（状态栏 / Android 系统导航条这些「原生外壳」跟着换色）。
+  移动端状态栏是系统默认样式（`default`，入口声明、深浅主题都不动）：状态栏由 iOS 自己画、
+  背景跟随 `theme-color`，不存在沉浸式坐标错位（曾经按主题在 `black-translucent` / `default`
+  间切换的逻辑已随沉浸式一起下线）。两个入口 HTML 各有一段等价的内联脚本，在首屏渲染前就把
+  主题定下来（否则浅色系统用户每次打开都会先闪一下深色外壳）。两份样式表各自的 `:root` 是
+  深色兜底（脚本未执行时用），浅色只是 `[data-theme='light']` 覆盖块（变量 + 少量写死深色的
+  装饰），`html` 也铺主题底色 —— 系统预留或回弹露出的那一条才不会跟页面两个色。
+  桌面壳的窗口底色与启动页同样按 `nativeTheme` 跟随系统。
 - **移动端的取舍**：协作域不提供可视化画布（连线需要精确拖拽，手机上体验很差），
   改在「协作组」详情页用**表单**编排：岗位是卡片、连线是「从谁到谁」的下拉选择；
   两端的字段语义、默认值与中文标签共用 `lib/collabDraft.ts` 一份，校验一律走服务端
@@ -1123,7 +1139,10 @@ frontend/
 - **外壳钉在可视视口上**：`.m-app` 用 `position: fixed; top/right/bottom/left: 0`，而不是
   `100vh`/`100dvh` 配 `height: 100%` 父链 —— 真机上地址栏与底部工具栏会伸缩，两者高度经常对不齐，
   底栏就会浮起来留一条缝或被工具栏压住。固定定位跟的是可视视口，刘海与 Home 条交给
-  `env(safe-area-inset-*)`（守卫测试 `test_mobile_shell_is_pinned_to_the_visible_viewport`）。
+  `env(safe-area-inset-*)`。PWA（独立应用）也一样：状态栏是系统默认样式（`default`），
+  可视视口正好从状态栏正下方开始，外壳顶与底都严丝合缝（守卫测试
+  `test_mobile_shell_is_pinned_to_the_visible_viewport` —— 它同时断言沉浸式与视口补偿体系
+  不许悄悄回来）。
 - **移动端锁定缩放**：移动端采用「固定外壳」布局（顶栏 + 内部滚动区 + 左侧抽屉），随手指缩放会
   让外壳错位，因此入口视口写 `maximum-scale=1.0, user-scalable=no`，并用 `mobile.css` 的
   `touch-action: pan-x pan-y` 兜底（iOS Safari 自 iOS 10 起忽略 `user-scalable=no`，只有

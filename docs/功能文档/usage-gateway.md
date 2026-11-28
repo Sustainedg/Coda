@@ -1,12 +1,11 @@
 # 上下文计量与记录网关（功能文档）
 
-> 状态：已实现（P0–P3 + 原生实时入账 + 原生压缩配置 + models.dev 目录价）
-> 更新日期：2026-11-27
-> 关联文档：`docs/architecture.md` §4.4 / §4.5、`docs/context-usage.md`、
-> `docs/功能文档/上下文窗口与自动压缩.md`
+> 关联文档：`docs/架构/architecture.md` §4.4 / §4.5、`docs/说明/context-usage.md`、
+> `docs/功能文档/上下文窗口与自动压缩.md`、`docs/功能文档/轨迹调试视图.md`、
+> `docs/架构/usage-normalization.md`
 
-本文是「计量 / 记录网关 / 外部 API / 成本」这条链路的**现状说明书**：已经做了什么、口径是
-什么、怎么配置、还没做什么。设计过程中的取舍见 `docs/context-usage.md` 与代码注释。
+本文是「计量 / 记录网关 / 外部 API / 成本」这条链路的**现状说明书**：能做什么、口径是
+什么、怎么配置、边界在哪。实现口径见 `docs/说明/context-usage.md` 与代码注释。
 
 ---
 
@@ -299,7 +298,7 @@ passthrough 模式下从客户端请求头收集凭据值，一并从上游错�
 
 ---
 
-## 14. 未完成 / 已知边界（重要）
+## 14. 已知边界（重要）
 
 以下都是**有意留白**或明确未做，不要误以为已覆盖：
 
@@ -308,16 +307,16 @@ passthrough 模式下从客户端请求头收集凭据值，一并从上游错�
    自己的登录态直通；`auto` 不碰，且尚未在真实订阅账号上全量实测。Codex 走具名
    provider + `requires_openai_auth`（并原样透传 `chatgpt-account-id` / `originator` /
    `session_id` 等身份头），Claude Code 走 `ANTHROPIC_BASE_URL`。
-   排期与边界见 [`计划任务/轨迹完整上下文采集方案.md`](计划任务/轨迹完整上下文采集方案.md)。
+   采集细节与边界见 [`轨迹调试视图.md`](轨迹调试视图.md)。
 2. **不做跨协议翻译**：只支持同协议直通（Anthropic Messages / OpenAI Chat / Responses）。
    OpenAI 客户端 → Anthropic 上游这类场景不支持；Gemini 协议也不在代理范围内。
-3. **「注入缝」不等于「`base_url_env`」**（2026-11-27 更正，2026-11-28 已实施）：
-   hermes 走命令行 `--provider custom --base-url`、CodeBuddy 走 `models.json` 的 `url`
-   字段——两者的 `Capabilities.recording_gateway` 已补声明，判定逻辑也改为读这个能力，
-   `base_url_env` 不再是门槛。CodeBuddy 注意协议错配：请求是 OpenAI Chat、usage 是
-   Anthropic 形状，账本按 `usage_protocol` 归一化。真正无法代理的是**没有任何 base_url
-   写入点**的内核：Doubao / Antigravity / Custom CLI，轨迹里如实标注「不可见」，
-   不伪造。详见 [`计划任务/轨迹完整上下文采集方案.md`](计划任务/轨迹完整上下文采集方案.md)。
+3. **「注入缝」不等于「`base_url_env`」**：hermes 走命令行
+   `--provider custom --base-url`、CodeBuddy 走 `models.json` 的 `url` 字段——两者的
+   `Capabilities.recording_gateway` 已声明，判定逻辑读这个能力，`base_url_env` 不再是门槛。
+   CodeBuddy 注意协议错配：请求是 OpenAI Chat、usage 是 Anthropic 形状，账本按
+   `usage_protocol` 归一化。真正无法代理的是**没有任何 base_url 写入点**的内核：
+   Doubao / Antigravity / Custom CLI，轨迹里如实标注「不可见」，不伪造。
+   详见 [`轨迹调试视图.md`](轨迹调试视图.md)。
 4. **内部 run 没有配额 / 限流**：配额只存在于外部 API Key 路由；记录网关转发内部流量时不做
    额度判断。
 5. **外部 API 只有请求数 / token 配额，没有 USD 预算**：不像对照实现那样按「已花费美元 +
@@ -336,9 +335,8 @@ passthrough 模式下从客户端请求头收集凭据值，一并从上游错�
 13. **流式上游错误未逐块擦除密钥**：非流式错误体已读出来擦掉上游密钥；`text/event-stream`
     的错误片段无法跨块可靠替换，保持原样转发（上游在 SSE 错误里回显密钥属于极少数情况）。
 14. **MITM 抓包没有做**：无注入缝的内核（Doubao / Antigravity）只能靠正向代理 + 证书
-    解密，项目里没有 CA / CONNECT 隧道底座，且可能被证书固定挡住。结论是**暂不实施**，
-    只做可行性验证，不进主分支。见
-    [`计划任务/轨迹完整上下文采集方案.md`](计划任务/轨迹完整上下文采集方案.md) §9。
+    解密，项目里没有 CA / CONNECT 隧道底座，且可能被证书固定挡住。当前不引入这类能力，
+    轨迹里如实标注「不可见」。见 [`轨迹调试视图.md`](轨迹调试视图.md) 的「已知边界」。
 15. **网关轨迹的响应正文有采集上限**：成功响应（含流式）在内存里最多留 2 MiB 原始
     字节，超出后停采并置 `truncated=true`；它不影响转发本身，只是轨迹里的响应体不完整。
 

@@ -704,7 +704,7 @@ export interface ConversationModelOptions {
 
 /* ---------- 轨迹调试视图（`GET /api/conversations/{id}/trace`，只读）---------- */
 
-/** 轨迹事件的五类（后端权威定义见 `docs/trace-debug-view-plan.md` §4.1）。 */
+/** 轨迹事件的五类（后端权威定义见 `docs/功能文档/轨迹调试视图.md` §4.1）。 */
 export type TraceEventType =
   | 'request'
   | 'response'

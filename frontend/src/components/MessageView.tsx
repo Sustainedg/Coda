@@ -87,7 +87,8 @@ export function MessageView({ message, avatar, avatarPreset, avatarFile, agentId
   )
   // 任务进度卡是平台内部能力：工具调用会与卡片重复展示，这里只过滤展示层，
   // 不改事件、不改落库；工具报错也不额外弹泡（模型自己会看到 isError）。
-  const visibleTimeline = filterInternalTaskCardParts(timeline)
+  // 纯空白正文同样只做展示层剔除（见 dropBlankTextParts）。
+  const visibleTimeline = dropBlankTextParts(filterInternalTaskCardParts(timeline))
 
   const lastIndex = visibleTimeline.length - 1
   // 还在跑、但最后一段不是正文（正在思考 / 调工具）：气泡里没有可挂光标的文字，
@@ -244,6 +245,15 @@ function filterInternalTaskCardParts(parts: MessagePart[]): MessagePart[] {
   })
 }
 
+/**
+ * 纯空白正文（常见就是一个 `"\n"`）没有任何展示价值：内核在工具回合之间偶尔会吐
+ * 这种文本增量，落成独立 text 片段后会被渲染成一条白色空胶囊。这里只在展示层剔除，
+ * 不改落库 / 导出；流式时若它原本是最后一段，剔除后正好由 ThinkingBubble 接棒。
+ */
+function dropBlankTextParts(parts: MessagePart[]): MessagePart[] {
+  return parts.filter((part) => part.kind !== 'text' || (part.text ?? '').trim() !== '')
+}
+
 type TimelineItem = { part: MessagePart; index: number }
 type TimelineBlock =
   | { kind: 'text'; part: MessagePart; index: number }
@@ -302,10 +312,10 @@ function ProcessFold({ items, lazy, loadParts, partsCount }: {
     },
     [loadParts, loaded, loading],
   )
-  // 历史消息的过程片段是懒加载的：加载后同样过滤内部任务卡工具，
-  // 否则点开「过程」又会看到一条与卡片重复的工具调用。
-  const show = filterInternalTaskCardParts(
-    lazy ? (loaded ?? []) : items.map((item) => item.part),
+  // 历史消息的过程片段是懒加载的：加载后同样过滤内部任务卡工具与纯空白正文，
+  // 否则点开「过程」又会看到一条与卡片重复的工具调用 / 白色空胶囊。
+  const show = dropBlankTextParts(
+    filterInternalTaskCardParts(lazy ? (loaded ?? []) : items.map((item) => item.part)),
   )
   const thinking = show.filter((part) => part.kind === 'thinking').length
   const tools = show.length - thinking

@@ -17,7 +17,7 @@ import { api, ApiError, collabRunFileUrl, streamGet, streamPost } from '../lib/a
 import { collabChoiceAnswer, findPendingCollabAsks } from '../lib/collabAsk'
 import {
   applyChatEvent, advanceOvertakenByTicketSteps, chatAdvanceFrom, dismissChatAdvance,
-  dismissChatNotice, emptyChatTurn, type ChatTurnState,
+  dismissChatNotice, emptyChatTurn, hideChatEcho, type ChatTurnState,
 } from '../lib/collabChat'
 import {
   ADVANCE_MARKER, forgetConsumedAdvances, loadConsumedAdvances, rememberConsumedAdvance,
@@ -118,6 +118,20 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
     [detail?.steps, leaderKey, streamedStepIds],
   )
   const chatMessages = detail?.chat_messages ?? []
+  /**
+   * 交给时间线的落库聊天行：聊天途中详情轮询会把「刚落库的用户消息」和
+   * 「还没吐字的助手占位行」一起拉回来，与本地 pendingUser / 实时气泡重复。
+   * 去重规则见 `hideChatEcho`；这里只负责把当前这轮的状态交给它。
+   */
+  const renderChatMessages = hideChatEcho(chatMessages, {
+    liveMessageId: chatTurn.live?.messageId,
+    pendingUserContent: pendingUser
+      ? composeWithAttachments(pendingUser.text, pendingUser.attachments)
+      : null,
+    // 本机正在聊，或服务端说还有一轮在生成（另一台设备 / 刚打开页面尚未订阅）：
+    // 都算「进行中」，空占位行不能漏成空气泡。
+    chatActive: chatBusy || Boolean(detail?.chat_active),
+  })
   const leaderLive = turn?.live?.find((step) => step.nodeKey === leaderKey) ?? null
   const status = turn?.status ?? detail?.status ?? 'waiting_user'
 
@@ -161,13 +175,13 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
     chatAbortRef.current?.abort()
   }, [])
 
-  // 两台设备看同一次协作时，以落库详情为准定时对齐；本机 SSE 推进期间暂停轮询。
+  // 两台设备看同一次协作时，以落库详情为准定时对齐；本机 SSE 推进 / 聊天期间暂停轮询。
   // 运行中 5s 对齐一次（另一台设备发起的动作要能尽快出现）；挂起/完成后没有新东西，
   // 降到 20s——详情接口再瘦也经不起 3s 一次的空转，尤其远程访问时。
   const pollInterval = status === 'running' ? 5000 : 20000
   useAutoRefresh(() => (runId ? loadDetail(runId) : undefined), {
     intervalMs: pollInterval,
-    enabled: Boolean(runId) && !busy,
+    enabled: Boolean(runId) && !busy && !chatBusy,
   })
   useAutoRefresh(loadRuns, { intervalMs: 15000 })
 
@@ -541,7 +555,7 @@ export function CollabRunsPanel({ runId, teams, agents, onOpenRun }: Props) {
               partsCount: step.parts_count ?? 0,
             },
       })),
-      ...chatMessages.map((row) => ({
+      ...renderChatMessages.map((row) => ({
         at: row.created_at,
         message: row.sender === 'user'
           ? { id: row.id, role: 'user' as const, content: row.content, parts: [], status: 'complete' }

@@ -1,4 +1,4 @@
-/** 入口智能体聊天事件（`collab.chat.*`）的纯归约器，与工单推进状态互不干扰。 */
+/** 入口智能体聊天（`collab.chat.*`）的纯归约器与落库回显去重，与工单推进状态互不干扰。 */
 import { applyAgentEvent, emptyAgentStream, type AgentStreamState } from './agentStream'
 import { normalizeCollabChoices, type CollabAsk } from './collabAsk'
 import type { CollabChatMessage, CollabChoice, CollabEvent, CollabStep } from './types'
@@ -24,6 +24,68 @@ export interface ChatTurnState {
 
 export function emptyChatTurn(): ChatTurnState {
   return { live: null, notice: null, advance: null }
+}
+
+/** 落库聊天行的最小形状：只取去重需要的字段，桌面端与移动端共用。 */
+interface ChatEchoRow {
+  id: string
+  sender: string
+  status: string
+  content: string
+}
+
+/**
+ * 藏掉落库聊天行里与本地乐观气泡重复的部分。
+ *
+ * 后端一次聊天会先落库用户消息，再建一条 `status=streaming`、正文为空的助手占位行，
+ * 然后才开始生成。详情轮询（定时刷新 / 切回窗口立即补刷）若落在这段窗口里，会把两行都拉回来；
+ * 此时本端还挂着 `pendingUser`（乐观用户气泡）和 `chatTurn.live`（实时助手气泡），
+ * 不处理就会渲染成「你 → 空气泡 → 你 → 思考中」：同一句话出现两次，中间还夹个空泡。
+ *
+ * - 助手：实时气泡正在画的那一行（`liveMessageId`）以流式内容为准，落库副本藏掉；
+ *   事件还没到达、拿不到 ID 的极短窗口里，按「聊天进行中 + streaming + 无正文」兜底。
+ * - 用户：只有落库列表**尾部**那条用户消息与待确认正文一致时才藏 —— 它就是本端刚发出去
+ *   那条的落库回显。同文的旧消息后面一定还跟着它自己的回复，不能误伤。
+ *
+ * 聊天结束后调用方会清掉 `pendingUser` / `chatTurn.live`，这里自然全部放行，不需要额外状态。
+ */
+export function hideChatEcho<T extends ChatEchoRow>(
+  rows: T[],
+  {
+    liveMessageId,
+    pendingUserContent,
+    chatActive,
+  }: {
+    /** `collab.chat.started` 带来的助手消息 ID；事件未到时为空。 */
+    liveMessageId?: string | null
+    /** 本端待确认的用户气泡正文（附件清单已拼好）；没有待确认消息时为 null。 */
+    pendingUserContent?: string | null
+    /** 这一轮聊天是否仍在进行：进行中才需要藏「还没吐字的助手占位行」。 */
+    chatActive: boolean
+  },
+): T[] {
+  const pendingContent = pendingUserContent ?? ''
+  // 回显只可能出现在列表尾部：最后一行是它，或它后面紧跟着本次的助手占位行。
+  let echoIndex = -1
+  if (pendingContent) {
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      if (rows[index].sender !== 'user') continue
+      if (rows[index].content === pendingContent) echoIndex = index
+      break
+    }
+  }
+  const tail = rows[rows.length - 1]
+  const echoesTail = echoIndex === rows.length - 1
+    || (echoIndex === rows.length - 2 && tail?.sender === 'leader' && tail.status === 'streaming')
+
+  const liveId = liveMessageId ?? ''
+  return rows.filter((row, index) => {
+    if (row.sender === 'user') return !(echoesTail && index === echoIndex)
+    if (row.sender !== 'leader') return true
+    // 实时气泡正在画这一行：落库版本此时可能还是空的，藏掉副本。
+    if (liveId && row.id === liveId) return false
+    return !(chatActive && row.status === 'streaming' && !row.content.trim())
+  })
 }
 
 /** 用户点掉聊天里那条提示（需求已同步 / 解析告警 / 执行错误）：它是一次性的。 */

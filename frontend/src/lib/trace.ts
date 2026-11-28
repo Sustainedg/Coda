@@ -1,9 +1,9 @@
 /**
  * 轨迹调试视图的取数与导出工具（只读旁路，不碰对话状态）。
  *
- * 与方案 `docs/trace-debug-view-plan.md` §6.5/§6.6 对齐：
+ * 与 `docs/功能文档/轨迹调试视图.md` 的「前端交互」对齐：
  * - 分页拉取：`GET /trace` 按 `seq` 升序，`next_after_seq` 为空即到底；
- * - 导出：前端拼 JSON Blob 下载（阶段 4 的后端流式接口尚未拍板，先做前端版）；
+ * - 导出：后端暂未提供流式导出接口，先由前端拼 JSON Blob 下载；
  * - 脱敏：入库前后端已统一脱敏，这里在**展示 / 复制 / 导出**前再做一道
  *   「请求头、上下文快照正文」的可选擦除（导出默认开启）。
  *
@@ -137,7 +137,7 @@ export function redactEvent(event: TraceEvent): TraceEvent {
   return { ...event, payload }
 }
 
-/** 导出文件的结构（见方案 §6.5）：元信息 + 全量事件，`redacted` 标记有没有做脱敏。 */
+/** 导出文件的结构：元信息 + 全量事件，`redacted` 标记有没有做脱敏。 */
 export interface TraceExportFile {
   version: 1
   exported_at: string

@@ -182,11 +182,32 @@ def compose_system_prompt(
 
 * 字段是 `Text`，物理上不限长，但记忆每轮都占上下文：建议软上限
   `MAX_MEMORY_CHARS = 4000`（每字段，常量放 `persona.py`）；
-* 超限时**不拦截保存**（用户自己的智能体自己负责），只在拼装时打一条
-  `logger.warning`；
-* 设定页编辑框旁显示**字符数**（纯前端本地计数，不叫 tokens）；
-  上下文面板的 token 数因为估算改用拼装后的完整 prompt（⑤），自动包含记忆块，
+* 超限时**不拦截保存**（用户自己的智能体自己负责）。警告位置有讲究：
+  **打在保存接口里（`api/agents.py` 的 create / update），不在 `compose_system_prompt` 里**。
+  原因：⑤⑥ 估算点是运行中被前端**定时轮询**的，每次轮询都会走一遍拼装——超限用户的
+  日志会按轮询频率刷屏。compose 保持纯函数、静默；保存是低频路径，打一次就够；
+* schema 上**不加** `max_length`（见 §2.1：422 拦截与「只警告」矛盾）；
+* 设定页编辑框旁显示**字符数**（纯前端本地计数，对照 `MAX_MEMORY_CHARS` 变色提示，
+  不叫 tokens）；
+  上下文面板的 token 数因为估算改用拼装后的完整 prompt（⑤⑥），自动包含记忆块，
   **不另起一套 token 估算**（铁律：禁止各处各算一套口径）。
+* **记忆与自动压缩的交互（预期行为，不是 bug）**：记忆块计入
+  `estimate_usage` 的 system prompt 项、参与「是否触发压缩」的估算，但**不参与压缩折叠**
+  （它是每轮常量注入，不像历史消息可以被折进摘要）。推论：记忆越长，历史可用的
+  窗口越小、压缩越早触发——这正是 4000 字软上限要管住的东西，写明免得实施者当 bug 修。
+
+### 2.7 老前端 / 外部调用方的兼容自检（「清空」语义边界）
+
+* 后端 `update_agent` 用 `model_dump(exclude_unset=True)` + `value is not None` 白名单
+  （`api/agents.py:434` 附近的 setattr 循环）：不带这两个字段的旧客户端 PATCH
+  **不会**误清记忆 ✓；
+* 注意那个循环里 `tagline` / `description` / `gateway_id` / `account_id` / `model` /
+  `avatar_preset` 是**显式可置 None**的白名单字段——记忆两字段**不要**加进白名单：
+  `""`（清空）经 `value is not None` 自然放行，`null` 按「不改」处理，与 §2.1 的
+  Update 语义声明一致；
+* 前端 `AgentEditPage` / `MobileAgentEditPage` 的保存都是**整包 PATCH**：两端的
+  state 初始化都来自 `AgentProfileRead`，所以 `_to_read` 漏字段 = 保存即清空
+  （§2.1 的事故链条），这条依赖关系实施时必须先打通再联调。
 
 ---
 
@@ -197,30 +218,45 @@ def compose_system_prompt(
 | 文件 | 改动 |
 | --- | --- |
 | `backend/app/models.py` | `AgentProfile` 加 2 列；`ADDITIVE_COLUMNS` 登记 2 行 |
-| `backend/app/persona.py` | **新建**：`compose_system_prompt` + `MAX_MEMORY_CHARS` |
-| `backend/app/schemas.py` | Create / Update / Read 各加 2 字段 |
+| `backend/app/persona.py` | **新建**：`compose_system_prompt` + `MAX_MEMORY_CHARS`（纯函数、静默不打日志） |
+| `backend/app/schemas.py` | Create / Update / Read 各加 2 字段（Update 不加 `max_length`，见 §2.1） |
+| `backend/app/api/agents.py` | **必改**（见 §2.1）：`_to_read` 加 2 字段透传；`duplicate_agent` 克隆时带 2 字段；`create_agent` 透传 2 字段；create / update 里超 `MAX_MEMORY_CHARS` 打 `logger.warning`（不拦截） |
 | `backend/app/runtime/service.py` | ①②③ 三处改为 `compose_system_prompt(profile, credentials)` |
 | `backend/app/collab/execution.py` | ④ 一处替换 |
 | `backend/app/api/conversations.py` | ⑤ 改为 `compose_system_prompt(profile, None)` |
+| `backend/app/api/system.py` | ⑥ `set_context_settings` 的估算改为 `compose_system_prompt(profile, None)`（`api/system.py:205-209`） |
 
 ### 3.2 前端（桌面 + 移动两套都要，铁律 8）
 
 | 文件 | 改动 |
 | --- | --- |
-| `frontend/src/pages/AgentEditPage.tsx` | 创建表单（`:257` 附近）与编辑表单（`:533` 附近）各加「核心记忆」「用户偏好」两个多行编辑框 + 字符数提示，位置在「人格」框下方 |
-| `frontend/src/mobile/pages/MobileAgentEditPage.tsx` | 同步加两个字段 |
-| `frontend/src/lib/types.ts` | 智能体类型加 2 字段（若类型从 `AgentProfileRead` 手工同步） |
+| `frontend/src/pages/AgentEditPage.tsx` | 创建表单（`:257` 附近）与编辑表单（`:533` 附近）各加「核心记忆」「用户偏好」两个多行编辑框 + 字符数提示，位置在「人格」框下方；**保存 payload（`:604` / `:612` 附近）带上两字段** |
+| `frontend/src/mobile/pages/MobileAgentEditPage.tsx` | 同步加两个字段 + 保存 payload 带上（`:478` / `:486` 附近） |
+| `frontend/src/lib/types.ts` | 智能体类型加 2 字段（`types.ts:314` 附近，手工同步的，必须加） |
+| `frontend/public/m/sw.js` | **缓存名版本 +1**（`SHELL_CACHE` / `ASSET_CACHE`，当前 v148/v147）——动了移动端构建产物，不加已装主屏的用户吃旧缓存（AGENTS.md §4.7） |
 
 文案提示示例：「这段记忆会注入该智能体所有对话的最前方（协作与 IM 同样生效）。」
 
-### 3.3 测试
+### 3.3 文档同步（AGENTS.md 影响面矩阵的要求，容易漏）
+
+| 文件 | 改动 |
+| --- | --- |
+| `AGENTS.md` §2 | 分层图「models/db · schemas · settings · security · auth/auth_deps · attachments · bootstrap」一行补上 `persona`；协作域段落「只允许依赖 … `app.credentials`、`app.attachments`」补上 `app.persona` |
+| `docs/架构/architecture.md` | `agent_profiles` 表清单（`:707` 附近）补 `core_memory, user_preferences` 两列名 |
+| `docs/功能文档/上下文窗口与自动压缩.md` | 若文中列了「system prompt 计入估算」的组成清单，补记忆块一句（对照实际行文再定） |
+
+### 3.4 测试
 
 | 层 | 用例 |
 | --- | --- |
-| 后端单测 | `persona` 拼装：全空 → None；只写核心记忆 → 只出该块；顺序断言（核心记忆在人格之前）；凭据块在最尾；超软上限打日志不抛错 |
+| 后端单测 | `persona` 拼装：全空 → None；只写核心记忆 → 只出该块；顺序断言（核心记忆在人格之前）；凭据块在最尾；`profile=None` → None；超软上限**不抛错**（compose 静默，无日志断言） |
+| 后端单测 | API 读写回路：创建带记忆 → Read 回传两字段（堵 `_to_read` 漏字段的坑）→ PATCH 不带记忆字段（`exclude_unset`）→ 记忆不变；PATCH `""` → 清空；PATCH `null` → 不变 |
+| 后端单测 | 克隆智能体副本带两字段（堵 `duplicate_agent` 漏字段的坑） |
+| 后端单测 | 超限保存：写 5000 字记忆保存成功 + 后端日志出现一次 warning |
 | 后端单测 | `ADDITIVE_COLUMNS` 兼容：老库（无新列）启动补列后行为正常（沿用现有 bootstrap 测试模式） |
 | 后端回归 | 现有 `runtime` / `collab` 相关测试全绿（拼装点替换不改变无记忆智能体的输出——空字段时产物与旧 `with_notice` 完全一致） |
-| 前端 | `tsc --noEmit` + `npm run build`；`bash scripts/test.sh` 一次跑完 |
+| 后端回归 | ⑥ 校验回路：给智能体写长记忆后，`PUT /system/context` 的「上限不能低于当前已用量」按含记忆口径判断 |
+| 前端 | `tsc --noEmit` + `npm run build`；`bash scripts/test.sh` 一次跑完（含 `tests/test_mobile_web.py`：/m/ 深链可刷新、SW 缓存名已 +1） |
 
 ---
 
@@ -229,11 +265,15 @@ def compose_system_prompt(
 | # | 决策 | 理由 |
 | --- | --- | --- |
 | D1 | 记忆存 `AgentProfile` 两列，不建独立 `agent_memories` 表 | 一期只有手动编辑，结构化条目（置顶/归档/来源）是阶段三的需求，现在建表是过度设计 |
-| D2 | 五个拼装点收敛到 `persona.compose_system_prompt` | 防「网页有记忆、协作没记忆」与「面板 token 假数」两类静默分叉 |
+| D2 | 六个拼装点收敛到 `persona.compose_system_prompt` | 防「网页有记忆、协作没记忆」与「面板/上限校验 token 假数」两类静默分叉（⑥ 是评审补上的：上限校验漏换会把压缩阈值防线打穿） |
 | D3 | 改记忆不失效 `session_id` | 快照机制已被 `_SNAPSHOT_OFF_ARGS` 关闭（§2.5），失效处理是多余且扰动的 |
-| D4 | 超软上限只警告不拦截 | 记忆是用户自己写的自己用；平台负责提醒不负责代办 |
+| D4 | 超软上限只警告不拦截，且警告打在保存接口而非 compose | 记忆是用户自己写的自己用；平台负责提醒不负责代办。compose 被估算点定时轮询，在它里面打日志会刷屏 |
 | D5 | 编辑框显示字符数而非 token 数 | 避免前端复制一套 token 估算口径；真实占用由上下文面板（后端口径）呈现 |
 | D6 | 协作节点带各自智能体的记忆 | 协作 C5「不共享记忆」指不共享**对话历史**；智能体自带的人格与记忆本来就该跟人走，与 C5 不冲突 |
+| D7 | `api/agents.py` 必须改（`_to_read` / `duplicate_agent` / `create_agent`） | 原稿「不需要动」是错的：Read 是手工逐字段构造，漏字段 + 前端整包 PATCH = 保存即静默清空记忆（2026-11-28 评审纠正） |
+| D8 | Update 语义：`None`=不改、`""`=清空；不进可置 None 白名单 | 与现有 `exclude_unset` + `value is not None` 机制咬合，老客户端不带字段不误清 |
+| D9 | `persona.py` 落顶层叶子层（与 `attachments.py` 同层） | 协作域与对话域共用同一份拼装；守卫测试只拦 api/runtime/agents 前缀，叶子层 import 合法 |
+| D10 | 记忆计入压缩估算、不参与压缩折叠 | 常量注入与历史消息本质不同；这是软上限存在的理由，不是 bug |
 
 ---
 
@@ -259,9 +299,28 @@ def compose_system_prompt(
 ## 6. 验收标准（Definition of Done，对照 AGENTS.md §8）
 
 - [ ] 老库升级：启动自动补两列，现有智能体行为与升级前逐字节一致（空记忆 = 旧行为）
-- [ ] 设定页（桌面 + 移动）可编辑两字段，字符数提示可见
+- [ ] 设定页（桌面 + 移动）可编辑两字段，字符数提示可见；**编辑页改任意其他字段保存后，记忆不被清空**（D7 事故链条的反向验证）
+- [ ] 创建 / 克隆的智能体都带记忆（克隆副本的记忆与本体一致）
 - [ ] 写了记忆的智能体：网页新对话第一轮就带着记忆（看内核收到的 system prompt 日志/轨迹）
 - [ ] 同一智能体被 @ 召唤、进协作节点、走 IM，三处都带记忆
-- [ ] 上下文面板 token 数在加记忆后可见增长（口径含记忆块）
+- [ ] 上下文面板 token 数在加记忆后可见增长（口径含记忆块）；写长记忆后把上限设到低于含记忆已用量仍被 422 拒绝（⑥ 生效）
 - [ ] 协作域 `collab/prompt.py`、`im/bridge.py`、全部适配器 `grep` 零改动
+- [ ] AGENTS.md / `architecture.md` 的文档同步完成（§3.3 清单）
+- [ ] `frontend/public/m/sw.js` 缓存名版本 +1；`/m/` 深链可刷新
 - [ ] `bash scripts/test.sh` 全绿（后端 pytest + 前端 tsc + build）
+
+---
+
+## 7. 与其他记忆方案的关系（防概念混用）
+
+`docs/计划任务/` 里还有三份记忆相关方案，与本方案是**不同层次的两条线**，实施时不要混：
+
+| 方案 | 管什么 | 与本方案的关系 |
+| --- | --- | --- |
+| 本方案（核心记忆两列） | **平台侧**手动维护的文本，经 system prompt 注入 | 平台自己的一等公民，字段、编辑框、拼装函数全在平台代码里 |
+| `claude-native-memory-plan.md` | **内核原生**记忆文件（Claude Code 的 `MEMORY.md`），被「一对话一隔离目录」切碎的问题 | 内核自己的能力，走 `skill_mount()` 物化，不经过 system prompt |
+| `agent-centric-memory-plan.md` | 把上述内核记忆的锚点从对话 id 换成智能体 id | 仍是内核文件型记忆，与本方案互不依赖 |
+| `basic-memory-layering-plan.md` | Basic Memory MCP 的用户/智能体分层 | 外挂知识库（MCP），对话里按需检索，不是每轮常量注入 |
+
+一句话区分：**本方案是「平台替智能体记住的」，那三份是「智能体自己（或外部库）记住的」。**
+若未来多套记忆并存，注入优先级与本方案的记忆块如何叠加，届时另行评审。

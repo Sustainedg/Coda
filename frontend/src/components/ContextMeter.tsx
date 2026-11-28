@@ -1,5 +1,5 @@
 /**
- * 输入框上方的「上下文用量」按钮 + 详情面板（两端共用）。
+ * 输入框底部的「上下文用量」按钮 + 详情面板（两端共用）。
  *
  * 按钮上一眼能看到：已用 token / 上限 token / 百分比。点开是详情：
  * 当前已用、可配置上限、触发阈值、压缩策略，以及最近一次自动压缩的状态
@@ -173,7 +173,7 @@ export function ContextMeter({
       >
         <UsageIcon size={15} />
         <span className="ctx-meter-text">
-          上下文 {usage ? formatTokenCount(used) : loading ? '…' : '—'}/
+          {usage ? formatTokenCount(used) : loading ? '…' : '—'}/
           {usage ? formatTokenCount(limit) : '—'}
         </span>
         <span className="ctx-meter-percent">

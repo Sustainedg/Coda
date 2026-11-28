@@ -1160,22 +1160,39 @@ export function ChatPage() {
                   // 输入 @ 时弹智能体选择浮层（@ 召唤）
                   onMentionChange={setMentionQuery}
                   inputLabel={`发消息给 ${active.agent_name}`}
+                  // 框底左侧（齿轮旁）：上下文用量条从框上方挪下来，去掉「上下文」字样。
+                  leftActions={
+                    <ContextMeter
+                      usage={contextMeter.usage}
+                      settings={contextMeter.settings}
+                      loading={contextMeter.loading}
+                      error={contextMeter.error}
+                      saving={contextMeter.saving}
+                      saveError={contextMeter.saveError}
+                      notice={contextMeter.notice}
+                      onSave={contextMeter.save}
+                    />
+                  }
+                  // 框底右侧（语音左边）：模型选择胶囊从框上方挪下来。
+                  rightActions={
+                    <button
+                      type="button"
+                      className="composer-scope-btn composer-model-btn"
+                      onClick={openModelPanel}
+                      title={`模型：${active.model ?? active.agent_model ?? '由内核决定'}（点一下换）`}
+                    >
+                      <ModelIcon size={15} />
+                      <span>{active.model ?? active.agent_model ?? '默认模型'}</span>
+                      {/* 没单独指定模型时用的是智能体默认：旁边点个标签，免得以为是专门选的 */}
+                      {!active.model && active.agent_model && <span className="composer-scope-tag">默认</span>}
+                    </button>
+                  }
                   header={
                     <>
                       {/* 任务进度卡片常驻输入框上方：默认收起成一行，点开看任务项。
                           key 用卡片 id —— 切到另一条对话时重新挂载，折叠偏好各记各的。 */}
                       {taskCard && <TaskProgressCard key={taskCard.id} card={taskCard} />}
                       <div className="composer-scope">
-                        <ContextMeter
-                          usage={contextMeter.usage}
-                          settings={contextMeter.settings}
-                          loading={contextMeter.loading}
-                          error={contextMeter.error}
-                          saving={contextMeter.saving}
-                          saveError={contextMeter.saveError}
-                          notice={contextMeter.notice}
-                          onSave={contextMeter.save}
-                        />
                         <button
                           type="button"
                           className="composer-scope-btn"
@@ -1193,17 +1210,6 @@ export function ChatPage() {
                         >
                           <AgentIcon size={15} />
                           <span>{active.agent_name}</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="composer-scope-btn"
-                          onClick={openModelPanel}
-                          title={`模型：${active.model ?? active.agent_model ?? '由内核决定'}（点一下换）`}
-                        >
-                          <ModelIcon size={15} />
-                          <span>{active.model ?? active.agent_model ?? '默认模型'}</span>
-                          {/* 没单独指定模型时用的是智能体默认：旁边点个标签，免得以为是专门选的 */}
-                          {!active.model && active.agent_model && <span className="composer-scope-tag">默认</span>}
                         </button>
                       </div>
                       {queue.length > 0 && (

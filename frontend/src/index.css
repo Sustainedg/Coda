@@ -800,6 +800,7 @@ code, pre, .mono { font-family: var(--mono); }
 .composer-head { display: flex; flex-direction: column; gap: 7px; padding-bottom: 8px; }
 /* 输入框本身就是那个「框」：附件 / 语音在左，发送 / 停止在右，都长在框里面。 */
 .composer-box {
+  position: relative; /* 上下文详情面板的锚点（见下方 .composer-box .ctx-panel）：贴整个框展开 */
   display: flex; align-items: flex-end; gap: 2px;
   padding: calc(4px * var(--composer-vscale)) 6px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--bg-input);
@@ -837,6 +838,8 @@ code, pre, .mono { font-family: var(--mono); }
 .composer-tool.send { color: #fff; background: var(--brand); font-size: 15px; }
 .composer-tool.send:disabled { background: var(--bg-hover); color: var(--text-dim); }
 .composer-tool.stop { color: #fff; background: var(--danger); font-size: 13px; }
+/* 框内右侧一组（模型胶囊 + 语音 + 发送 / 停止）：自成一块，窄屏放不下时整组一起换行 */
+.composer-actions { display: flex; align-items: center; gap: 2px; flex: none; }
 @keyframes composer-recording { 50% { opacity: 0.5; } }
 /* 待发送的附件：横向滚动的一排胶囊，避免长文件名把输入区撑高 */
 .composer-attach-row { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; }
@@ -873,8 +876,31 @@ code, pre, .mono { font-family: var(--mono); }
   background: var(--brand-soft); color: var(--brand);
   font-size: 10px; font-weight: 600; line-height: 1.7; white-space: nowrap;
 }
+/* 框底左右插槽里的小胶囊（上下文条 / 模型选择）：允许收缩 + 省略，
+   别让长 token 串或长模型名把发送按钮挤出这一排。 */
+.composer-box .ctx-meter,
+.composer-box .composer-scope-btn { min-width: 0; flex: 0 1 auto; }
+/* 两个胶囊融进输入框：去描边、无底色。它们跟一圈圆形图标按钮并排，
+   再画圈描边就显得「多出来一层盒子」，很违和。 */
+.composer-box .ctx-meter-btn,
+.composer-box .composer-scope-btn,
+.composer-box .ctx-meter-btn.warn,
+.composer-box .ctx-meter-btn.danger {
+  border-color: transparent;
+  background: transparent;
+}
+.composer-box .ctx-meter-btn:hover,
+.composer-box .ctx-meter-btn.warn:hover,
+.composer-box .ctx-meter-btn.danger:hover,
+.composer-box .composer-scope-btn:hover {
+  border-color: transparent;
+  background: var(--bg-hover);
+}
+/* 模型胶囊：不要「相对小型容器」的百分比上限（会算成一双小鞋，名字被压成省略号），
+   按内容自然撑开，模型名完整显示；真遇到极端长名才启用兜底宽度（各端的宽度见微调段）。 */
+.composer-box .composer-model-btn { flex: 0 0 auto; max-width: 220px; }
 
-/* ---------- 输入框上方的上下文用量按钮 + 详情面板（两端各一份，逐字一致） ----------
+/* ---------- 输入框底部的上下文用量按钮 + 详情面板（两端各一份，逐字一致） ----------
    按钮只展示后端算好的「已用 / 上限 / 百分比」；点开的面板贴按钮向上展开，
    与输入区齿轮气泡同一套观感。警告 / 超限用暖色、危险色区分，不抢输入框的注意力。 */
 .ctx-meter { position: relative; display: inline-flex; max-width: 100%; }
@@ -899,7 +925,10 @@ code, pre, .mono { font-family: var(--mono); }
 .ctx-meter-badge.ok { background: rgba(74, 222, 128, 0.16); color: var(--ok); }
 .ctx-meter-badge.busy { background: var(--accent-soft); color: var(--accent); }
 .ctx-meter-badge.error { background: rgba(248, 113, 113, 0.16); color: var(--danger); }
-/* 详情面板：白卡片 + 轻阴影，贴按钮正上方（输入框在下面，不挡打字）。 */
+/* 详情面板：白卡片 + 轻阴影，贴整个输入框向上展开（不压住正在打的字，点外面即收起）。
+   锚点用 `.composer-box` 而不是左端那颗胶囊：胶囊在框底左侧偏右，从它展开会顶出窄屏右缘。 */
+.composer-box .ctx-meter { position: static; }
+.composer-box .ctx-panel { left: 0; }
 .ctx-panel {
   position: absolute; bottom: calc(100% + 10px); left: 0; z-index: 3;
   width: 340px; max-width: min(340px, calc(100vw - 32px));
@@ -1005,17 +1034,17 @@ code, pre, .mono { font-family: var(--mono); }
 .composer-box { gap: calc(8px * var(--composer-vscale)); padding: calc(8px * var(--composer-vscale)) 10px; border-radius: var(--radius-lg); }
 .composer textarea { padding: calc(6px * var(--composer-vscale)) 4px; font-size: 14px; line-height: 1.6; max-height: calc(220px * var(--composer-vscale)); }
 .composer-tool { width: calc(36px * var(--composer-vscale)); height: calc(36px * var(--composer-vscale)); }
+/* 桌面端宽屏，模型名可以多占一点：共享段的 220px 兜底在这里放宽到 260px。 */
+.composer-box .composer-model-btn { max-width: 260px; }
 
-/* 对话页的输入区：宽屏 + 鼠标，所以文字单独占上面一行；下一行加号 + 齿轮贴左，
-   语音 + 发送（停止）贴右 —— 语音紧贴发送（说完就发）。
-   推右的是「右侧一组」的**起点**：语音按钮（.composer-tool.voice）。
-   别给发送也加 auto：两个推力会平分剩余空间，把按钮组挤到中间；
+/* 对话页的输入区：宽屏 + 鼠标，所以文字单独占上面一行；下一行加号 + 齿轮 + 上下文条贴左，
+   模型 + 语音 + 发送（停止）贴右 —— 语音紧贴发送（说完就发），模型在语音左边。
+   推右的是「右侧一组」（.composer-actions）整块，从模型胶囊起、到发送止；别给组内按钮再加 auto，
+   否则剩余空间被平分，按钮组会被挤到中间。窄屏放不下时这一整组一起换行。
    协作页的输入框没有语音（不传 onUpload 时麦克风仍在，但那边不加 .chat-composer，不受影响）。 */
 .chat-composer .composer-box { flex-wrap: wrap; align-items: center; }
 .chat-composer .composer textarea { order: -1; flex: 0 0 100%; min-height: calc(68px * var(--composer-vscale)); }
-.chat-composer .composer-tool.voice { margin-left: auto; }
-.chat-composer .composer-tool.send,
-.chat-composer .composer-tool.stop { margin-left: 0; }
+.chat-composer .composer-actions { margin-left: auto; }
 
 /* AI 回复期间排队的那条消息：贴在输入框上方，本轮结束自动发出，✕ 取消整段队列 */
 .chat-queued-row {

@@ -1,7 +1,8 @@
 /**
  * 输入区（**两端共享**）：对话页与协作「找 CEO 聊」都用这一份，样式与交互完全一致。
  *
- * 框里从左到右是：附件（可选，加号）、输入框、语音、设置（可选，齿轮）、发送（运行中变成停止）。
+ * 框里从左到右是：附件（可选，加号）、设置（可选，齿轮）、`leftActions`（可选，贴左）、
+ * 输入框、`rightActions`（可选，语音左边）、语音、发送（运行中变成停止）。
  * 输入框**没有 placeholder**：框里一长串提示文案在手机上既挤又容易跟真实输入混淆，
  * 光秃秃的输入框配图标反而更清楚。
  *
@@ -73,6 +74,17 @@ interface Props {
   header?: ReactNode
   /** 框下方的一条说明（用量统计之类）：贴着输入框下沿，也不进框里 */
   footer?: ReactNode
+  /**
+   * 框底部左侧（设置齿轮旁）的额外内容：对话页把「上下文用量」条放这里。
+   * 渲染在 `.composer-box` 里、齿轮之后 —— 桌面 / 移动端对话页的文字单独占上面一行时，
+   * 它自然落在下一行的左端，跟着「加号 + 齿轮」这一组走。
+   */
+  leftActions?: ReactNode
+  /**
+   * 框底部右侧（语音左边）的额外内容：对话页把「模型」选择胶囊放这里。
+   * 渲染在语音按钮之前 —— 右侧一组是「模型 + 语音 + 发送」，贴右。
+   */
+  rightActions?: ReactNode
   /** 额外的类名：页面按自己的版式微调输入区（例如移动端对话页把文字放到图标上面） */
   className?: string
   /**
@@ -144,6 +156,8 @@ export function Composer({
   inputRef,
   header,
   footer,
+  leftActions,
+  rightActions,
   className,
   queueWhenBusy = false,
   showTools,
@@ -443,6 +457,8 @@ export function Composer({
             )}
           </div>
         )}
+        {/* 框底左侧插槽（齿轮旁）：对话页的上下文用量条落在这里 */}
+        {leftActions}
         <textarea
           ref={setAreaRef}
           rows={1}
@@ -470,39 +486,50 @@ export function Composer({
         />
         {/* 运行中只留一个按钮：框里写了东西就是「排队发送」，空着就是「停止」。
             这样手指永远落在同一个位置，也不会出现「想停止却点到发送」。 */}
-        {/* 语音紧贴发送：说完就发，这两个动作本来就是一对。
-            voice 类是对话页布局的推右锚点（右侧一组的起点），见 index.css / mobile.css。 */}
-        <button
-          className={`composer-tool voice${listening ? ' on' : ''}${voiceSupported ? '' : ' muted'}`}
-          onClick={toggleVoice}
-          disabled={locked}
-          aria-label={listening ? '结束语音输入' : '语音输入'}
-          title={
-            voiceSupported
-              ? listening
-                ? '正在听…点一下结束'
-                : '语音输入（按浏览器识别转成文字）'
-              : '当前环境不支持语音输入，点一下看说明'
-          }
-        >
-          <MicIcon size={17} />
-        </button>
-        {busy && (!queueWhenBusy || !canSend) && (
-          <button className="composer-tool stop" onClick={() => onStop?.()} aria-label="停止" title="停止这次运行">
-            <StopIcon size={15} />
-          </button>
-        )}
-        {(!busy || (queueWhenBusy && canSend)) && (
+        {/* 右侧一组：语音 + rightActions（对话页的模型选择）+ 发送（停止）。
+            整组包在一个容器里：窄屏放不下时一起换行，不会被拆得七零八落。 */}
+        <div className="composer-actions">
+          {/* 框底右侧插槽（语音左边）：对话页的模型选择胶囊落在这里 */}
+          {rightActions}
+          {/* 语音紧贴发送：说完就发，这两个动作本来就是一对。
+              对话页的推右锚点是这一组（.composer-actions），见 index.css / mobile.css。 */}
           <button
-            className="composer-tool send"
-            onClick={submit}
-            disabled={disabled || !canSend}
-            aria-label={busy ? '排队发送' : '发送'}
-            title={busy ? '排队发送：本轮回复结束后自动发出' : '发送'}
+            className={`composer-tool voice${listening ? ' on' : ''}${voiceSupported ? '' : ' muted'}`}
+            onClick={toggleVoice}
+            disabled={locked}
+            aria-label={listening ? '结束语音输入' : '语音输入'}
+            title={
+              voiceSupported
+                ? listening
+                  ? '正在听…点一下结束'
+                  : '语音输入（按浏览器识别转成文字）'
+                : '当前环境不支持语音输入，点一下看说明'
+            }
           >
-            <SendIcon size={18} />
+            <MicIcon size={17} />
           </button>
-        )}
+          {busy && (!queueWhenBusy || !canSend) && (
+            <button
+              className="composer-tool stop"
+              onClick={() => onStop?.()}
+              aria-label="停止"
+              title="停止这次运行"
+            >
+              <StopIcon size={15} />
+            </button>
+          )}
+          {(!busy || (queueWhenBusy && canSend)) && (
+            <button
+              className="composer-tool send"
+              onClick={submit}
+              disabled={disabled || !canSend}
+              aria-label={busy ? '排队发送' : '发送'}
+              title={busy ? '排队发送：本轮回复结束后自动发出' : '发送'}
+            >
+              <SendIcon size={18} />
+            </button>
+          )}
+        </div>
       </div>
 
       {footer && <div className="composer-foot">{footer}</div>}

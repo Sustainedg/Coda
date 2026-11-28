@@ -1,6 +1,6 @@
 """轨迹调试视图的采集与持久化（旁路，不参与对话业务）。
 
-设计约束（见 ``docs/trace-debug-view-plan.md`` §3/§5）：
+设计约束（见 ``docs/功能文档/轨迹调试视图.md`` §3/§5）：
 
 * 采集只在运行层判定一次（``prepare_run`` / ``regenerate_last`` 的 ``trace_enabled``）；
   关闭时不创建 :class:`TraceRecorder`，零开销、零写库。

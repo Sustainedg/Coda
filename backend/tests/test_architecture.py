@@ -149,7 +149,7 @@ def test_config_field_types_are_valid():
 
 
 def test_declared_provisioners_are_complete():
-    """声明了运行时维护方式的适配器必须给出包管理器与安装 / 卸载命令（AGENTS.md §4.9）。"""
+    """声明了运行时维护方式的适配器必须给出包管理器与安装 / 卸载命令（AGENTS.md §4.10）。"""
     for definition in all_agents():
         provisioner = definition.provisioner
         if provisioner is None:
@@ -171,7 +171,7 @@ def test_event_protocol_matches_the_documented_contract():
     actual = {member.value for member in EventType}
     assert actual == DOCUMENTED_EVENTS, (
         "事件协议发生变化：请在 events.py、runtime/service.consume_run、"
-        "前端 applyEvent + types.ts、docs/architecture.md 四处同步（AGENTS.md 铁律 5）。"
+        "前端 applyEvent + types.ts、docs/架构/architecture.md 四处同步（AGENTS.md 铁律 5）。"
     )
 
 

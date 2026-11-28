@@ -128,7 +128,7 @@ linux:
   target: [AppImage]
   category: Utility
 # 壳更新通道：**Generic Provider + 滚动 prerelease tag**，与后端 Release 完全隔离。
-# 详见 src/main/updater.ts 顶部注释与 docs/desktop.md。
+# 详见 src/main/updater.ts 顶部注释与 docs/说明/desktop.md。
 # 发布时由 CI 把安装包 + latest*.yml 上传到 tag `desktop-latest`（必须标记 prerelease）。
 publish:
   provider: generic

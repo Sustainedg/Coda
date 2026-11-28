@@ -7,7 +7,7 @@
  *   ② 三个内核的 npm 包里带的正是同一份原生二进制，直接下载并不更省空间
  *     （claude 单平台包 ~165 MB、codex ~120 MB 起）；③ 官方自更新的口径仍是
  *   `npm i -g` / 内核自己的 update 命令。经调研，桌面端最稳的是**内嵌 Node + npm**，
- *   让既有 provisioner 声明原样工作（见 docs/desktop.md「内核安装通道」一节）。
+ *   让既有 provisioner 声明原样工作（见 docs/说明/desktop.md「内核安装通道」一节）。
  *
  * 版本与 docker/Dockerfile 对齐（Node 24 LTS：DeepSeek Harness 要求 >= 24.9，
  * Claude Code 要求 >= 22，Gemini >= 20）。

@@ -547,7 +547,7 @@ class Message(SQLModel, table=True):
 class UsageRecord(SQLModel, table=True):
     """平台「一手账本」：**每一次模型请求**一行 token 计数。
 
-    与 :class:`Message` 的分工（见 ``docs/usage-gateway.md`` 的「数据模型」章节）：
+    与 :class:`Message` 的分工（见 ``docs/功能文档/usage-gateway.md`` 的「数据模型」章节）：
     ``Message.usage`` 是**展示快照**，会随对话 / 消息删除而消失；本表是**权威账本**，
     用于用量页、审计、成本与外部 API 计量。删除对话时按 ``conversation_id`` 级联删除，
     但历史对账、成本与跨对话汇总仍以本表为准。

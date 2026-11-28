@@ -2,7 +2,7 @@
 
 这些断言失败通常意味着有人（很可能是 AI）图省事把协作逻辑塞进了框架层，
 或者让协作模块反向依赖了上层。遇到失败请先读 AGENTS.md §1/§2 与
-``docs/collaboration-design.md`` §2。
+``docs/计划任务/collaboration-design.md`` §2。
 """
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def test_execution_is_the_only_door_to_the_runtime():
     """执行层边界必须存在且只有它一处：防止框架知识散落到引擎与路由里。"""
     execution = COLLAB_DIR / COLLAB_EXECUTION_EDGE
     if not execution.exists():
-        # M0 只冻结契约，执行边界在 M1 落地（docs/collaboration-design.md §11）
+        # M0 只冻结契约，执行边界在 M1 落地（docs/计划任务/collaboration-design.md §11）
         pytest.skip("execution.py 属于 M1 里程碑")
     refs = _refs(execution)
     assert any(ref.startswith("runtime") for ref in refs), "execution.py 应当调用 runtime 的执行入口"

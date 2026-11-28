@@ -1,6 +1,6 @@
 """波次并行调度：兄弟工单同时推进、同岗位串行、串行路径完全不回归。
 
-这些用例守住三件产品承诺（docs/collaboration-design.md §3.4）：
+这些用例守住三件产品承诺（docs/计划任务/collaboration-design.md §3.4）：
 
 * ``max_parallel > 1`` 时，同一父工单拆出、持有者互不相同的兄弟工单**真的同时在跑**
   （用替身智能体的 gate 闸门卡住两张，验证它们都处于 streaming）；

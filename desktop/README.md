@@ -5,7 +5,7 @@
 > 本目录**物理隔离**于主项目（不 import 主项目代码、不进 `scripts/test.sh` 测试主干），
 > 与 IM 域、协作域同为「旁路模块」，但更进一步：连构建、依赖、CI 都自成一体。
 >
-> 长期约定（更新通道、CI/CD、签名公证、内核安装通道调研）见 **`docs/desktop.md`**。
+> 长期约定（更新通道、CI/CD、签名公证、内核安装通道调研）见 **`docs/说明/desktop.md`**。
 
 ## 架构一览
 
@@ -73,9 +73,9 @@ mac 默认同时核对 arm64 + x64，与 `electron-builder.yml` 的双架构配�
 - **Windows**：NSIS 安装器（x64）；未签名时 SmartScreen 会拦，文档引导「仍要运行」
 - **macOS**：DMG + zip（arm64 + x64）；未签名构建会自动做 **ad-hoc 签名**，
   首次打开需在「系统设置 → 隐私与安全性」点「仍要打开」（不会再报「已损坏」）
-- 签名与公证的接线已就绪（配好证书 / Apple 凭据即自动生效），步骤见 `docs/desktop.md` §4
+- 签名与公证的接线已就绪（配好证书 / Apple 凭据即自动生效），步骤见 `docs/说明/desktop.md` §4
 - fetch 脚本与 afterPack 钩子会自动剔除运行时用不到的内容（Node 头文件、tcl/tk、
-  调试符号、多余语言包等，约省 150MB 解压态），详见 `docs/desktop.md` §4.5
+  调试符号、多余语言包等，约省 150MB 解压态），详见 `docs/说明/desktop.md` §4.5
 
 ## CI/CD
 
@@ -92,7 +92,7 @@ mac 默认同时核对 arm64 + x64，与 `electron-builder.yml` 的双架构配�
 
 壳与后端是两条版本线、共用同一个 GitHub 仓库。因此壳更新用 **Generic Provider** 直读
 滚动 tag `desktop-latest`，与 GitHub「最新 Release」语义无关；所有桌面 Release 一律
-prerelease。细节与设计原因见 `docs/desktop.md` §2。
+prerelease。细节与设计原因见 `docs/说明/desktop.md` §2。
 
 ## 与主项目的边界（重要）
 
@@ -101,7 +101,7 @@ prerelease。细节与设计原因见 `docs/desktop.md` §2。
 | 依赖方向 | 桌面壳**只调用**后端 HTTP API（`/api/health` 等），不 import 主项目任何 Python/TS 代码 |
 | 后端改动 | 桌面版需要的后端适配（若有）走主项目正常 PR 流程，桌面壳只读仓库 `backend/` 源码 |
 | 测试 | `desktop/` 不进 `scripts/test.sh`；本目录 `npm run typecheck` 自证，CI 另跑打包版冒烟 |
-| 文档 | 长期文档进 `docs/`（`docs/desktop.md`）；`desktop/README.md` 保持自包含 |
+| 文档 | 长期文档进 `docs/`（`docs/说明/desktop.md`）；`desktop/README.md` 保持自包含 |
 | 版本 | 壳版本（package.json `version`）**与后端 `__version__` 同号**（V0.1.3 ↔ 0.1.3），发布时 CI 双向校验；桌面端更新统一走**完整安装包**（electron-updater），新安装包里的后端代码在启动时物化并切 current |
 
 ## 里程碑
@@ -112,7 +112,7 @@ prerelease。细节与设计原因见 `docs/desktop.md` §2。
 - [x] M3 CI/CD：GitHub Actions 双平台构建 + 打包版冒烟；electron-updater 壳自身更新
       （Generic Provider + 滚动 prerelease Release）
 - [x] M4 内核 provision 的 Node 依赖：内嵌 Node + npm、App 私有全局前缀（调研结论见
-      `docs/desktop.md` §5）；npm 命令跨平台化（Windows 无 `sh`、`.cmd` 垫片）；
+      `docs/说明/desktop.md` §5）；npm 命令跨平台化（Windows 无 `sh`、`.cmd` 垫片）；
       签名 / 公证接线（afterPack 逐签内嵌运行时 + afterSign 公证，配证书即生效）
 
 ## 已验证项

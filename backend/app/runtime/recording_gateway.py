@@ -1,6 +1,6 @@
 """记录网关：本机反向代理 + 同协议转发 + tee 响应 + 一手 usage 记账。
 
-见 ``docs/usage-gateway.md`` 的「记录网关」章节。职责边界：
+见 ``docs/功能文档/usage-gateway.md`` 的「记录网关」章节。职责边界：
 
 * **做**：同协议转发（Anthropic Messages / OpenAI Chat / OpenAI Responses）、透传必要请求头、
   按 ``auth_style`` 注入上游密钥、tee 响应解析 usage、按 ``request_id`` 去重写账本、

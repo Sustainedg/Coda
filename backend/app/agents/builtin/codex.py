@@ -118,7 +118,7 @@ class CodexAgent(AgentDefinition):
     protocol = "openai"
     #: app-server 的 tokenUsage 是 OpenAI Responses 形状：缓存包含在输入里。
     #: 注意 ``_app_usage`` 会输出 ``cache_write_input_tokens`` 键，但它只是别名，
-    #: **不能**据此判成“分离式”（见 docs/usage-normalization-design.md）。
+    #: **不能**据此判成“分离式”（见 docs/架构/usage-normalization.md）。
     usage_protocol = PROTOCOL_OPENAI_RESPONSES
     default_auth_style = "bearer"
     default_models = ["gpt-5-codex"]

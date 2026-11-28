@@ -231,7 +231,7 @@ async def forward_and_record(
 
     # 非流式错误体：读出来、擦掉凭据后再转发，避免上游在错误信息里回显密钥。
     # passthrough 模式下平台没有密钥，凭据值从客户端请求头收集（见 _client_secrets）。
-    # 流式错误片段无法逐块可靠擦除（已知边界，见 docs/usage-gateway.md）。
+    # 流式错误片段无法逐块可靠擦除（已知边界，见 docs/功能文档/usage-gateway.md）。
     if status_code >= 400 and "text/event-stream" not in media_type.lower():
         raw = await upstream.aread()
         await upstream.aclose()

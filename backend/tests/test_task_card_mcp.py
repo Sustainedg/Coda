@@ -1,6 +1,6 @@
 """任务进度卡片 · MCP 通道：绑定、凭据、内部接口与 stdio server。
 
-设计见 ``docs/计划任务/MCP任务进度卡方案.md``。覆盖：
+设计见 ``docs/功能文档/任务进度卡.md``。覆盖：
 
 * ``runtime/task_card_mcp.py``：每轮 context / 令牌 / 凭据文件权限 / 失效 / 限流计数；
 * ``apply_block(source="mcp")``：一轮多次更新不被 ``last_run_id`` 吞掉，围栏仍幂等；

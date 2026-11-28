@@ -8,7 +8,7 @@
                                              └──── rework 回边 ────┘
 ```
 
-设计要点（对应 docs/collaboration-design.md §3 / §5）：
+设计要点（对应 docs/计划任务/collaboration-design.md §3 / §5）：
 
 * **波次推进**：默认（``max_parallel=1``）同一时刻只有一个步骤在跑；调高后
   只有「同父兄弟工单 + 不同岗位」能同波并行（见 :func:`_pick_wave`），
@@ -788,7 +788,7 @@ async def consume_turn(session: AsyncSession, prepared: PreparedTurn) -> AsyncIt
 
     调度是**波次并行**（``max_parallel > 1`` 时）：每一波从就绪工单里挑出
     「同一父工单拆出的兄弟工单、且持有者岗位互不相同」的一批同时推进，
-    全部结束后（join）才做父工单汇总与下一波调度。护栏（见 docs/collaboration-design.md §3.4）：
+    全部结束后（join）才做父工单汇总与下一波调度。护栏（见 docs/计划任务/collaboration-design.md §3.4）：
 
     * **同一岗位永远串行**：一个岗位一个对话通道（与入口聊天通道的约束一致）；
     * **只有兄弟工单才并行**：它们由同一次 split 拆出、天然无先后依赖；其他工单（如

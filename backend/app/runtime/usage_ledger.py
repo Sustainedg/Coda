@@ -1,6 +1,6 @@
 """一手账本：token 归一化、窗口口径、去重写入与**权威源互斥**。
 
-本模块是「平台自己过磅」的落点（见 ``docs/usage-gateway.md`` 的「计量口径」章节）。
+本模块是「平台自己过磅」的落点（见 ``docs/功能文档/usage-gateway.md`` 的「计量口径」章节）。
 与 ``Message.usage`` 的分工：``Message.usage`` 是**展示快照**（会随对话 / 消息删除而消失），
 本模块写入的 :class:`~app.models.UsageRecord` 是**权威账本**（用量页、审计、成本、外部 API
 都读它）。**不要在 ``Message.usage`` 上继续加统计逻辑。**

@@ -2,7 +2,7 @@
 
 这些护栏的产品承诺是「宁可挂起让人判断，也不静默空转烧钱」：
 任何一条触发后，工单进 ``blocked``、运行进 ``waiting_user``，并且必须给出可读原因
-（docs/collaboration-design.md §3.3）。
+（docs/计划任务/collaboration-design.md §3.3）。
 """
 from __future__ import annotations
 

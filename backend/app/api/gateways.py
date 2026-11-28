@@ -1,6 +1,6 @@
 """网关接口：自定义网关的增删改查、官方链路的读取，以及「获取模型」探测。
 
-网关是 API 密钥的唯一来源（见 docs/architecture.md）。官方链路（``kind == "official"``）
+网关是 API 密钥的唯一来源（见 docs/架构/architecture.md）。官方链路（``kind == "official"``）
 由启动播种按适配器声明生成，不能删除；自定义网关由用户在这里创建。
 """
 from __future__ import annotations

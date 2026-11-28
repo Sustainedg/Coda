@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """把历史消息里的 ``usage`` 回填进 ``usage_records``（默认 **dry-run**）。
 
-背景见 ``docs/usage-gateway.md`` 的「审计与回填」章节。
+背景见 ``docs/功能文档/usage-gateway.md`` 的「审计与回填」章节。
 
 账本是新的权威源，但升级前的历史用量只存在于 ``messages.usage``。这个脚本把**账本启用
 之前**的助手消息补成 ``source=legacy`` 的账本行，并把 ``usage_ledger_started_at`` 前移到

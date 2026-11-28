@@ -158,7 +158,7 @@ HOST_PROJECT_DIR=/path/to/projects \
 3. **对话 → 新建对话** —— 选择智能体开始聊天；工具调用、推理过程、token 用量实时展开
 4. **智能体设定 → IM**（可选）—— 在某个智能体的设定页里把它连到 Telegram / 飞书 / 钉钉 / 企业微信 / QQ / Discord / Slack，配对账号后在聊天软件里直接对话
 
-> 💡 想看多智能体怎么「搭伙干活」？打开 [`docs/collab-guide.html`](./docs/collab-guide.html)（浏览器直接打开的图文版），一分钟看懂工单协作。
+> 💡 想看多智能体怎么「搭伙干活」？打开 [`docs/功能文档/collab-guide.html`](./docs/功能文档/collab-guide.html)（浏览器直接打开的图文版），一分钟看懂工单协作。
 
 ---
 
@@ -283,7 +283,7 @@ run.started   message.delta   thinking.delta   tool.call   tool.result
 usage         session         log              error       run.finished
 ```
 
-易变的部分（各内核的调用方式与输出格式）被压缩进一个极薄插件层，稳定部分（流式、会话记忆、持久化、表单、取消与超时）全沉淀在框架。深挖见 [`docs/architecture.md`](./docs/architecture.md)。
+易变的部分（各内核的调用方式与输出格式）被压缩进一个极薄插件层，稳定部分（流式、会话记忆、持久化、表单、取消与超时）全沉淀在框架。深挖见 [`docs/架构/architecture.md`](./docs/架构/architecture.md)。
 
 </details>
 
@@ -385,14 +385,17 @@ frontend/
   src/components/        DynamicForm（由 schema 生成表单）· MessageView · Modal
   src/mobile/            移动端（PWA）
 docs/
-  architecture.md             一次运行的完整时序、事件协议、扩展点
-  im.md                       IM：支持哪些平台、配对与消息路由、分层
-  ai-coding-standard.md       编码规范详版
-  context-usage.md            上下文用量按钮与自动压缩
-  功能文档/                  面向使用者的功能手册（如「上下文窗口与自动压缩.md」）
-  collaboration-design.md     多智能体协作设计详版
-  collab-mechanism.md        协作机制与功能手册
-  collab-guide.html           协作机制图文版（浏览器直接打开）
+  README.md                   文档索引与阅读顺序
+  架构/                       architecture.md（运行时序 / 事件协议 / 扩展点）
+                              ai-coding-standard.md（编码规范详版）
+                              usage-normalization.md（用量归一化）
+  功能文档/                   面向使用者与维护者的功能手册
+                              im.md · admin-mcp.md · skills-mechanism.md
+                              collab-mechanism.md · collab-guide.html
+                              usage-gateway.md · 任务进度卡.md · 轨迹调试视图.md
+                              上下文窗口与自动压缩.md · 内核接入说明
+  说明/                       desktop.md · context-usage.md · kernel-icon-perf.md
+  计划任务/                   未完成的方案（对话成员、技能版本管理、Qwen 接入、协作设计）
 ```
 
 </details>
@@ -400,7 +403,7 @@ docs/
 <details>
 <summary><b>参与开发与发版</b></summary>
 
-改代码前先读 [`AGENTS.md`](./AGENTS.md)（分层铁律与扩展手册），需要理由与边界时读 [`docs/ai-coding-standard.md`](./docs/ai-coding-standard.md)。分层约束由 `backend/tests/test_architecture.py` 自动校验。
+改代码前先读 [`AGENTS.md`](./AGENTS.md)（分层铁律与扩展手册），需要理由与边界时读 [`docs/架构/ai-coding-standard.md`](./docs/架构/ai-coding-standard.md)。分层约束由 `backend/tests/test_architecture.py` 自动校验。
 
 ```bash
 ./scripts/test.sh     # pytest（含架构守卫）+ 前端 typecheck
@@ -415,12 +418,12 @@ docs/
 
 | 想了解 | 去哪看 |
 | --- | --- |
-| 平台运行的完整时序与扩展点 | [`docs/architecture.md`](./docs/architecture.md) |
-| 多智能体协作怎么跑、能做什么 | [`docs/collab-mechanism.md`](./docs/collab-mechanism.md) · [`docs/collab-guide.html`](./docs/collab-guide.html)（图文版） |
-| IM 平台、配对与消息路由 | [`docs/im.md`](./docs/im.md) |
-| 系统管理 MCP 与个人访问令牌 | [`docs/admin-mcp.md`](./docs/admin-mcp.md) |
-| 上下文计量、记录网关与成本 | [`docs/usage-gateway.md`](./docs/usage-gateway.md) |
-| 编码规范与工程铁律 | [`AGENTS.md`](./AGENTS.md) · [`docs/ai-coding-standard.md`](./docs/ai-coding-standard.md) |
+| 平台运行的完整时序与扩展点 | [`docs/架构/architecture.md`](./docs/架构/architecture.md) |
+| 多智能体协作怎么跑、能做什么 | [`docs/功能文档/collab-mechanism.md`](./docs/功能文档/collab-mechanism.md) · [`docs/功能文档/collab-guide.html`](./docs/功能文档/collab-guide.html)（图文版） |
+| IM 平台、配对与消息路由 | [`docs/功能文档/im.md`](./docs/功能文档/im.md) |
+| 系统管理 MCP 与个人访问令牌 | [`docs/功能文档/admin-mcp.md`](./docs/功能文档/admin-mcp.md) |
+| 上下文计量、记录网关与成本 | [`docs/功能文档/usage-gateway.md`](./docs/功能文档/usage-gateway.md) |
+| 编码规范与工程铁律 | [`AGENTS.md`](./AGENTS.md) · [`docs/架构/ai-coding-standard.md`](./docs/架构/ai-coding-standard.md) |
 
 ---
 

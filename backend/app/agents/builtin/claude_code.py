@@ -764,7 +764,7 @@ class ClaudeCodeAgent(AgentDefinition):
         raw_usage = payload.get("usage")
         if isinstance(raw_usage, dict) and raw_usage:
             # 原样上报：嵌套的 cache_creation / output_tokens_details 由运行层
-            # 统一归一化，适配器不再提前丢字段（见 docs/usage-normalization-design.md）。
+            # 统一归一化，适配器不再提前丢字段（见 docs/架构/usage-normalization.md）。
             yield usage_raw(raw_usage)
         for src, dst in (("total_cost_usd", "cost_usd"), ("duration_ms", "duration_ms"),
                          ("num_turns", "num_turns")):

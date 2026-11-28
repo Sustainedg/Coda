@@ -63,11 +63,10 @@ export function applyTheme(mode: ThemeMode): ResolvedTheme {
   document.documentElement.dataset.theme = resolved
   const meta = document.querySelector('meta[name="theme-color"]')
   if (meta) meta.setAttribute('content', THEME_COLORS[resolved])
-  // iOS 独立应用的状态栏只有黑白两档：深色外壳用「黑底透明白字」，浅色外壳切回系统默认样式，
-  // 否则浅色下状态栏的字是白的、压在浅色顶栏上看不见。iOS 一般在文档加载时读一次这个标签，
-  // 所以入口 HTML 的内联脚本里也设了同一个值。
-  const statusBar = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')
-  if (statusBar) statusBar.setAttribute('content', resolved === 'light' ? 'default' : 'black-translucent')
+  // 移动端状态栏是系统默认样式（`default`，m/index.html 声明，深浅主题都不动它）：
+  // 状态栏由 iOS 自己画、背景跟随 theme-color，页面从它正下方开始排，不存在沉浸式
+  // 坐标错位。曾经按主题在 black-translucent / default 间切换，那套逻辑已随
+  // 沉浸式一起下线（iOS 26 独立应用下 fixed 的可视视口整体错位，多轮修复不可靠）。
   return resolved
 }
 

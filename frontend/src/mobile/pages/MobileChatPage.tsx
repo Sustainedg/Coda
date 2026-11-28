@@ -944,6 +944,10 @@ export function MobileChatPage() {
       }
     : null
 
+  // 线程里有没有消息（空会话保持原来的居中空状态；有消息时从顶部开始往下排，
+  // 不再做「短对话贴输入区」的 margin-top:auto —— 用户要求默认从顶部开始）。
+  const hasThreadContent = chatMessages.length > 0 || liveMessage !== null
+
   const usage = useMemo(() => {
     const assistants = messages.filter((m) => m.role === 'assistant')
     return summarizeUsage(
@@ -1018,7 +1022,11 @@ export function MobileChatPage() {
         }
       />
 
-      <div className="m-thread" ref={scrollRef} onScroll={onThreadScroll}>
+      <div
+        className={`m-thread${hasThreadContent ? ' has-messages' : ''}`}
+        ref={scrollRef}
+        onScroll={onThreadScroll}
+      >
         {!active && !resolving && (
           <div className="m-empty">
             <div className="m-empty-icon">💬</div>
@@ -1135,6 +1143,37 @@ export function MobileChatPage() {
         onNotice={setError}
         // 输入 @ 时弹智能体选择浮层（@ 召唤）
         onMentionChange={setMentionQuery}
+        // 框底左侧（齿轮旁）：上下文用量条，去掉「上下文」字样。
+        leftActions={
+          active ? (
+            <ContextMeter
+              usage={contextMeter.usage}
+              settings={contextMeter.settings}
+              loading={contextMeter.loading}
+              error={contextMeter.error}
+              saving={contextMeter.saving}
+              saveError={contextMeter.saveError}
+              notice={contextMeter.notice}
+              onSave={contextMeter.save}
+            />
+          ) : null
+        }
+        // 框底右侧（语音左边）：模型选择胶囊。
+        rightActions={
+          active ? (
+            <button
+              type="button"
+              className="composer-scope-btn composer-model-btn"
+              onClick={openModelPanel}
+              title={`模型：${active.model ?? active.agent_model ?? '由内核决定'}（点一下换）`}
+            >
+              <ModelIcon size={15} />
+              <span>{active.model ?? active.agent_model ?? '默认模型'}</span>
+              {/* 没单独指定模型时用的是智能体默认：旁边点个标签，免得以为是专门选的 */}
+              {!active.model && active.agent_model && <span className="composer-scope-tag">默认</span>}
+            </button>
+          ) : null
+        }
         // 输入框上方：工作目录 + 智能体两个小图标（新建对话时不用先选，这里随时改）。
         header={
           active ? (
@@ -1190,16 +1229,6 @@ export function MobileChatPage() {
                 </div>
               )}
               <div className="composer-scope">
-                <ContextMeter
-                  usage={contextMeter.usage}
-                  settings={contextMeter.settings}
-                  loading={contextMeter.loading}
-                  error={contextMeter.error}
-                  saving={contextMeter.saving}
-                  saveError={contextMeter.saveError}
-                  notice={contextMeter.notice}
-                  onSave={contextMeter.save}
-                />
                 <button
                   type="button"
                   className="composer-scope-btn"
@@ -1217,17 +1246,6 @@ export function MobileChatPage() {
                 >
                   <AgentIcon size={15} />
                   <span>{active.agent_name}</span>
-                </button>
-                <button
-                  type="button"
-                  className="composer-scope-btn"
-                  onClick={openModelPanel}
-                  title={`模型：${active.model ?? active.agent_model ?? '由内核决定'}（点一下换）`}
-                >
-                  <ModelIcon size={15} />
-                  <span>{active.model ?? active.agent_model ?? '默认模型'}</span>
-                  {/* 没单独指定模型时用的是智能体默认：旁边点个标签，免得以为是专门选的 */}
-                  {!active.model && active.agent_model && <span className="composer-scope-tag">默认</span>}
                 </button>
               </div>
               {queue.length > 0 && (
@@ -1251,21 +1269,19 @@ export function MobileChatPage() {
             </>
           ) : null
         }
-        // 用量统计挪到输入框「下面」：贴底的是输入框。固定 2×2 网格（四项两行，不再随手换行）。
+        // 用量统计挪到输入框「下面」：贴底的是输入框。三项单行（缓存命中 / 输入 / 输出）——
+        // 「总计」与两行网格已按用户要求下线：一行看完，不再换行。
         footer={
           usage.messages > 0 ? (
             <div className="m-usage" title="整段对话累计消耗（≠ 当前上下文窗口）">
+              <span>
+                缓存命中 <b>{usage.cacheRatio === null ? '—' : `${Math.round(usage.cacheRatio * 100)}%`}</b>
+              </span>
               <span title="普通输入，不含缓存">
                 输入 <b>{usage.input.toLocaleString()}</b> tokens
               </span>
               <span>
                 输出 <b>{usage.output.toLocaleString()}</b> tokens
-              </span>
-              <span>
-                总计 <b>{usage.total.toLocaleString()}</b> tokens
-              </span>
-              <span>
-                缓存命中 <b>{usage.cacheRatio === null ? '—' : `${Math.round(usage.cacheRatio * 100)}%`}</b>
               </span>
             </div>
           ) : null

@@ -571,23 +571,72 @@ def test_mobile_entry_locks_zoom_and_desktop_keeps_it():
 
 @needs_frontend
 def test_mobile_shell_is_pinned_to_the_visible_viewport():
-    """外壳必须钉在「可视视口」上，底栏才会真正贴到屏幕底部。
+    """外壳钉在「可视视口」；状态栏是系统默认样式（非沉浸式），不需要任何视口补偿。
 
     真机上地址栏与底部工具栏会伸缩：`100vh` / `100dvh` 与 `height: 100%` 的父链高度
     经常对不齐，底栏要么浮起来留缝、要么被工具栏压住。四边贴 0 的固定定位跟的是可视视口。
+    移动端 PWA 的状态栏样式是 `default`（m/index.html 声明）：状态栏由 iOS 自己画、
+    不与页面重叠，fixed 外壳贴的可视视口正好从状态栏正下方开始 —— 顶与底都严丝合缝。
+
+    曾经走 `black-translucent` 沉浸式（内容画到状态栏底下），配了整套补偿（100lvh 外壳、
+    `--vv-*` gap 注入、kb-open 退回 fixed）—— 但 iOS 26 独立应用在沉浸式下 fixed / 可视
+    视口比物理屏上下各矮一条状态栏，坐标系整体错位，多轮修复不可靠，已随沉浸式一起下线
+    （参照无此问题的 LedgerArk 的做法）。守卫：补偿体系不许悄悄回来，沉浸式不许复活。
     """
     css = (MOBILE_SRC / "mobile.css").read_text(encoding="utf-8")
+    # 先去掉注释：注释里也写了规则原文（还带花括号），留着会把选择器认错。
+    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
 
-    app_rule = re.search(r"\.m-app \{([^}]*)\}", css)
+    app_rule = re.search(r"\.m-app \{([^}]*)\}", plain)
     assert app_rule, "mobile.css 缺少 .m-app 样式"
     rule = app_rule.group(1)
     assert "position: fixed" in rule
     for edge in ("top: 0", "right: 0", "bottom: 0", "left: 0"):
         assert edge in rule, f".m-app 需要 {edge}（四边贴住可视视口）"
-    assert "100vh" not in rule and "100dvh" not in rule, "外壳不该再用视口高度单位定高"
+    assert "100vh" not in rule and "100dvh" not in rule, "基础 .m-app 不该用视口高度单位定高"
+
+    # 沉浸式补偿体系已整体下线：任何残留都会让坐标系重新错位。
+    for legacy in ("m-standalone", "kb-open", "vv-top-gap", "vv-bottom-gap", "100lvh"):
+        assert legacy not in plain, f"沉浸式时代的 {legacy} 应当删干净（状态栏已是系统默认样式）"
+
+    # 入口声明的是系统默认状态栏（default），不是沉浸式（black-translucent）。
+    entry = (FRONTEND / "m" / "index.html").read_text(encoding="utf-8")
+    entry_plain = re.sub(r"<!--.*?-->", "", entry, flags=re.S)
+    assert 'name="apple-mobile-web-app-status-bar-style" content="default"' in entry_plain, (
+        "移动端状态栏要用系统默认样式 default：沉浸式 black-translucent 在 iOS 26 独立应用"
+        "下会让 fixed / 可视视口整体错位（顶部露画布 / 底部按钮行被裁），别改回去"
+    )
+    assert "black-translucent" not in entry_plain, "入口不允许再出现沉浸式状态栏声明"
+    assert not (MOBILE_SRC / "viewport.ts").exists(), (
+        "viewport.ts（沉浸式补偿脚本）已下线 —— 状态栏是系统默认样式，不需要视口补偿"
+    )
+
+    main = (MOBILE_SRC / "main.tsx").read_text(encoding="utf-8")
+    # 匹配「调用」而非「提及」：main.tsx 的下线注释里还写着这个名字。
+    assert not re.search(r"^\s*initStandaloneViewport\(\)", main, flags=re.M), (
+        "入口不要再初始化已下线的视口补偿"
+    )
 
     html_rule = re.search(r"html, body \{([^}]*)\}", css)
     assert html_rule and "overflow: hidden" in html_rule.group(1), "文档本身不应滚动"
+
+
+@needs_frontend
+def test_mobile_thread_starts_from_the_top():
+    """消息从线程顶部开始往下排；输入区完整可见（flex-basis 归零）。
+
+    曾经的「短对话贴输入区」设计（有消息时给第一条 `margin-top: auto` 吃满上方空间）
+    已按用户要求下线：对话默认从顶部开始。空会话不加 `has-messages`，空状态仍按原来的
+    样子居中。`.m-thread` 的 `flex: 1 0 0`（basis 显式为 0）是 iOS WebKit 上输入区
+    被大内容挤出外壳的防御 —— 任何引擎都从零起算收缩，别改回 `flex: 1`。
+    """
+    css = (MOBILE_SRC / "mobile.css").read_text(encoding="utf-8")
+    assert "margin-top: auto" not in css.split(".m-thread {")[1].split("/* ---")[0], (
+        "贴底那条规则该删干净（设计已下线：对话默认从顶部开始）"
+    )
+    assert "flex: 1 0 0" in css, "线程要显式 basis:0（iOS WebKit 收缩防御）"
+    page = (MOBILE_SRC / "pages" / "MobileChatPage.tsx").read_text(encoding="utf-8")
+    assert "has-messages" in page, "对话页要按「有没有消息」挂 has-messages（空态样式仍区分）"
 
 
 @needs_frontend
@@ -721,6 +770,27 @@ def test_mobile_chat_keeps_a_bare_composer_and_speaks_replies():
     assert not any(
         re.search(r"padding-bottom\s*:", body) and "safe-bottom" in body for body in drawer_blocks
     ), "抽屉底部安全区重复计算：.m-drawer 不要再留 padding-bottom（底部交给 .m-drawer-account）"
+
+
+@needs_frontend
+def test_mobile_canvas_follows_the_bottom_surface_on_chat_pages():
+    """iOS 独立应用最底下露的是「画布」：有输入区时，画布要跟输入区同色，别透出一条空白。
+
+    真机（iOS 独立应用 + viewport-fit=cover）上量到：输入区底边停在屏幕上方 ~59px
+    （底部安全区被从可视区里扣掉），下面那条谁都盖不住，露出来的是 html / body 的底色
+    （截图里严格等于 --bg）。聊天页输入区是白色，底下突然一条 --bg 浅紫 → 看起来就是
+    「输入区下面空出一截」。规则让画布跟着贴底的那个面走，这条缝就并进输入区。
+    """
+    css = (MOBILE_SRC / "mobile.css").read_text(encoding="utf-8")
+    # 先去掉注释：注释里也可能有花括号，留着会把选择器认错。
+    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    rule = re.search(r"([^{}]*html:has\(\.composer\)[^{}]*)\{([^}]*)\}", plain)
+    assert rule, "mobile.css 缺少「有输入区时画布跟随输入区」的规则"
+    selectors, body = rule.group(1), rule.group(2)
+    assert "background: var(--bg-elevated)" in body, (
+        "有输入区的页面要把画布刷成输入区实色（--bg-elevated = #fff / #12111c）"
+    )
+    assert "body" in selectors, "画布到底取 html 还是 body 的背景各 iOS 版本有差异，两边都要刷"
 
 
 @needs_frontend

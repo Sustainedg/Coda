@@ -9,6 +9,9 @@ import { registerServiceWorker } from './pwa'
 import './mobile.css'
 
 // 先把外观（深色 / 浅色 / 跟随系统）落到 <html> 上，再渲染，避免首屏闪一下。
+// 移动端状态栏是系统默认样式（非沉浸式）：fixed 外壳贴的可视视口正好从状态栏
+// 正下方开始，不需要任何视口补偿（black-translucent 时代的 initStandaloneViewport
+// 补偿体系已随沉浸式一起下线，见 m/index.html 的状态栏注释）。
 initTheme()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

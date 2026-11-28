@@ -8,7 +8,7 @@ import { useComposerDraft } from '../../lib/composerDraft'
 import { collabChoiceAnswer, findPendingCollabAsks } from '../../lib/collabAsk'
 import {
   applyChatEvent, advanceOvertakenByTicketSteps, chatAdvanceFrom, dismissChatAdvance,
-  dismissChatNotice, emptyChatTurn, type ChatTurnState,
+  dismissChatNotice, emptyChatTurn, hideChatEcho, type ChatTurnState,
 } from '../../lib/collabChat'
 import {
   ADVANCE_MARKER, forgetConsumedAdvances, loadConsumedAdvances, rememberConsumedAdvance,
@@ -195,11 +195,11 @@ export function MobileCollabRunPage() {
 
   // SSE 只负责本设备发起的增量；运行详情以落库结果为准，并定时对齐其他设备。
   // 运行中 5s 对齐一次；挂起/完成后没有新东西，降到 20s——详情接口再瘦也经不起高频空转，
-  // 移动端流量尤其金贵。
+  // 移动端流量尤其金贵。本机 SSE 推进 / 聊天期间暂停轮询：那一轮由实时事件负责。
   const pollInterval = (turn?.status ?? detail?.status) === 'running' ? 5000 : 20000
   useAutoRefresh(() => (runId ? load(runId) : undefined), {
     intervalMs: pollInterval,
-    enabled: Boolean(runId) && !busy,
+    enabled: Boolean(runId) && !busy && !chatBusy,
   })
 
   // 内容变化（新步骤、流式追加）或对话弹层刚打开时，把时间线滚到底部。
@@ -544,6 +544,18 @@ export function MobileCollabRunPage() {
 
   const timeline = useMemo<TimelineEntry[]>(() => {
     if (!detail) return []
+    // 聊天途中详情轮询会把「刚落库的用户消息」和「还没吐字的助手占位行」拉回来，
+    // 与本地 pendingUser / 实时气泡重复；不藏掉就会「你 → 空气泡 → 你 → 思考中」。
+    // 去重规则见 `hideChatEcho`。
+    const chatRows = hideChatEcho(chatMessages, {
+      liveMessageId: chatTurn.live?.messageId,
+      pendingUserContent: pendingUser
+        ? composeWithAttachments(pendingUser.text, pendingUser.attachments)
+        : null,
+      // 本机正在聊，或服务端说还有一轮在生成（另一台设备 / 刚打开页面尚未订阅）：
+      // 都算「进行中」，空占位行不能漏成空气泡。
+      chatActive: chatBusy || Boolean(detail.chat_active),
+    })
     const pairs = [
       ...visibleSteps.map((step) => ({
         at: step.started_at,
@@ -576,7 +588,7 @@ export function MobileCollabRunPage() {
           }
         })(),
       })),
-      ...chatMessages.map((row) => ({
+      ...chatRows.map((row) => ({
         at: row.created_at,
         entry: row.sender === 'user'
           ? {
@@ -641,7 +653,7 @@ export function MobileCollabRunPage() {
       })
     }
     return entries
-  }, [detail, team, agents, visibleSteps, chatMessages, pendingUser, turn?.completed, leaderKey, leaderLabel])
+  }, [detail, team, agents, visibleSteps, chatMessages, pendingUser, chatTurn.live?.messageId, chatBusy, turn?.completed, leaderKey, leaderLabel])
 
   const liveEntry: TimelineEntry | null = leaderLive
     ? {
